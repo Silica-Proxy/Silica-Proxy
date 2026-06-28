@@ -17,9 +17,9 @@ jobs:
     container:
       image: eclipse-temurin:25-jdk
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -30,13 +30,13 @@ jobs:
       - name: Build
         run: ./gradlew --no-daemon --non-interactive compileJava compileTestJava
 
-  # ── Tests + couverture ────────────────────────────────────────────────────────
+  # ── Tests + Coverage ──────────────────────────────────────────────────────────
   test:
     needs: build
     runs-on: ubuntu-latest
     container:
       image: eclipse-temurin:25-jdk
-      # On monte le socket Docker de l'hôte dans le conteneur de build pour Testcontainers
+      # Mount the host's Docker socket into the build container for Testcontainers
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock
     env:
@@ -44,9 +44,9 @@ jobs:
       DOCKER_HOST: unix:///var/run/docker.sock
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -58,7 +58,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive test jacocoTestReport
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: |
@@ -67,22 +67,22 @@ jobs:
           retention-days: 7
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
           path: build/reports/jacoco
           retention-days: 7
 
-  # ── Sécurité : vulnérabilités du code (SpotBugs + FindSecurityBugs) ──────────
+  # ── Security: Code Vulnerabilities (SpotBugs + FindSecurityBugs) ──────────────
   sast:
     needs: build
     runs-on: ubuntu-latest
     container:
       image: eclipse-temurin:25-jdk
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -94,7 +94,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive spotbugsMain
       - name: Upload SpotBugs reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: spotbugs-reports
           path: |
@@ -102,7 +102,7 @@ jobs:
             build/reports/spotbugs/main.xml
           retention-days: 7
 
-  # ── Sécurité : vulnérabilités des dépendances (OWASP Dependency Check) ────────
+  # ── Security: Dependency Vulnerabilities (OWASP Dependency Check) ────────────
   dependency-check:
     needs: build
     runs-on: ubuntu-latest
@@ -113,10 +113,12 @@ jobs:
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
       GRADLE_OPTS: "-Dorg.owasp.dependencycheck.data.directory=${{ github.workspace }}/.gradle/dependency-check-data"
+      # NVD API Key retrieved from your GitHub Secrets
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -129,7 +131,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive dependencyCheckAnalyze
       - name: Upload Dependency Check reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-check-reports
           path: |
@@ -137,16 +139,16 @@ jobs:
             build/reports/dependency-check-report.json
           retention-days: 7
 
-  # ── Qualité : complexité du code (PMD) ───────────────────────────────────────
+  # ── Quality: Code Complexity (PMD) ───────────────────────────────────────────
   pmd:
     needs: build
     runs-on: ubuntu-latest
     container:
       image: eclipse-temurin:25-jdk
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -158,7 +160,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive pmdMain
       - name: Upload PMD reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pmd-reports
           path: |
@@ -166,16 +168,16 @@ jobs:
             build/reports/pmd/main.xml
           retention-days: 7
 
-  # ── Qualité : conventions de code (Checkstyle) ───────────────────────────────
+  # ── Quality: Code Style Conventions (Checkstyle) ─────────────────────────────
   checkstyle:
     needs: build
     runs-on: ubuntu-latest
     container:
       image: eclipse-temurin:25-jdk
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .gradle/wrapper
@@ -187,7 +189,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive checkstyleMain
       - name: Upload Checkstyle reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: checkstyle-reports
           path: |
