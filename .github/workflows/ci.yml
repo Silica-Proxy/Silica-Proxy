@@ -36,16 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: eclipse-temurin:25-jdk
-    services:
-      docker:
-        image: docker:24-dind
-        options: --dns 8.8.8.8 --dns 1.1.1.1
-        volumes:
-          - /var/run/docker.sock:/var/run/docker.sock
+      # On monte le socket Docker de l'hôte dans le conteneur de build pour Testcontainers
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
     env:
       GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
       DOCKER_HOST: unix:///var/run/docker.sock
-      TESTCONTAINERS_HOST_OVERRIDE: docker
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@v4
