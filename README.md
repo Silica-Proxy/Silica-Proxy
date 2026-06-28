@@ -485,7 +485,7 @@ The `api_cache` table already has tuned autovacuum (5% scale factor, 100-row thr
 ## Attribution Requirement
 If you use SilicaProxy in your project, product, or service, you **must** include the following attribution in a visible location (e.g., UI footer, documentation, or "About" page):
 
-> "Secured by SilicaProxy (https://github.com/Silica-Proxy/silicaproxy)"
+> "Secured by SilicaProxy (https://github.com/Silica-Proxy/Silica-Proxy)"
 
 This is a **binding requirement** of the [Apache 2.0 License](LICENSE).
 
