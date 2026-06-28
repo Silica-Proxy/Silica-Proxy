@@ -3,12 +3,11 @@ name: CI
 on:
   push:
     branches:
-      - main
-      - develop
+      - main # Triggers only on direct pushes or merges to main (not other branches)
   pull_request:
     branches:
       - main
-      - develop
+      - develop # Triggers on any PR targeting main or develop
 
 jobs:
   # ── Build ─────────────────────────────────────────────────────────────────────
@@ -58,7 +57,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive test jacocoTestReport
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: |
@@ -67,7 +66,7 @@ jobs:
           retention-days: 7
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-reports
           path: build/reports/jacoco
@@ -94,7 +93,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive spotbugsMain
       - name: Upload SpotBugs reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: spotbugs-reports
           path: |
@@ -131,7 +130,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive dependencyCheckAnalyze
       - name: Upload Dependency Check reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: dependency-check-reports
           path: |
@@ -160,7 +159,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive pmdMain
       - name: Upload PMD reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: pmd-reports
           path: |
@@ -189,7 +188,7 @@ jobs:
         run: ./gradlew --no-daemon --non-interactive checkstyleMain
       - name: Upload Checkstyle reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: checkstyle-reports
           path: |
