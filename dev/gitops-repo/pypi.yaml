@@ -1,0 +1,32 @@
+rules:
+  # ===== Listes noires (BLOCK) =====
+  - package: "jeIlyfish"
+    version: "*"
+    action: "block"
+    reason: "Typosquatting du package légitime jellyfish (l minuscule remplacé par I majuscule)"
+
+  - package: "python-dateutil"
+    version: "1.0"
+    action: "block"
+    reason: "Version piégée tentant de voler des credentials SSH"
+
+  - package: "colourama"
+    version: "*"
+    action: "block"
+    reason: "Typosquatting du package légitime colorama"
+
+  # ===== Listes blanches (ALLOW) =====
+  - package: "requests"
+    version: "*"
+    action: "allow"
+    reason: "Client HTTP standard Python approuvé"
+
+  - package: "flask"
+    version: "3.*"
+    action: "allow"
+    reason: "Framework web approuvé pour les microservices internes"
+
+  - package: "pydantic"
+    version: "2.*"
+    action: "allow"
+    reason: "Bibliothèque de validation approuvée"

@@ -1,0 +1,67 @@
+services:
+  postgres-lt:
+    image: 'postgres:18-alpine'
+    command:
+      - 'postgres'
+      - '-c'
+      - 'shared_buffers=512MB'
+      - '-c'
+      - 'work_mem=16MB'
+      - '-c'
+      - 'max_connections=1000'
+      - '-c'
+      - 'synchronous_commit=off'
+      - '-c'
+      - 'fsync=off'
+    environment:
+      - 'POSTGRES_DB=security_db'
+      - 'POSTGRES_USER=postgres'
+      - 'POSTGRES_PASSWORD=postgres'
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d security_db']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  proxy-lt:
+    image: 'silicaproxy:latest'
+    build:
+      context: '../'
+      dockerfile: 'Dockerfile'
+    depends_on:
+      postgres-lt:
+        condition: service_healthy
+    environment:
+      - 'SPRING_DATASOURCE_URL=jdbc:postgresql://postgres-lt:5432/security_db'
+      - 'SPRING_DATASOURCE_USERNAME=postgres'
+      - 'SPRING_DATASOURCE_PASSWORD=postgres'
+      - 'SPRING_DATASOURCE_HIKARI_MAXIMUM-POOL-SIZE=${HIKARI_MAX_POOL_SIZE:-150}'
+      - 'SPRING_DATASOURCE_HIKARI_MINIMUM-IDLE=${HIKARI_MIN_IDLE:-50}'
+      - 'PROXY_PORT=8080'
+      # Force bypassing WireMock since this is a real-condition test
+      - 'SILICAPROXY_REGISTRIES_NPM-URL=https://registry.npmjs.org'
+      - 'SILICAPROXY_REGISTRIES_PYPI-URL=https://pypi.org'
+      - 'SILICAPROXY_REGISTRIES_MAVEN-URL=https://repo1.maven.org'
+      - 'SILICAPROXY_SECURITY_SSRF-PROTECTION_ENABLED=false'
+    ports:
+      - '8080:8080'
+      - '8089:8089'
+    deploy:
+      resources:
+        limits:
+          cpus: '${PROXY_CPUS:-0.5}'
+          memory: '${PROXY_MEMORY:-512M}'
+
+  k6-lt:
+    image: 'grafana/k6:0.51.0'
+    volumes:
+      - '../src/test/resources/k6-script.js:/k6-script.js:ro'
+      - '/tmp:/tmp'
+    environment:
+      - 'HTTP_PROXY=http://proxy-lt:8080'
+      - 'http_proxy=http://proxy-lt:8080'
+      - 'HTTPS_PROXY=http://proxy-lt:8080'
+      - 'https_proxy=http://proxy-lt:8080'
+    command: 'run --summary-export=/tmp/k6-report.json /k6-script.js'

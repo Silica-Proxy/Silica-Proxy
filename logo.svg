@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<svg width="540" height="100" xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">
+ <defs>
+  <linearGradient id="silicaBlueGrad" x1="0%" x2="100%" y1="100%" y2="0%">
+   <stop offset="0%" stop-color="#0A2540"/>
+   <stop offset="60%" stop-color="#0070BA"/>
+   <stop offset="100%" stop-color="#00D4FF"/>
+  </linearGradient>
+ </defs>
+ <g class="layer">
+  <title>Layer 1</title>
+  <g id="svg_1" transform="translate(20, 55)">
+   <text fill="url(#silicaBlueGrad)" font-family="-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, sans-serif" font-size="46" font-weight="800" id="svg_2" letter-spacing="1">SILIC</text>
+   <g id="svg_3" transform="matrix(1 0 0 1 0 0) matrix(1 0 0 1 119 -40)">
+    <path d="m18,0l-18,40l16,0l2,-40z" fill="#0070BA" id="svg_4"/>
+    <path d="m21,0l18,40l-16,0l-2,-40z" fill="#00D4FF" id="svg_5"/>
+   </g>
+   <text fill="#657786" font-family="-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, sans-serif" font-size="46" font-weight="400" id="svg_6" letter-spacing="2" x="178">PROXY</text>
+   <text fill="#AAB8C2" font-family="-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, sans-serif" font-size="11" font-weight="600" id="svg_7" letter-spacing="4" transform="matrix(1 0 0 1 29 -5)" x="4" y="24">Artifact Firewall Proxy</text>
+  </g>
+ </g>
+</svg>

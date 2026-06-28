@@ -1,0 +1,12 @@
+rules:
+  # ===== Listes noires (BLOCK) =====
+  - package: "commons-collections:commons-collections"
+    version: "3.2.1"
+    action: "block"
+    reason: "Interdit par la securite de demo"
+
+  # ===== Listes blanches (ALLOW) =====
+  - package: "org.slf4j:slf4j-api"
+    version: "*"
+    action: "allow"
+    reason: "Approuve pour la demo"

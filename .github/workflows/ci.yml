@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  # ── Build ─────────────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Build
+        run: ./gradlew --no-daemon --non-interactive compileJava compileTestJava
+
+  # ── Tests + couverture ────────────────────────────────────────────────────────
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    services:
+      docker:
+        image: docker:24-dind
+        options: --dns 8.8.8.8 --dns 1.1.1.1
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
+      DOCKER_HOST: unix:///var/run/docker.sock
+      TESTCONTAINERS_HOST_OVERRIDE: docker
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Run tests
+        run: ./gradlew --no-daemon --non-interactive test jacocoTestReport
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            build/test-results/test/**/TEST-*.xml
+            build/reports/tests
+          retention-days: 7
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: build/reports/jacoco
+          retention-days: 7
+
+  # ── Sécurité : vulnérabilités du code (SpotBugs + FindSecurityBugs) ──────────
+  sast:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Run SpotBugs
+        run: ./gradlew --no-daemon --non-interactive spotbugsMain
+      - name: Upload SpotBugs reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotbugs-reports
+          path: |
+            build/reports/spotbugs/main.html
+            build/reports/spotbugs/main.xml
+          retention-days: 7
+
+  # ── Sécurité : vulnérabilités des dépendances (OWASP Dependency Check) ────────
+  dependency-check:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    timeout-minutes: 45
+    continue-on-error: true
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
+      GRADLE_OPTS: "-Dorg.owasp.dependencycheck.data.directory=${{ github.workspace }}/.gradle/dependency-check-data"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+            .gradle/dependency-check-data
+          key: nvd-cache-${{ github.ref_name }}
+          restore-keys: |
+            nvd-cache-
+      - name: Run Dependency Check
+        run: ./gradlew --no-daemon --non-interactive dependencyCheckAnalyze
+      - name: Upload Dependency Check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-reports
+          path: |
+            build/reports/dependency-check-report.html
+            build/reports/dependency-check-report.json
+          retention-days: 7
+
+  # ── Qualité : complexité du code (PMD) ───────────────────────────────────────
+  pmd:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Run PMD
+        run: ./gradlew --no-daemon --non-interactive pmdMain
+      - name: Upload PMD reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmd-reports
+          path: |
+            build/reports/pmd/main.html
+            build/reports/pmd/main.xml
+          retention-days: 7
+
+  # ── Qualité : conventions de code (Checkstyle) ───────────────────────────────
+  checkstyle:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: eclipse-temurin:25-jdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .gradle/wrapper
+            .gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Run Checkstyle
+        run: ./gradlew --no-daemon --non-interactive checkstyleMain
+      - name: Upload Checkstyle reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkstyle-reports
+          path: |
+            build/reports/checkstyle/main.html
+            build/reports/checkstyle/main.xml
+          retention-days: 7

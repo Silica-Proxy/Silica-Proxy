@@ -1,0 +1,12 @@
+# Config version de system.yaml pour Artifactory
+configVersion: 1
+shared:
+    security:
+        masterKey: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        joinKey: "af9613.aesgcm256.HwmVIsFp_KOtQPiebWYS-7h_0buRzaPabYjfz5wMRRLt14yv2vsPgBg_hggVOhZyni7u3vGfoy0RjMlzIIkn4AcHBO4LR5nhMULvR5rmuXZVZ4L-b_yyAPAn__M"
+    database:
+        type: postgresql
+        driver: org.postgresql.Driver
+        url: "jdbc:postgresql://artifactory-db:5432/artifactory_db"
+        username: postgres
+        password: af9613.aesgcm256.uTjJnsrms0akZJJPFP8KoGC87u7uC3lSKcsH0_XHdiQx1UI8

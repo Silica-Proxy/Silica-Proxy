@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: 'postgres:18-alpine'
+    environment:
+      - 'POSTGRES_DB=security_db'
+      - 'POSTGRES_USER=postgres'
+      - 'POSTGRES_PASSWORD=postgres'
+    ports:
+      - '5432:5432'
+
+  # Serveur Git local pour tester la synchronisation GitOps (artifactsentry.gitops.*) en dev.
+  # Provisionné automatiquement par le service "gitea-init" ci-dessous (utilisateur, dépôt, token).
+  gitea:
+    image: 'gitea/gitea:1.26.4'
+    environment:
+      - 'GITEA__security__INSTALL_LOCK=true'
+      - 'GITEA__database__DB_TYPE=sqlite3'
+      - 'GITEA__server__ROOT_URL=http://localhost:3000/'
+      - 'GITEA__service__DISABLE_REGISTRATION=true'
+    ports:
+      - '3000:3000'
+    volumes:
+      - 'gitea-data:/data'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/v1/version']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Crée automatiquement l'utilisateur, le dépôt "policies" et le token Gitea de dev
+  # (voir dev/gitea-init.sh) dès que "docker compose up" démarre, sans étape manuelle.
+  gitea-init:
+    image: 'alpine:3.20'
+    depends_on:
+      gitea:
+        condition: service_healthy
+    environment:
+      - 'GITEA_URL=http://gitea:3000'
+      - 'PUBLIC_GITEA_URL=http://localhost:3000'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+      - './dev:/scripts'
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - 'apk add --no-cache bash docker-cli curl git >/dev/null && bash /scripts/gitea-init.sh'
+
+volumes:
+  gitea-data:

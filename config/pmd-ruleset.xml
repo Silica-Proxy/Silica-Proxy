@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<ruleset name="ArtifactSentry — Complexité et qualité"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0
+                             https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+    <description>
+        Règles focalisées sur la complexité cyclomatique, la longueur des méthodes/classes
+        et les défauts de conception — sans les règles de style (checkstyle les gère mieux).
+    </description>
+
+    <!-- Complexité cyclomatique : méthode trop complexe à tester et maintenir -->
+    <rule ref="category/java/design.xml/CyclomaticComplexity">
+        <properties>
+            <property name="classReportLevel" value="80"/>
+            <property name="methodReportLevel" value="15"/>
+        </properties>
+    </rule>
+
+    <!-- Nombre de chemins d'exécution (NPath) : indicateur de difficulté de test -->
+    <rule ref="category/java/design.xml/NPathComplexity">
+        <properties>
+            <property name="reportLevel" value="200"/>
+        </properties>
+    </rule>
+
+    <!-- Méthodes et classes trop longues (remplace ExcessiveMethodLength/ExcessiveClassLength, supprimés en PMD 7) -->
+    <rule ref="category/java/design.xml/NcssCount">
+        <properties>
+            <property name="methodReportLevel" value="60"/>
+            <property name="classReportLevel" value="250"/>
+        </properties>
+    </rule>
+
+    <!-- Trop de méthodes dans une classe -->
+    <rule ref="category/java/design.xml/TooManyMethods">
+        <properties>
+            <property name="maxmethods" value="20"/>
+        </properties>
+    </rule>
+
+    <!-- Trop de paramètres dans une méthode -->
+    <rule ref="category/java/design.xml/ExcessiveParameterList">
+        <properties>
+            <property name="minimum" value="8"/>
+        </properties>
+    </rule>
+
+    <!-- Couplage excessif (trop de classes utilisées par une classe) -->
+    <rule ref="category/java/design.xml/ExcessiveImports">
+        <properties>
+            <property name="minimum" value="30"/>
+        </properties>
+    </rule>
+
+    <!-- Blocs catch vides -->
+    <rule ref="category/java/errorprone.xml/EmptyCatchBlock">
+        <properties>
+            <property name="allowCommentedBlocks" value="true"/>
+        </properties>
+    </rule>
+
+    <!-- new String("...") inutile : les String sont immuables -->
+    <rule ref="category/java/performance.xml/StringInstantiation"/>
+    <!-- Comparaisons de chaînes avec == au lieu de .equals() -->
+    <rule ref="category/java/errorprone.xml/UseEqualsToCompareStrings"/>
+
+    <!-- Code mort -->
+    <rule ref="category/java/bestpractices.xml/UnusedLocalVariable"/>
+    <rule ref="category/java/bestpractices.xml/UnusedFormalParameter"/>
+
+</ruleset>

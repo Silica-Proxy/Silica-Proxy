@@ -1,0 +1,208 @@
+spring:
+  application:
+    name: proxy
+
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    # Database URL (default value for local development if not provided via environment)
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/security_db?prepareThreshold=5&preparedStatementCacheSize=250&preparedStatementCacheQueriesPerConnection=30}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:50}
+      minimum-idle: ${HIKARI_MIN_IDLE:15}
+      connection-timeout: ${HIKARI_CONNECTION_TIMEOUT:1500}
+      max-lifetime: ${HIKARI_MAX_LIFETIME:1800000}
+
+logging:
+  level:
+    org.flywaydb: DEBUG
+    org.springframework.boot.autoconfigure.flyway: DEBUG
+    com.silicaproxy: DEBUG
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+
+silicaproxy:
+  # Proxy server listening port (CONNECT and HTTP)
+  proxy:
+    port: ${SILICAPROXY_PROXY_PORT:8080}
+
+  # 1. Temporal quarantine configuration (Anti-Typosquatting)
+  quarantine:
+    # Global activation of age check
+    enabled: true
+    # Default minimum number of days required since publication (if not specified by ecosystem)
+    default-min-age-days: 7
+    # Behavior on registry error (true = allow package ; false = block for security)
+    fail-open: true
+    # Ecosystem-specific thresholds and activation
+    ecosystems:
+      npm:
+        enabled: true
+        min-age-days: 7
+      maven:
+        enabled: false
+        min-age-days: 5
+      pypi:
+        enabled: true
+        min-age-days: 10
+
+  # 2. Filtering configuration for deprecated or removed (Yanked) packages
+  deprecation:
+    # Global activation of deprecation validation
+    enabled: true
+    # Ecosystem-specific activation
+    ecosystems:
+      npm: true   # Block if 'deprecated' field is present in npm metadata
+      pypi: true   # Block if 'yanked' field is true in PyPI JSON
+
+  # 3. Filtering by qualitative severity and CVSS numerical score of vulnerabilities
+  severity-threshold:
+    # Global activation of filtering based on security vulnerability severity
+    enabled: true
+    # Default maximum allowed severity level (blocks higher levels, e.g. blocks HIGH and CRITICAL)
+    default-max-allowed-severity: CRITICAL
+    # Default maximum allowed CVSS numerical score (range from 0.0 to 10.0)
+    default-max-allowed-cvss: 7.0
+    # Ecosystem-specific settings
+    ecosystems:
+      npm:
+        max-allowed-severity: HIGH
+        max-allowed-cvss: 9.0
+      maven:
+        max-allowed-severity: MEDIUM
+        max-allowed-cvss: 7.0
+      pypi:
+        max-allowed-severity: MEDIUM
+        max-allowed-cvss: 7.0
+
+  # 4. Hourly incremental OSV synchronization (delta via modified_id.csv)
+  osv-incremental:
+    # Activation of hourly update (in addition to daily ZIP sync)
+    enabled: true
+    # Base URL of OSV GCS bucket
+    gcs-base-url: "https://storage.googleapis.com/osv-vulnerabilities"
+    # Initial catch-up window (hours) on first startup without sync history
+    initial-lookback-hours: 25
+
+  # 5. Cache configuration for external API results
+  api-cache:
+    # Cache ALLOW verdicts from external APIs (if false, only BLOCK are cached)
+    cache-allow-verdict: true
+    # TTL in minutes for BLOCK verdicts (package contains a vulnerability)
+    block-verdict-ttl-minutes: 10080
+    # TTL in minutes for ALLOW verdicts (no vulnerability detected)
+    allow-verdict-ttl-minutes: 1440
+
+  # 5. Fallback chain configuration for external APIs
+  api-fallback:
+    # Google OSV advisories public service
+    osv:
+      enabled: true
+      url: "https://api.osv.dev/v1/query"
+    # Google Open Source Insights deps.dev API
+    deps-dev:
+      enabled: true
+      url: "https://api.deps.dev/v3/"
+
+  # 6. GitOps synchronization of enterprise governance rules
+  gitops:
+    # Global activation of GitOps synchronization scheduler
+    enabled: true
+    # Git repository URL containing policy files (e.g. npm.yaml, maven.yaml, pypi.yaml)
+    # By default: dev Gitea started and provisioned automatically by `docker compose up`
+    # (public repository, cloneable without authentication). Override in production via the variable
+    # SILICAPROXY_GITOPS_REPOSITORY_URL environment variable.
+    repository-url: "${SILICAPROXY_GITOPS_REPOSITORY_URL:http://localhost:3000/devops/policies.git}"
+    # Path of the directory in the Git repository containing the rules
+    directory-path: "policies/"
+    # Git authentication token (OAuth or access key). Empty by default as the dev
+    # Gitea is public; override via SILICAPROXY_GITOPS_CLONE_TOKEN for a private repository.
+    clone-token: "${SILICAPROXY_GITOPS_CLONE_TOKEN:}"
+    # Periodic execution interval of the synchronization task (in minutes)
+    sync-interval-minutes: 10
+
+  # 7. Enterprise outgoing Proxy configuration (Proxy Chaining)
+  corporate-proxy:
+    # Activation of relay to corporate proxy for outgoing requests
+    enabled: false
+    # Corporate proxy host/IP address
+    host: ""
+    # Corporate proxy listening port
+    port: 8080
+    # List of hosts to exclude from proxy (separated by pipe '|')
+    non-proxy-hosts: "localhost|127.0.0.1"
+    # Enable or disable relay via corporate proxy independently by traffic category
+    # outgoing (no effect if `enabled` above is false)
+    scope:
+      # Public package registries (npm, PyPI, Maven Central)
+      registries: true
+      # External security fallback APIs (OSV, deps.dev)
+      security-apis: true
+      # External Git repositories of vulnerability databases (GHSA, OpenSSF, GitLab Advisory Database)
+      external-git-repositories: true
+      # Internal Git repository for GitOps rules (Gitea or equivalent): intra-network traffic,
+      # typically does not transit through the outgoing proxy to Internet
+      internal-git-repository: false
+
+  # 8. MITM CA certificate persistence between restarts
+  ssl-mitm:
+    # PKCS12 keystore path to persist private key and CA certificate between restarts.
+    # Mount a persistent volume on this path: SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/certs/ca.p12
+    ca-keystore-path: "./certs/ca.p12"
+    # Keystore password (leave empty = no additional protection)
+    ca-keystore-password: ""
+    # Public CA certificate export path (PEM). If empty, exported in the keystore directory.
+    # Allows placing it on a shared volume with the artifact repository.
+    # Example: SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH=/shared-certs/silicaproxy-ca.crt
+    ca-cert-export-path: "/tmp/silicaproxy-ca.crt"
+
+  # 9. Application security (anti-SSRF protection on outgoing HTTP calls)
+  security:
+    ssrf-protection:
+      # Blocks outgoing calls to loopback, link-local and private IPs (RFC 1918)
+      enabled: true
+
+  # 9. Timeouts for outgoing HTTP clients (registries, external security APIs)
+  http-client:
+    connect-timeout-seconds: 5
+    # More generous for registries: potentially large binary downloads
+    registries-read-timeout-seconds: 60
+    # Stricter for security APIs: short JSON responses, expected almost instant
+    security-apis-read-timeout-seconds: 10
+
+  # Audit of calls to external security APIs (OSV Live, deps.dev) in api_call_log.
+  # WARNING: can generate significant write volume (one line per unknown package
+  # per proxy request). Disabled by default - enable only in debug environment
+  # or with PostgreSQL sized to handle this flow.
+  api-call-log:
+    enabled: false
+    flush-interval-seconds: 30
+    buffer-capacity: 5000
+
+  # 7. Default URLs for public registries for metadata resolution
+  registries:
+    # Base URL of public npm registry
+    npm-url: "https://registry.npmjs.org"
+    # Base URL of public PyPI registry
+    pypi-url: "https://pypi.org"
+    # Base URL of public Maven Central registry
+    maven-url: "https://repo1.maven.org"
+
+# Tomcat server and Access Logs configuration
+server:
+  port: 8089
+  tomcat:
+    basedir: .
+    accesslog:
+      enabled: true
+      directory: "logs"
+      prefix: "access_log"
+      suffix: ".log"
