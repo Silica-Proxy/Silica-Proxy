@@ -226,7 +226,7 @@ Place an `application.yaml` next to the JAR (Spring Boot picks it up automatical
 
 ```bash
 java \
-  -XX:+UseZGC -XX:+ZGenerational \
+  -XX:+UseZGC \
   -XX:MaxRAMPercentage=75.0 \
   -jar silicaproxy.jar \
   --spring.config.location=file:./application.yaml
@@ -440,7 +440,7 @@ The system computes a minimum CVSS floor from the severity level (e.g., `CRITICA
 ## Recommended JVM flags (production)
 
 ```
--XX:+UseZGC -XX:+ZGenerational
+-XX:+UseZGC
 -XX:MaxRAMPercentage=75.0
 -XX:+UseCompactObjectHeaders
 -XX:+UseStringDeduplication
