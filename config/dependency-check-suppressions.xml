@@ -9,4 +9,10 @@
         </suppress>
     -->
 
+    <suppress>
+        <notes>plexus-utils is a transitive dependency of SpotBugs (doxia reporting) and is not present in the application runtime. The CVE does not affect the deployed code.</notes>
+        <gav regex="true">org\.codehaus\.plexus:plexus-utils:.*</gav>
+        <cve>CVE-2025-67030</cve>
+    </suppress>
+
 </suppressions>
