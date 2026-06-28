@@ -228,6 +228,9 @@ Place an `application.yaml` next to the JAR (Spring Boot picks it up automatical
 java \
   -XX:+UseZGC \
   -XX:MaxRAMPercentage=75.0 \
+  -XX:+UseCompactObjectHeaders \
+  -XX:+UseStringDeduplication \
+  -Dsun.net.inetaddr.ttl=60 \
   -jar silicaproxy.jar \
   --spring.config.location=file:./application.yaml
 ```
