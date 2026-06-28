@@ -1,0 +1,42 @@
+rules:
+  # ===== Listes noires (BLOCK) =====
+  - package: "event-stream"
+    version: "3.3.6"
+    action: "block"
+    reason: "Compromis par un attaquant (incident flatmap-stream, nov 2018)"
+
+  - package: "ua-parser-js"
+    version: "0.7.29"
+    action: "block"
+    reason: "Version compromise contenant un cryptominer et un trojan"
+
+  - package: "colors"
+    version: "1.4.1"
+    action: "block"
+    reason: "Sabotage volontaire par le mainteneur (boucle infinie)"
+
+  - package: "faker"
+    version: "6.6.6"
+    action: "block"
+    reason: "Sabotage volontaire par le mainteneur (code malveillant)"
+
+  - package: "node-ipc"
+    version: "10.1.*"
+    action: "block"
+    reason: "Protestation du mainteneur - code destructeur ciblé (peacenotwar)"
+
+  # ===== Listes blanches (ALLOW) =====
+  - package: "lodash"
+    version: "*"
+    action: "allow"
+    reason: "Bibliothèque utilitaire approuvée par l'équipe architecture"
+
+  - package: "express"
+    version: "4.*"
+    action: "allow"
+    reason: "Framework web standard de l'entreprise"
+
+  - package: "axios"
+    version: "*"
+    action: "allow"
+    reason: "Client HTTP approuvé"
