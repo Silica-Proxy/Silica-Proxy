@@ -194,7 +194,8 @@ A BLOCKED verdict written to `external_validation_verdicts` is **permanent**: it
 
 When multiple services are configured:
 
-1. All **SYNC** services run in parallel — the proxy waits for every sync response.
+0. **Short-circuit**: if *any* service with `blocking: true` already has a permanent verdict for this exact package/version (from a previous sync call or async callback), the proxy returns `BLOCK` immediately and skips every network call — to its own service and to every other configured service. This is what makes the permanent block in step 4 actually permanent in practice: once one blocking scanner has spoken, the others are never asked again for that package/version.
+1. Otherwise, all **SYNC** services run in parallel — the proxy waits for every sync response.
 2. If any sync service produces an effective BLOCK → the package is blocked. ASYNC services are **not triggered**, unless `trigger-async-on-sync-block: true` (in which case they run fire-and-forget to populate the DB for future requests).
 3. If all sync services ALLOW → all **ASYNC** services are triggered in parallel (fire-and-forget).
 4. Final verdict: **the most restrictive wins** — one BLOCK from any service is enough.
@@ -411,8 +412,8 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.external-validation.services.<name>.timeout-seconds` | — | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
 | | `silicaproxy.external-validation.services.<name>.fail-open` | — | `true` | `true` = allow on error/timeout/pending; `false` = block |
 | | `silicaproxy.external-validation.services.<name>.blocking` | — | `true` | `false` = verdict stored for audit but never blocks a package |
-| | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | — | — | How long to cache an ALLOW verdict |
-| | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | — | — | Async only — how long to keep a PENDING entry before marking it TIMEOUT |
+| | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | — | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
+| | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | — | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
 | | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for calls to external validation services |
 | | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION` | `false` | Route external validation traffic through the corporate proxy |
 | **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED` | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
@@ -431,6 +432,8 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **SSRF protection** | `silicaproxy.security.ssrf-protection.enabled` | `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED` | `true` | Block outbound calls to loopback/private IPs |
 
 > **Warning — API call log performance impact:** enabling `silicaproxy.api-call-log.enabled` generates one database row per package that reaches the live API fallback (OSV Live / deps.dev). In a busy CI/CD environment where many unknown packages are requested simultaneously, this can produce hundreds of writes per minute. Calls are buffered in memory and flushed in batches (configurable via `flush-interval-seconds`), so the write never blocks the security decision path. However, the underlying PostgreSQL table (`api_call_log`) will grow at the rate of live API calls, and partition maintenance (creating monthly partitions) must be planned. Only enable in production if you have a monitoring setup to track table growth.
+
+> **Warning — `cache-ttl-minutes` has no implicit default:** if left unset for an external validation service, it binds to `0`, which means every cached ALLOW verdict is treated as already expired — the sync service is re-called (or, for an async ALLOWED callback, the next request re-triggers async validation) on **every single request** instead of being cached. Always set it explicitly for any service you configure. The startup log (see [Observability](#observability)) prints the effective value of every service, so a missing TTL is immediately visible.
 
 ---
 
@@ -552,6 +555,8 @@ The `step` field indicates which pipeline stage made the blocking decision:
 - **Prometheus metrics** at `/actuator/prometheus` (SQL latency, package verdict counters, HikariCP pool stats).
 - **Structured JSON logs** for every `403` event.
 - **Webhook alerts** (Slack / Teams) for critical detections (manual blacklist or known malware).
+- **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
+- **External validation callback log** (`INFO`): every async callback received at `POST /external-validation/callback/{token}` logs the originating service, package, and verdict before it's applied.
 - **Sync progress** visible in `/api/vulnerabilities/sync/status` with per-job `progressPercent`.
 
 ---
