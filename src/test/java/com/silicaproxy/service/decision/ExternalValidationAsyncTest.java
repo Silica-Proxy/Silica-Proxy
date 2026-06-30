@@ -21,6 +21,8 @@ import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +30,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -44,6 +47,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -126,7 +130,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
     // Test 23 — async_firstRequest_storesPendingAndAllows (fail-open)
     @Test
     void async_firstRequest_storesPendingInDbAndAllowsFailOpen() throws InterruptedException {
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -136,7 +140,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
 
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
         assertThat(entry.get().mode()).isEqualTo("ASYNC");
@@ -198,7 +202,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
                 .body("{\"verdict\":\"ALLOWED\",\"reason\":\"No threats found\"}")
                 .retrieve().toBodilessEntity();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -214,7 +218,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withStatus(500)));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -223,7 +227,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         Thread.sleep(500); // Wait for async task to complete and update DB
 
         // Failed POST → no orphan PENDING; entry is TIMEOUT (not left as PENDING)
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("TIMEOUT");
     }
@@ -238,7 +242,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
                 VALUES ('test-scanner', 'lodash', 'npm', '4.17.21', 'ASYNC', 'TIMEOUT', ?)
                 """).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -250,7 +254,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         // New async call was made
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
         // Cache is now PENDING again
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry.get().status()).isEqualTo("PENDING");
     }
 
@@ -319,7 +323,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
                 .isEmpty();
 
         // Stored permanently in verdicts
-        var verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Permanent block");
     }

@@ -21,12 +21,15 @@ import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -41,6 +44,9 @@ import java.net.Proxy;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -119,7 +125,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"No issues found\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -152,7 +158,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -167,7 +173,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                 .willReturn(aResponse()
                         .withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -184,7 +190,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"UNKNOWN\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -192,7 +198,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         // Recorded as TIMEOUT, not cached as a real ALLOWED verdict
-        var cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(cached).isPresent();
         assertThat(cached.get().status()).isEqualTo("TIMEOUT");
     }
@@ -203,7 +209,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withStatus(500)));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -261,7 +267,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                     .retrieve().toBodilessEntity();
         } catch (HttpClientErrorException ignored) {}
 
-        var verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Malware found");
     }
@@ -276,7 +282,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toBodilessEntity();
 
-        var cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(cached).isPresent();
         assertThat(cached.get().status()).isEqualTo("ALLOWED");
         assertThat(cached.get().mode()).isEqualTo("SYNC");
@@ -317,7 +323,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
         Thread.sleep(300);  // Allow async audit flush
 
-        var auditRows = jdbcClient.sql("""
+        List<Map<String, Object>> auditRows = jdbcClient.sql("""
                 SELECT decision_source, verdict FROM proxy_audit_logs
                 WHERE package_name = 'lodash' ORDER BY timestamp DESC LIMIT 1
                 """).query().listOfRows();

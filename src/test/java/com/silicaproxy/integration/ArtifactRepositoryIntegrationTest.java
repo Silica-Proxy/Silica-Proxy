@@ -34,6 +34,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -111,7 +112,8 @@ class ArtifactRepositoryIntegrationTest extends BaseIntegrationTest {
 
     private void configureArtifactRepository(String repositoryUrl, int proxyPort) throws Exception {
         String configTemplate;
-        try (var is = ArtifactRepositoryIntegrationTest.class.getClassLoader().getResourceAsStream("fixtures/artifactory.config.xml")) {
+        try (InputStream is = ArtifactRepositoryIntegrationTest.class.getClassLoader()
+                .getResourceAsStream("fixtures/artifactory.config.xml")) {
             if (is == null) {
                 throw new IllegalStateException("Missing fixtures/artifactory.config.xml in classpath");
             }

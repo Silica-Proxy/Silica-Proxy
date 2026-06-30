@@ -19,6 +19,7 @@ package com.silicaproxy.service.policy;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
@@ -71,7 +72,7 @@ class GiteaContainerSetup {
             // The gitea/gitea image runs PID 1 as root (USER root in the Dockerfile) and drops
             // to the 'git' user via su-exec in the entrypoint. We must do the same here because
             // the gitea binary refuses to run as root.
-            var result = GITEA.execInContainer(
+            Container.ExecResult result = GITEA.execInContainer(
                     "/sbin/su-exec", "git",
                     "gitea", "admin", "user", "create",
                     "--username", ADMIN_USER,

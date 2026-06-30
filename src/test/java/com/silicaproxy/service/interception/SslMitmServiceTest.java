@@ -25,6 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.Map;
+import javax.net.ssl.SSLContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -72,7 +73,7 @@ class SslMitmServiceTest {
     @Test
     void shouldGenerateAndSaveKeystoreWhenPathNotExists() throws Exception {
         Path keystorePath = tempDir.resolve("ca.p12");
-        var service = new SslMitmService(makeProperties(keystorePath.toString(), null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), new MitmCertificateFactory());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -82,7 +83,7 @@ class SslMitmServiceTest {
     @Test
     void shouldGenerateAndSaveKeystoreWithPassword() throws Exception {
         Path keystorePath = tempDir.resolve("ca-pwd.p12");
-        var service = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -94,11 +95,11 @@ class SslMitmServiceTest {
         Path keystorePath = tempDir.resolve("ca.p12");
         MitmCertificateFactory factory = new MitmCertificateFactory();
 
-        var service1 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
+        SslMitmService service1 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
         service1.init();
         String pemFirst = service1.getCaCertPem();
 
-        var service2 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
+        SslMitmService service2 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
         service2.init();
 
         assertThat(service2.getCaCertPem()).isEqualTo(pemFirst);
@@ -106,11 +107,11 @@ class SslMitmServiceTest {
 
     @Test
     void shouldCacheSSLContextPerHost() throws Exception {
-        var service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
         service.init();
 
-        var ctx1 = service.getContextForHost("example.com");
-        var ctx2 = service.getContextForHost("example.com");
+        SSLContext ctx1 = service.getContextForHost("example.com");
+        SSLContext ctx2 = service.getContextForHost("example.com");
 
         assertThat(ctx1).isSameAs(ctx2);
     }
@@ -123,7 +124,7 @@ class SslMitmServiceTest {
             .when(factory)
             .generateKeyPair();
 
-        var service = new SslMitmService(makeProperties(null, null), factory);
+        SslMitmService service = new SslMitmService(makeProperties(null, null), factory);
         service.init();
 
         assertThatThrownBy(() -> service.getContextForHost("fail.com"))

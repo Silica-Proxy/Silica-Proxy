@@ -20,18 +20,22 @@ package com.silicaproxy.controller;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,7 +71,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "test-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
-        var response = restClient.post()
+        ResponseEntity<Void> response = restClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"verdict\":\"ALLOWED\",\"reason\":\"No threats found\"}")
@@ -76,7 +80,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("ALLOWED");
         assertThat(entry.get().reason()).isEqualTo("No threats found");
@@ -90,7 +94,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "test-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
-        var response = restClient.post()
+        ResponseEntity<Void> response = restClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"verdict\":\"BLOCKED\",\"reason\":\"Malicious dependency chain\"}")
@@ -104,7 +108,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
                 .isEmpty();
 
         // Permanent verdict stored
-        var verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Malicious dependency chain");
     }
@@ -214,7 +218,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "test-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
-        var response = restClient.post()
+        ResponseEntity<Void> response = restClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"verdict\":\"ALLOWED\"}")
@@ -222,7 +226,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
                 .toBodilessEntity();
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry.get().status()).isEqualTo("ALLOWED");
     }
 }

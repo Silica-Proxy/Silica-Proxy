@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -125,7 +126,7 @@ class ExternalValidationDefaultsTest extends BaseIntegrationTest {
                 .willReturn(aResponse()
                         .withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);

@@ -1,16 +1,16 @@
 <?xml version="1.0"?>
-<ruleset name="ArtifactSentry — Complexité et qualité"
+<ruleset name="ArtifactSentry — Complexity and quality"
          xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0
                              https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
 
     <description>
-        Règles focalisées sur la complexité cyclomatique, la longueur des méthodes/classes
-        et les défauts de conception — sans les règles de style (checkstyle les gère mieux).
+        Rules focused on cyclomatic complexity, method/class length, and design
+        flaws — style rules are left out (checkstyle handles those better).
     </description>
 
-    <!-- Complexité cyclomatique : méthode trop complexe à tester et maintenir -->
+    <!-- Cyclomatic complexity: method too complex to test and maintain -->
     <rule ref="category/java/design.xml/CyclomaticComplexity">
         <properties>
             <property name="classReportLevel" value="80"/>
@@ -18,14 +18,14 @@
         </properties>
     </rule>
 
-    <!-- Nombre de chemins d'exécution (NPath) : indicateur de difficulté de test -->
+    <!-- Number of execution paths (NPath): indicator of testing difficulty -->
     <rule ref="category/java/design.xml/NPathComplexity">
         <properties>
             <property name="reportLevel" value="200"/>
         </properties>
     </rule>
 
-    <!-- Méthodes et classes trop longues (remplace ExcessiveMethodLength/ExcessiveClassLength, supprimés en PMD 7) -->
+    <!-- Methods and classes too long (replaces ExcessiveMethodLength/ExcessiveClassLength, removed in PMD 7) -->
     <rule ref="category/java/design.xml/NcssCount">
         <properties>
             <property name="methodReportLevel" value="60"/>
@@ -33,40 +33,40 @@
         </properties>
     </rule>
 
-    <!-- Trop de méthodes dans une classe -->
+    <!-- Too many methods in a class -->
     <rule ref="category/java/design.xml/TooManyMethods">
         <properties>
             <property name="maxmethods" value="20"/>
         </properties>
     </rule>
 
-    <!-- Trop de paramètres dans une méthode -->
+    <!-- Too many parameters in a method -->
     <rule ref="category/java/design.xml/ExcessiveParameterList">
         <properties>
             <property name="minimum" value="8"/>
         </properties>
     </rule>
 
-    <!-- Couplage excessif (trop de classes utilisées par une classe) -->
+    <!-- Excessive coupling (too many classes used by a class) -->
     <rule ref="category/java/design.xml/ExcessiveImports">
         <properties>
             <property name="minimum" value="30"/>
         </properties>
     </rule>
 
-    <!-- Blocs catch vides -->
+    <!-- Empty catch blocks -->
     <rule ref="category/java/errorprone.xml/EmptyCatchBlock">
         <properties>
             <property name="allowCommentedBlocks" value="true"/>
         </properties>
     </rule>
 
-    <!-- new String("...") inutile : les String sont immuables -->
+    <!-- Unnecessary new String("..."): Strings are immutable -->
     <rule ref="category/java/performance.xml/StringInstantiation"/>
-    <!-- Comparaisons de chaînes avec == au lieu de .equals() -->
+    <!-- String comparisons with == instead of .equals() -->
     <rule ref="category/java/errorprone.xml/UseEqualsToCompareStrings"/>
 
-    <!-- Code mort -->
+    <!-- Dead code -->
     <rule ref="category/java/bestpractices.xml/UnusedLocalVariable"/>
     <rule ref="category/java/bestpractices.xml/UnusedFormalParameter"/>
 
