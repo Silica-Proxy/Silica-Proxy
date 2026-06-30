@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,5 +124,27 @@ class ExternalValidationVerdictsDaoTest extends BaseIntegrationTest {
             WHERE table_name='external_validation_verdicts' AND column_name='expires_at'
             """).query(Long.class).single();
         assertThat(colCount).isEqualTo(0);
+    }
+
+    @Test
+    void findAllByPackage_noEntry_returnsEmptyList() {
+        List<ExternalValidationVerdictEntry> result =
+                dao.findAllByPackage("lodash", "npm", "4.17.21");
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void findAllByPackage_returnsEntriesAcrossAllServices() {
+        dao.save("scanner-a", "lodash", "npm", "4.17.21", "Blocked by A");
+        dao.save("scanner-b", "lodash", "npm", "4.17.21", "Blocked by B");
+        // Different package/version — must not be included
+        dao.save("scanner-a", "lodash", "npm", "4.17.20", "Blocked by A, older version");
+
+        List<ExternalValidationVerdictEntry> result =
+                dao.findAllByPackage("lodash", "npm", "4.17.21");
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(ExternalValidationVerdictEntry::serviceName)
+                .containsExactlyInAnyOrder("scanner-a", "scanner-b");
     }
 }

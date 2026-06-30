@@ -23,9 +23,11 @@ import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationServiceProperties;
 import io.micrometer.core.annotation.Timed;
+import jakarta.annotation.PostConstruct;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -42,6 +44,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 
 @Service
 @NullMarked
@@ -71,6 +74,20 @@ public class ExternalValidationService {
         this.asyncExecutor = asyncExecutor;
     }
 
+    @PostConstruct
+    void logConfiguredServices() {
+        Map<String, ExternalValidationServiceProperties> services = properties.externalValidation().services();
+        if (services.isEmpty()) {
+            LOG.info("External validation: no service configured.");
+            return;
+        }
+        services.forEach((name, props) -> LOG.info(
+                "External validation service '{}' loaded: enabled={}, mode={}, url={}, blocking={}, "
+                        + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}",
+                name, props.enabled(), props.mode(), props.url(), props.blocking(),
+                props.failOpen(), props.timeoutSeconds(), props.cacheTtlMinutes()));
+    }
+
     @Timed(value = "silicaproxy.service.extvalidation.check",
             description = "Duration of external validation check across all configured services",
             percentiles = {0.5, 0.9, 0.95, 0.99})
@@ -86,6 +103,15 @@ public class ExternalValidationService {
 
         if (enabled.isEmpty()) {
             return Optional.empty();
+        }
+
+        // Short-circuit: a permanent BLOCK verdict from any blocking service already
+        // seals the aggregate result (most restrictive wins), so skip every network
+        // call entirely instead of re-validating with the other configured services.
+        Optional<DecisionResult> permanentBlock =
+                checkPermanentBlock(enabled, packageName, version, ecosystem);
+        if (permanentBlock.isPresent()) {
+            return permanentBlock;
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> syncServices = enabled.stream()
@@ -145,6 +171,9 @@ public class ExternalValidationService {
             return false;
         }
 
+        LOG.info("External validation callback received from {} for {}/{}@{}: verdict={}, reason={}",
+                e.serviceName(), e.ecosystem(), e.packageName(), e.packageVersion(), verdict, reason);
+
         if (BLOCKED.equalsIgnoreCase(verdict)) {
             // Permanent verdict — remove from cache, write to verdicts table
             cacheDao.deleteByToken(callbackToken);
@@ -162,6 +191,27 @@ public class ExternalValidationService {
     }
 
     // --- Private helpers ---
+
+    private Optional<DecisionResult> checkPermanentBlock(
+            List<Map.Entry<String, ExternalValidationServiceProperties>> enabledServices,
+            String packageName, String version, String ecosystem) {
+        List<ExternalValidationVerdictEntry> verdicts =
+                verdictsDao.findAllByPackage(packageName, ecosystem, version);
+        if (verdicts.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, ExternalValidationServiceProperties> enabledByName = enabledServices.stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        for (ExternalValidationVerdictEntry verdict : verdicts) {
+            ExternalValidationServiceProperties props = enabledByName.get(verdict.serviceName());
+            if (props != null && props.blocking()) {
+                String reason = verdict.reason() != null
+                        ? verdict.reason() : "Package blocked by external validation service.";
+                return Optional.of(new DecisionResult("EXTERNAL_VALIDATION", "BLOCK", reason));
+            }
+        }
+        return Optional.empty();
+    }
 
     private List<ServiceOutcome> runSyncServicesInParallel(
             List<Map.Entry<String, ExternalValidationServiceProperties>> services,

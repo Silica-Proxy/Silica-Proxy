@@ -229,6 +229,62 @@ class ExternalValidationMultiServiceTest extends BaseIntegrationTest {
         } catch (HttpClientErrorException e) {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
         }
+
+        // The permanent verdict from scanner-a short-circuits the whole check —
+        // scanner-b is never even queried, despite being PENDING/fail-open.
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-a")));
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-b")));
+    }
+
+    // A permanent BLOCK from one service must short-circuit the whole check, skipping
+    // network calls to every other configured service entirely — not just when the
+    // other service happens to be PENDING/cached, but even from a completely cold state.
+    @Test
+    void multiService_permanentBlockOnOneService_otherServiceNeverCalled() {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_verdicts
+                    (service_name, package_name, ecosystem, package_version, reason)
+                VALUES ('scanner-a', 'lodash', 'npm', '4.17.21', 'Scanner A permanently blocked it')
+                """).update();
+
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(e.getResponseBodyAsString()).contains("Scanner A permanently blocked it");
+        }
+
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-a")));
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-b")));
+    }
+
+    // Repeated requests after the permanent verdict was recorded must keep short-circuiting —
+    // this is the scenario reported in production : sync/async services kept being re-called
+    // on every single request even though one of them had already permanently blocked the package.
+    @Test
+    void multiService_permanentBlock_repeatedRequestsNeverCallServicesAgain() {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_verdicts
+                    (service_name, package_name, ecosystem, package_version, reason)
+                VALUES ('scanner-a', 'lodash', 'npm', '4.17.21', 'Scanner A permanently blocked it')
+                """).update();
+
+        for (int i = 0; i < 3; i++) {
+            try {
+                proxyRestClient.get()
+                        .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                        .retrieve().toBodilessEntity();
+                fail("Expected 403");
+            } catch (HttpClientErrorException e) {
+                assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            }
+        }
+
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-a")));
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-b")));
     }
 
     // Test 50 — noEnabledServices → chain continues to OSV (not tested here since OSV disabled)

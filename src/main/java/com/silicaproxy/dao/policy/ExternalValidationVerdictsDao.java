@@ -24,6 +24,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -55,6 +56,28 @@ public class ExternalValidationVerdictsDao {
                 .param("packageVersion", packageVersion)
                 .query(ExternalValidationVerdictEntry.class)
                 .optional();
+    }
+
+    // Used to short-circuit checkExternalServices() : once any service has a permanent
+    // verdict for a package, the other configured services don't need to be called —
+    // fetch all of them (across services) in a single query instead of one per service.
+    @Timed(value = "silicaproxy.dao.extvalidation.verdicts.findAllByPackage",
+            description = "Duration of external validation verdicts lookup across all services",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public List<ExternalValidationVerdictEntry> findAllByPackage(
+            String packageName, String ecosystem, String packageVersion) {
+        return jdbcClient.sql("""
+                SELECT id, service_name, package_name, ecosystem, package_version, reason, created_at
+                FROM external_validation_verdicts
+                WHERE package_name    = :packageName
+                  AND ecosystem       = :ecosystem
+                  AND package_version = :packageVersion
+                """)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("packageVersion", packageVersion)
+                .query(ExternalValidationVerdictEntry.class)
+                .list();
     }
 
     @Timed(value = "silicaproxy.dao.extvalidation.verdicts.save",

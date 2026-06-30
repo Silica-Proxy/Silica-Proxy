@@ -20,6 +20,7 @@ package com.silicaproxy.properties;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
@@ -200,6 +201,15 @@ public record SilicaProxyProperties(
                 services = Collections.unmodifiableMap(new HashMap<>(services));
             }
         }
+
+        // Explicit, never-null accessor: the compact constructor above always
+        // normalizes `services` to a non-null, already-unmodifiable map. Re-declaring it
+        // here (instead of relying on the implicit record accessor) drops the @Nullable
+        // inherited from the constructor parameter and re-wraps defensively, so callers
+        // don't need a null-check and can't mutate the backing map.
+        public Map<String, ExternalValidationServiceProperties> services() {
+            return Collections.unmodifiableMap(services);
+        }
     }
 
     public record ExternalValidationServiceProperties(
@@ -207,9 +217,9 @@ public record SilicaProxyProperties(
         @NotBlank String url,
         @Nullable String apiKey,
         @NotBlank String mode,
-        int timeoutSeconds,
-        boolean failOpen,
-        boolean blocking,
+        @DefaultValue("1") int timeoutSeconds,
+        @DefaultValue("true") boolean failOpen,
+        @DefaultValue("true") boolean blocking,
         int cacheTtlMinutes,
         int pendingTtlMinutes
     ) {}

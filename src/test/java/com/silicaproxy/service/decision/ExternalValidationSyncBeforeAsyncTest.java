@@ -171,6 +171,31 @@ class ExternalValidationSyncBeforeAsyncTest extends BaseIntegrationTest {
 
     // Test 73 — syncAllAllowed_asyncTriggered (already covered by syncAllowed_asyncServiceIsTriggered)
 
+    // Mirrors a production scenario : the async service (scanner-async) already recorded a
+    // permanent BLOCKED verdict from a prior callback. A later request must short-circuit
+    // and skip the sync service entirely — not re-call scanner-sync on every request.
+    @Test
+    void asyncAlreadyPermanentlyBlocked_syncServiceNeverCalled() {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_verdicts
+                    (service_name, package_name, ecosystem, package_version, reason)
+                VALUES ('scanner-async', 'lodash', 'npm', '4.17.21', 'Blocked by async callback')
+                """).update();
+
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(e.getResponseBodyAsString()).contains("Blocked by async callback");
+        }
+
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-sync")));
+        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-async")));
+    }
+
     // Verify: when sync ALLOWS, async is called with correct package payload
     @Test
     void syncAllowed_asyncPostContainsPackageAndCallbackUrl() throws InterruptedException {
