@@ -43,4 +43,17 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean(name = "externalValidationExecutor")
+    public Executor externalValidationExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(5);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(1000);
+        executor.setThreadNamePrefix("SilicaProxy-ExtVal-");
+        executor.setThreadFactory(Thread.ofVirtual().name("SilicaProxy-ExtVal-", 0).factory());
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        return executor;
+    }
 }

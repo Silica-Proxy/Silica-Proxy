@@ -151,6 +151,8 @@ silicaproxy:
       # Internal Git repository for GitOps rules (Gitea or equivalent): intra-network traffic,
       # typically does not transit through the outgoing proxy to Internet
       internal-git-repository: false
+      # External validation services (custom deep-scanners)
+      external-validation: false
 
   # 8. MITM CA certificate persistence between restarts
   ssl-mitm:
@@ -170,6 +172,16 @@ silicaproxy:
       # Blocks outgoing calls to loopback, link-local and private IPs (RFC 1918)
       enabled: true
 
+  # External validation services — configurable HTTP calls to custom deep-scanners.
+  # Inserted in the decision chain before OSV. Services run SYNC first (all in parallel),
+  # then ASYNC (fire-and-forget). An empty map disables the feature entirely.
+  external-validation:
+    # Base URL of this proxy (used to build callback URLs for async services)
+    callback-base-url: "${SILICAPROXY_CALLBACK_BASE_URL:}"
+    # If true, async services are triggered even when a sync service already returned BLOCKED
+    trigger-async-on-sync-block: false
+    # services: not configured by default — feature is disabled until services are added
+
   # 9. Timeouts for outgoing HTTP clients (registries, external security APIs)
   http-client:
     connect-timeout-seconds: 5
@@ -177,6 +189,8 @@ silicaproxy:
     registries-read-timeout-seconds: 60
     # Stricter for security APIs: short JSON responses, expected almost instant
     security-apis-read-timeout-seconds: 10
+    # Strict 1-second timeout for external validation services (sync mode)
+    external-validation-read-timeout-seconds: 1
 
   # Audit of calls to external security APIs (OSV Live, deps.dev) in api_call_log.
   # WARNING: can generate significant write volume (one line per unknown package

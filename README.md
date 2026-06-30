@@ -16,6 +16,7 @@ It sits between your artifact repository and the public registries (npm, PyPI, M
 | Typosquatting / supply-chain attacks    | Quarantines packages published less than N days ago |
 | Deprecated / yanked packages            | Blocks packages flagged as deprecated (npm) or yanked (PyPI) |
 | Custom internal rules                   | Company-level allow/block list synchronized from a Git repository (GitOps) |
+| Custom deep scanning                    | Integrates any external validation service (sync or async) — SBOM scanners, licence checkers, proprietary scanners |
 
 ---
 
@@ -51,6 +52,7 @@ Artifact Repository
          │ Registry metadata     │  publication date, deprecated/yanked flag
          │ Quarantine check      │  age < threshold → BLOCK
          │ Deprecation check     │  deprecated/yanked → BLOCK (cached forever)
+         │ External validation   │  configurable sync/async services (SBOM, licence, …)
          │ Live API fallback     │  OSV → deps.dev
          └───────────────────────┘
                      │
@@ -63,22 +65,22 @@ Artifact Repository
 The codebase is organized around the detection phases a request goes through:
 
 ```
-fr.silicaproxy
+com.silicaproxy
 ├── controller/           REST endpoints (proxy, GitOps, policies, monitoring, search)
 ├── service/
 │   ├── interception/     TCP entry point, SSL MITM, URL/ecosystem parsing
 │   ├── policy/           Company policy evaluation, GitOps sync
 │   ├── vulnerability/    CVE ingestion, OSV incremental sync, scheduler
-│   ├── decision/         SecurityService orchestrator, api_cache cleanup
+│   ├── decision/         SecurityService orchestrator, api_cache cleanup, external validation
 │   ├── audit/            Async audit log
 │   ├── monitoring/       Health checks, data inventory
 │   └── search/           Package search
 ├── dao/
-│   ├── policy/           SQL — company_policies, decision cache, metadata cache
+│   ├── policy/           SQL — company_policies, decision cache, metadata cache, external validation
 │   ├── vulnerability/    SQL — public_vulnerabilities
 │   ├── sync/             SQL — sync_status, sync_run_history, shedlock, health
 │   ├── audit/            SQL — proxy_audit_logs, api_call_log
-│   └── client/           HTTP — OSV, deps.dev, registry, Git, proxy stream
+│   └── client/           HTTP — OSV, deps.dev, registry, Git, proxy stream, external validation
 ├── config/               Spring configuration (async, HTTP client, SSRF, scheduler)
 ├── model/
 │   ├── dto/              Data transfer objects
@@ -147,7 +149,92 @@ When a package version is not in any local database, SilicaProxy queries the reg
 
 The publication date is **stored permanently** in the `package_metadata` table — it never changes, so no subsequent network call is needed for a version already seen. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
 
-### 4. Live security API fallback — on-demand, configurable cache (Priority 3)
+### 4. External Validation Services — on-demand, sync or async
+
+SilicaProxy can call any number of external HTTP services to validate a package before reaching the live API fallback. This is designed for deep scanners that are too slow to block a build synchronously, or for proprietary tools with custom scoring.
+
+#### Sync mode
+
+The proxy makes a POST call to the service and waits up to 1 second for a response. If the service replies in time, the verdict is applied immediately. On timeout or network error, the configurable `fail-open` / `fail-closed` policy applies.
+
+```
+POST {url}
+Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm" }
+
+Response: { "verdict": "BLOCKED", "reason": "Malicious dependency detected." }
+```
+
+#### Async mode
+
+The proxy fires a POST and returns immediately (applying `fail-open` / `fail-closed`). The service processes the package in the background and calls back the proxy when it has a verdict.
+
+```
+POST {url}
+Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
+        "callbackUrl": "https://proxy.yourcompany.com/external-validation/callback/{token}" }
+
+→ Callback (later): POST /external-validation/callback/{token}
+  Body: { "verdict": "ALLOWED", "reason": "Clean." }
+```
+
+The callback token is a UUID generated per request. The endpoint returns `404` if the token is unknown or has already been resolved.
+
+#### Persistence
+
+| Verdict | Destination | Expiry |
+|---|---|---|
+| BLOCKED (blocking=true) | `external_validation_verdicts` | **Permanent** — no TTL, manual removal only |
+| ALLOWED | `external_validation_cache` | Configurable TTL (`cache-ttl-minutes`) |
+| PENDING (async, waiting) | `external_validation_cache` | Configurable TTL (`pending-ttl-minutes`), then → TIMEOUT |
+| BLOCKED (blocking=false) | `external_validation_verdicts` | **Permanent** — stored for observability, but never enforced as long as `blocking=false` |
+
+A BLOCKED verdict written to `external_validation_verdicts` is **permanent**: it is never cleaned up automatically and is applied on every subsequent request for that package, regardless of any other check.
+
+#### Multi-service execution order
+
+When multiple services are configured:
+
+1. All **SYNC** services run in parallel — the proxy waits for every sync response.
+2. If any sync service produces an effective BLOCK → the package is blocked. ASYNC services are **not triggered**, unless `trigger-async-on-sync-block: true` (in which case they run fire-and-forget to populate the DB for future requests).
+3. If all sync services ALLOW → all **ASYNC** services are triggered in parallel (fire-and-forget).
+4. Final verdict: **the most restrictive wins** — one BLOCK from any service is enough.
+
+#### `blocking` flag
+
+Each service can be configured with `blocking: false` to make it **informational only**: the verdict is still stored in the DB and appears in audit logs, but never blocks a package. Useful for trialling a new scanner in shadow mode before enforcing it.
+
+#### Configuration example
+
+```yaml
+silicaproxy:
+  external-validation:
+    callback-base-url: "https://proxy.yourcompany.com"   # required for async mode
+    trigger-async-on-sync-block: false                   # trigger async even when sync blocks
+    services:
+      snyk:
+        enabled: true
+        url: "https://scanner.yourcompany.com/v1/check"
+        api-key: "${EXTERNAL_SCANNER_API_KEY}"
+        mode: sync
+        timeout-seconds: 1
+        fail-open: true
+        blocking: true
+        cache-ttl-minutes: 1440
+
+      deep-scanner:
+        enabled: true
+        url: "https://deep-scanner.yourcompany.com/analyze"
+        api-key: "${DEEP_SCANNER_API_KEY}"
+        mode: async
+        fail-open: true
+        blocking: true
+        cache-ttl-minutes: 10080
+        pending-ttl-minutes: 60
+```
+
+---
+
+### 5. Live security API fallback — on-demand, configurable cache (Priority 3)
 
 If a package passes the quarantine and deprecation checks but has no result in the local vulnerability tables, SilicaProxy queries external security APIs in order. The **first conclusive answer wins**; subsequent sources are skipped.
 
@@ -278,7 +365,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **Quarantine** | `silicaproxy.quarantine.enabled` | `SILICAPROXY_QUARANTINE_ENABLED` | `true` | Enable age-based quarantine globally |
 | | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN` | `true` | Allow on registry error |
 | | `silicaproxy.quarantine.default-min-age-days` | `SILICAPROXY_QUARANTINE_DEFAULT_MIN_AGE_DAYS` | `7` | Fallback threshold if not set per ecosystem |
-| | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED` | `false` | |
+| | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED` | `true` | |
 | | `silicaproxy.quarantine.ecosystems.npm.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_MIN_AGE_DAYS` | `7` | |
 | | `silicaproxy.quarantine.ecosystems.pypi.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_ENABLED` | `true` | |
 | | `silicaproxy.quarantine.ecosystems.pypi.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_MIN_AGE_DAYS` | `10` | |
@@ -288,7 +375,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.deprecation.ecosystems.npm` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_NPM` | `true` | |
 | | `silicaproxy.deprecation.ecosystems.pypi` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_PYPI` | `true` | |
 | **CVSS threshold** | `silicaproxy.severity-threshold.enabled` | `SILICAPROXY_SEVERITY_THRESHOLD_ENABLED` | `true` | |
-| | `silicaproxy.severity-threshold.default-max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_SEVERITY` | `MEDIUM` | Severity level above which a package is blocked |
+| | `silicaproxy.severity-threshold.default-max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_SEVERITY` | `CRITICAL` | Severity level above which a package is blocked |
 | | `silicaproxy.severity-threshold.default-max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_CVSS` | `7.0` | Score above which a package is blocked |
 | | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_SEVERITY` | `HIGH` | |
 | | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_CVSS` | `9.0` | |
@@ -304,7 +391,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.gitops.directory-path` | `SILICAPROXY_GITOPS_DIRECTORY_PATH` | `policies/` | Subfolder inside the repo |
 | | `silicaproxy.gitops.clone-token` | `SILICAPROXY_GITOPS_CLONE_TOKEN` | _(empty)_ | OAuth token or PAT for private repos |
 | | `silicaproxy.gitops.sync-interval-minutes` | `SILICAPROXY_GITOPS_SYNC_INTERVAL_MINUTES` | `10` | |
-| **SSL MITM** | `silicaproxy.ssl-mitm.ca-keystore-path` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH` | _(empty)_ | PKCS12 path — empty = ephemeral CA |
+| **SSL MITM** | `silicaproxy.ssl-mitm.ca-keystore-path` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH` | `./certs/ca.p12` | PKCS12 path — empty = ephemeral CA |
 | | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD` | _(empty)_ | Keystore password for encryption |
 | | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH` | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED` | `false` | Route outbound traffic through a corporate proxy |
@@ -315,6 +402,19 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.corporate-proxy.scope.security-apis` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_SECURITY_APIS` | `true` | Route security API traffic through proxy |
 | | `silicaproxy.corporate-proxy.scope.external-git-repositories` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_GIT_REPOSITORIES` | `true` | Route vulnerability DB git clones through proxy |
 | | `silicaproxy.corporate-proxy.scope.internal-git-repository` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_INTERNAL_GIT_REPOSITORY` | `false` | Route GitOps repo through proxy |
+| **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL` | _(empty)_ | Base URL of this proxy instance — required if any service uses `mode: async` |
+| | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK` | `false` | If true, async services are triggered even when a sync service already blocks |
+| | `silicaproxy.external-validation.services.<name>.enabled` | — | `false` | Enable this external validation service |
+| | `silicaproxy.external-validation.services.<name>.url` | — | — | HTTP endpoint to POST validation requests to |
+| | `silicaproxy.external-validation.services.<name>.api-key` | — | _(empty)_ | Sent as `Authorization` header if set |
+| | `silicaproxy.external-validation.services.<name>.mode` | — | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
+| | `silicaproxy.external-validation.services.<name>.timeout-seconds` | — | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
+| | `silicaproxy.external-validation.services.<name>.fail-open` | — | `true` | `true` = allow on error/timeout/pending; `false` = block |
+| | `silicaproxy.external-validation.services.<name>.blocking` | — | `true` | `false` = verdict stored for audit but never blocks a package |
+| | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | — | — | How long to cache an ALLOW verdict |
+| | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | — | — | Async only — how long to keep a PENDING entry before marking it TIMEOUT |
+| | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for calls to external validation services |
+| | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION` | `false` | Route external validation traffic through the corporate proxy |
 | **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED` | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
 | | `silicaproxy.api-call-log.flush-interval-seconds` | `SILICAPROXY_API_CALL_LOG_FLUSH_INTERVAL_SECONDS` | `30` | Batch flush interval (seconds) |
 | | `silicaproxy.api-call-log.buffer-capacity` | `SILICAPROXY_API_CALL_LOG_BUFFER_CAPACITY` | `5000` | In-memory buffer size before entries are dropped |
@@ -323,7 +423,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS` | `25` | Window fetched on first run (before any watermark) |
 | **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED` | `true` | Enable Google OSV Live API (free) |
 | | `silicaproxy.api-fallback.osv.url` | — | `https://api.osv.dev/v1/query` | OSV API endpoint |
-| | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED` | `false` | Enable Google deps.dev API (free) |
+| | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED` | `true` | Enable Google deps.dev API (free) |
 | | `silicaproxy.api-fallback.deps-dev.url` | — | `https://api.deps.dev/v3/` | deps.dev API endpoint |
 | **HTTP timeouts** | `silicaproxy.http-client.connect-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_CONNECT_TIMEOUT_SECONDS` | `5` | |
 | | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS` | `60` | For binary downloads |
@@ -383,7 +483,7 @@ This makes it possible to open a precise exception on a single version inside a 
 
 **Default behavior (if not configured):**
 - `severity-threshold.enabled: true` (globally active)
-- `default-max-allowed-severity: MEDIUM` → blocks HIGH and CRITICAL
+- `default-max-allowed-severity: CRITICAL` → allows all severity levels globally (CRITICAL is the highest — severity-based blocking is driven by ecosystem overrides)
 - `default-max-allowed-cvss: 7.0` → blocks CVSS > 7.0
 - Ecosystem overrides: npm allows up to HIGH/9.0, maven/pypi allow up to MEDIUM/7.0
 
@@ -413,6 +513,9 @@ The system computes a minimum CVSS floor from the severity level (e.g., `CRITICA
 | `POST /api/vulnerabilities/sync/force` | — | Trigger a manual vulnerability sync |
 | `POST /api/gitops/sync/force` | — | Trigger a manual GitOps policy sync |
 | `GET /api/packages/search?packageName=&ecosystem=&version=` | — | Diagnostic: look up a package in all local sources |
+| `GET /api/policies/evaluate?ecosystem=&packageName=&version=` | — | Evaluate which company policy rule applies to a given package |
+| `POST /api/policies/simulate` | — | Simulate a policy set against a package without persisting rules |
+| `POST /external-validation/callback/{token}` | — | Async validation callback — called by external services to deliver a verdict |
 | `GET /actuator/prometheus` | — | Prometheus metrics |
 
 **Blocked package response (RFC 7807):**
@@ -428,6 +531,19 @@ The system computes a minimum CVSS floor from the severity level (e.g., `CRITICA
   "step": "COMPANY_POLICY"
 }
 ```
+
+The `step` field indicates which pipeline stage made the blocking decision:
+
+| `step` value | Source |
+|---|---|
+| `COMPANY_POLICY` | GitOps YAML rule (blacklist) |
+| `PUBLIC_VULN` | Local vulnerability database (OSV, GHSA, …) |
+| `API_CACHE` | Cached result from a previous live API call |
+| `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
+| `REGISTRY_DEPRECATION` | Package deprecated or yanked from its registry |
+| `EXTERNAL_VALIDATION` | External validation service (sync or async) |
+| `OSV_LIVE` | Google OSV live API |
+| `DEPS_DEV` | Google deps.dev live API |
 
 ---
 
