@@ -54,8 +54,7 @@ dependencies {
 	// Git & YAML parsing for external advisories
 	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.7.0.202606012155-r'
 	implementation 'tools.jackson.dataformat:jackson-dataformat-yaml'
-	implementation 'com.fasterxml.jackson.core:jackson-databind'
-	
+
 	// Observabilité
 	implementation 'org.springframework.boot:spring-boot-starter-aspectj'
 	implementation 'io.micrometer:micrometer-registry-prometheus'
