@@ -51,6 +51,13 @@ public class OutboundHttpClientConfig {
         return buildRequestFactory(properties.corporateProxy().scope().securityApis(), readTimeout);
     }
 
+    @Bean
+    public ClientHttpRequestFactory externalValidationRequestFactory() {
+        Duration readTimeout = Duration.ofSeconds(
+                properties.httpClient().externalValidationReadTimeoutSeconds());
+        return buildRequestFactory(properties.corporateProxy().scope().externalValidation(), readTimeout);
+    }
+
     private ClientHttpRequestFactory buildRequestFactory(boolean scopeEnabled, Duration readTimeout) {
         HttpClient.Builder builder = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(properties.httpClient().connectTimeoutSeconds()));
