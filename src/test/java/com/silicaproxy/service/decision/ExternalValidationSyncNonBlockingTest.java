@@ -21,12 +21,14 @@ import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
+import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -37,6 +39,7 @@ import org.springframework.web.client.RestClient;
 import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
+import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -111,7 +114,7 @@ class ExternalValidationSyncNonBlockingTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"BLOCKED\",\"reason\":\"Informational only\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -130,7 +133,7 @@ class ExternalValidationSyncNonBlockingTest extends BaseIntegrationTest {
                 .retrieve().toBodilessEntity();
 
         // Verdict is stored in verdicts table for observability
-        var verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Informational block");
     }
@@ -147,7 +150,7 @@ class ExternalValidationSyncNonBlockingTest extends BaseIntegrationTest {
                 .retrieve().toBodilessEntity();
 
         // Second request — verdict already in DB, but blocking=false → still ALLOWED, no new service call
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
@@ -162,7 +165,7 @@ class ExternalValidationSyncNonBlockingTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);

@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -133,7 +134,7 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
                 VALUES ('lodash', 'npm', '*', 'WHITELIST', 'Approved', 'security')
                 """).update();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -172,7 +173,7 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
                         NOW() + INTERVAL '1 hour')
                 """).update();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -237,7 +238,7 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"Clean\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 

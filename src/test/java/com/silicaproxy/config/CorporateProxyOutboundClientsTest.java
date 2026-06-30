@@ -36,6 +36,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.Testcontainers;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -58,6 +59,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -250,7 +252,7 @@ class CorporateProxyOutboundClientsTest {
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
         wireMock.verify(1, getRequestedFor(urlEqualTo("/lodash")));
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
     }
 
@@ -270,7 +272,7 @@ class CorporateProxyOutboundClientsTest {
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
         wireMock.verify(1, headRequestedFor(urlEqualTo("/maven2/com/example/mylib/1.0.0/")));
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
     }
 
@@ -288,7 +290,7 @@ class CorporateProxyOutboundClientsTest {
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
         wireMock.verify(0, getRequestedFor(urlEqualTo("/critical-pkg")));
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).doesNotContain("critical-pkg");
     }
 
@@ -309,7 +311,7 @@ class CorporateProxyOutboundClientsTest {
         assertThat(result.httpStatus()).isEqualTo(200);
         wireMock.verify(1, postRequestedFor(urlEqualTo("/v1/query")));
         // Squid access log confirms the OSV API call transited through the proxy
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
     }
 
@@ -341,7 +343,7 @@ class CorporateProxyOutboundClientsTest {
                 "SELECT count(*) FROM public_vulnerabilities WHERE id = 'GHSA-PRXY-INCR-0001'").query(Long.class).single();
         assertThat(count).isEqualTo(1L);
         // Squid access log confirms GCS calls transited through the proxy
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
     }
 
@@ -361,7 +363,7 @@ class CorporateProxyOutboundClientsTest {
         assertThat(policies.get(0).get("package_name")).isEqualTo("lodash");
         assertThat(policies.get(0).get("policy_action")).isEqualTo("BLACKLIST");
         // Squid access log confirms the JGit HTTP clone transited through the proxy to Gitea
-        var log = squid.execInContainer("cat", "/var/log/squid/access.log");
+        Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("gitea");
     }
 
@@ -371,7 +373,7 @@ class CorporateProxyOutboundClientsTest {
         try {
             String giteaBaseUrl = "http://" + gitea.getHost() + ":" + gitea.getMappedPort(3000);
 
-            var result = gitea.execInContainer(
+            Container.ExecResult result = gitea.execInContainer(
                     "/sbin/su-exec", "git",
                     "gitea", "admin", "user", "create",
                     "--username", GITEA_ADMIN_USER,
@@ -453,7 +455,7 @@ class CorporateProxyOutboundClientsTest {
         if (!Files.exists(dir)) {
             return;
         }
-        try (var stream = Files.walk(dir)) {
+        try (Stream<Path> stream = Files.walk(dir)) {
             stream.sorted(java.util.Comparator.reverseOrder())
                     .forEach(path -> {
                         try {

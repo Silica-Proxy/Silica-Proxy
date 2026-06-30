@@ -68,7 +68,7 @@ public class MitmCertificateFactory {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + 10 * 365L * 24 * 3600 * 1000);
 
-        var builder = new JcaX509v3CertificateBuilder(
+        JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
                 CA_NAME, BigInteger.ONE, now, expiry, CA_NAME, caKeyPair.getPublic());
         builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
         builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.keyCertSign | KeyUsage.cRLSign));
@@ -82,7 +82,7 @@ public class MitmCertificateFactory {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + 365L * 24 * 3600 * 1000);
 
-        var builder = new JcaX509v3CertificateBuilder(
+        JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
                 CA_NAME, BigInteger.valueOf(serial.getAndIncrement()),
                 now, expiry, new X500Name("CN=" + host), hostKeyPair.getPublic());
         builder.addExtension(Extension.subjectAlternativeName, false,

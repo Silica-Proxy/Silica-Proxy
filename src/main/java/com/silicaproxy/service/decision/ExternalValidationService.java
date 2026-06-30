@@ -400,11 +400,11 @@ public class ExternalValidationService {
         // Only a service configured as blocking=true can be the actual cause of the BLOCK —
         // a non-blocking (informational) service's stored verdict must not be misattributed
         // as the reason, even if it happens to have one recorded for this package.
-        for (var entry : services) {
+        for (Map.Entry<String, ExternalValidationServiceProperties> entry : services) {
             if (!entry.getValue().blocking()) {
                 continue;
             }
-            var verdict = verdictsDao.findByServiceAndPackage(
+            Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage(
                     entry.getKey(), packageName, ecosystem, version);
             if (verdict.isPresent() && verdict.get().reason() != null) {
                 return verdict.get().reason();

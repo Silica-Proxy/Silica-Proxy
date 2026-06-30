@@ -19,6 +19,7 @@ package com.silicaproxy.service.decision;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,7 +61,7 @@ class ExternalValidationCleanupServiceTest extends BaseIntegrationTest {
         int timedOut = cacheDao.expireTimedOutPending();
         assertThat(timedOut).isEqualTo(1);
 
-        var entry = cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("TIMEOUT");
     }
@@ -102,7 +104,7 @@ class ExternalValidationCleanupServiceTest extends BaseIntegrationTest {
 
         assertThat(timedOut).isEqualTo(0);
         assertThat(deleted).isEqualTo(0);
-        var entry = cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
     }

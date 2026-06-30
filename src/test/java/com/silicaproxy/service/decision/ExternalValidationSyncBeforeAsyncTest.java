@@ -20,6 +20,7 @@ package com.silicaproxy.service.decision;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +38,7 @@ import org.springframework.web.client.RestClient;
 import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
+import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,7 +141,7 @@ class ExternalValidationSyncBeforeAsyncTest extends BaseIntegrationTest {
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/ext-async")));
 
         // Async is PENDING (fire-and-forget)
-        var asyncEntry = cacheDao.findByServiceAndPackage("scanner-async", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> asyncEntry = cacheDao.findByServiceAndPackage("scanner-async", "lodash", "npm", "4.17.21");
         assertThat(asyncEntry).isPresent();
         assertThat(asyncEntry.get().status()).isEqualTo("PENDING");
         assertThat(asyncEntry.get().mode()).isEqualTo("ASYNC");

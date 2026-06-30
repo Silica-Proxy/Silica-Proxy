@@ -36,6 +36,7 @@ import org.springframework.web.client.RestClient;
 import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
+import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -195,7 +196,7 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
         } catch (HttpClientErrorException ignored) {}
 
         // TIMEOUT state recorded in cache
-        var entry = jdbcClient.sql("""
+        Optional<String> entry = jdbcClient.sql("""
                 SELECT status FROM external_validation_cache
                 WHERE service_name='test-scanner' AND package_name='lodash'
                 """).query(String.class).optional();

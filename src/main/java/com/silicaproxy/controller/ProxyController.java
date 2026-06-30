@@ -222,8 +222,8 @@ public class ProxyController {
         }
 
         // We manually serialize since we are writing directly to response output stream to bypass stream forwarder
-        var pdType = pd.getType();
-        var pdInstance = pd.getInstance();
+        URI pdType = pd.getType();
+        URI pdInstance = pd.getInstance();
         String json = String.format(
                 "{\"type\":\"%s\",\"title\":\"%s\",\"status\":%d,\"detail\":\"%s\","
                 + "\"instance\":\"%s\",\"error\":\"%s\",\"step\":\"%s\","

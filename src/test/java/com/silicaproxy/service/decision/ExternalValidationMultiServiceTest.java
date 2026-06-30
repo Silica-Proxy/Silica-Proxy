@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -146,7 +147,7 @@ class ExternalValidationMultiServiceTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/ext-b"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -194,7 +195,7 @@ class ExternalValidationMultiServiceTest extends BaseIntegrationTest {
                 VALUES ('scanner-b', 'lodash', 'npm', '4.17.21', 'SYNC', 'PENDING', ?)
                 """).param(Timestamp.from(Instant.now().plus(30, ChronoUnit.MINUTES))).update();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 
@@ -307,7 +308,7 @@ class ExternalValidationMultiServiceTest extends BaseIntegrationTest {
                 VALUES ('scanner-b', 'lodash', 'npm', '4.17.21', 'SYNC', 'ALLOWED', ?)
                 """).param(Timestamp.from(Instant.now().plus(60, ChronoUnit.MINUTES))).update();
 
-        var response = proxyRestClient.get()
+        ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
 

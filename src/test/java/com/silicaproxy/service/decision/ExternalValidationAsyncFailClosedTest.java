@@ -20,6 +20,7 @@ package com.silicaproxy.service.decision;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
+import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +41,7 @@ import java.net.Proxy;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -124,7 +126,7 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         Thread.sleep(500); // Fire-and-forget async task writes DB and calls WireMock after the response
 
         // PENDING entry stored
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
 
@@ -178,7 +180,7 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         Thread.sleep(500); // Wait for async task to complete and update DB
 
         // Failed POST → no orphan PENDING; entry is TIMEOUT (not left as PENDING)
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("TIMEOUT");
     }
@@ -208,7 +210,7 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         // A new async check is triggered (re-scan)
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
         // Cache is back to PENDING for the new check
-        var entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
     }

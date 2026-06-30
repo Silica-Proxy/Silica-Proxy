@@ -1,50 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
 
-    <!-- Les classes de configuration Spring sont instanciées par le framework, pas par du code -->
+    <!-- Spring configuration classes are instantiated by the framework, not by application code -->
     <Match>
         <Class name="~com\.silicaproxy\.config\..*"/>
         <Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/>
     </Match>
 
-    <!-- Les entités et DTOs utilisent des champs publics intentionnellement (records Java) -->
+    <!-- Entities and DTOs intentionally use public fields (Java records) -->
     <Match>
         <Class name="~com\.silicaproxy\.model\..*"/>
         <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
     </Match>
 
-    <!-- Les passwords/tokens dans les propriétés de config sont lus depuis l'environnement,
-         pas codés en dur — SpotBugs génère des faux positifs sur les champs @Nullable String -->
+    <!-- Passwords/tokens in config properties are read from the environment,
+         not hardcoded — SpotBugs raises false positives on @Nullable String fields -->
     <Match>
         <Class name="com.silicaproxy.properties.SilicaProxyProperties"/>
         <Bug pattern="HARD_CODE_PASSWORD"/>
     </Match>
 
-    <!-- Le KeyStore PKCS12 utilisé pour le CA MITM est intentionnellement sans mot de passe
-         par défaut (le fichier lui-même est la barrière de sécurité) -->
+    <!-- The PKCS12 KeyStore used for the MITM CA is intentionally unprotected by a
+         password by default (the file itself is the security boundary) -->
     <Match>
         <Class name="com.silicaproxy.service.interception.SslMitmService"/>
         <Bug pattern="HARD_CODE_PASSWORD"/>
     </Match>
 
-    <!-- Les SSLContext et KeyStore internes au MITM SSL sont construits volontairement
-         sans validation du trust store client (le proxy fait confiance à tout par design) -->
+    <!-- SSLContext and KeyStore internal to SSL MITM are deliberately built without
+         client trust store validation (the proxy trusts everything by design) -->
     <Match>
         <Class name="com.silicaproxy.service.interception.SslMitmService"/>
         <Bug pattern="WEAK_TRUST_MANAGER,SSL_CONTEXT"/>
     </Match>
 
-    <!-- LoomProxyServer est un proxy MITM intentionnel : la ServerSocket écoute en clair
-         sur le loopback uniquement (le chiffrement TLS est géré par la couche amont) -->
+    <!-- LoomProxyServer is an intentional MITM proxy: the ServerSocket listens in
+         cleartext on loopback only (TLS encryption is handled by the upstream layer) -->
     <Match>
         <Class name="com.silicaproxy.service.interception.LoomProxyServer"/>
         <Bug pattern="UNENCRYPTED_SERVER_SOCKET,UNENCRYPTED_SOCKET"/>
     </Match>
 
-    <!-- Les composants Spring (config/controller/dao/service) stockent leurs dépendances
-         via injection par constructeur (beans singleton) ou des objets d'infrastructure
-         à cycle de vie géré (Proxy, HttpHeaders read-only, ObjectMapper). SpotBugs
-         ne peut pas distinguer ces cas des vraies fuites de mutabilité. -->
+    <!-- Spring components (config/controller/dao/service) store their dependencies via
+         constructor injection (singleton beans) or infrastructure objects with a
+         managed lifecycle (Proxy, read-only HttpHeaders, ObjectMapper). SpotBugs
+         cannot distinguish these cases from genuine mutability leaks. -->
     <Match>
         <Class name="~com\.silicaproxy\.(config|controller|dao|service)\..*"/>
         <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>

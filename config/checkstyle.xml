@@ -7,17 +7,24 @@
     <property name="severity" value="warning"/>
     <property name="fileExtensions" value="java"/>
 
-    <!-- Pas de tab : uniquement des espaces -->
+    <!-- No tabs: spaces only -->
     <module name="FileTabCharacter"/>
 
-    <!-- Longueur de ligne max -->
+    <!-- Max line length -->
     <module name="LineLength">
         <property name="max" value="160"/>
     </module>
 
     <module name="TreeWalker">
 
-        <!-- ── Nommage ─────────────────────────────────────────────────────── -->
+        <!-- ── No 'var': always an explicit type ──────────────────────────── -->
+        <module name="RegexpSinglelineJava">
+            <property name="format" value="(^|[^.\w])var\s+[A-Za-z_$][\w$]*\s*[=:),]"/>
+            <property name="message" value="Do not use &quot;var&quot;; declare an explicit type."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+
+        <!-- ── Naming ──────────────────────────────────────────────────────── -->
         <module name="TypeName"/>
         <module name="MethodName"/>
         <module name="ParameterName"/>
@@ -33,11 +40,11 @@
         <module name="AvoidStarImport"/>
         <module name="UnusedImports"/>
         <module name="IllegalImport">
-            <!-- Forcer l'usage de java.util.logging ou SLF4J, pas java.util.logging direct -->
+            <!-- Force the use of SLF4J instead of java.util.logging directly -->
             <property name="illegalPkgs" value="sun, com.sun"/>
         </module>
 
-        <!-- ── Bonnes pratiques ────────────────────────────────────────────── -->
+        <!-- ── Best practices ──────────────────────────────────────────────── -->
         <module name="EqualsHashCode"/>
         <module name="SimplifyBooleanExpression"/>
         <module name="SimplifyBooleanReturn"/>
@@ -49,7 +56,7 @@
         <module name="DefaultComesLast"/>
         <module name="MissingSwitchDefault"/>
 
-        <!-- ── Structure des blocs ─────────────────────────────────────────── -->
+        <!-- ── Block structure ─────────────────────────────────────────────── -->
         <module name="NeedBraces"/>
         <module name="LeftCurly"/>
         <module name="RightCurly"/>
@@ -57,12 +64,12 @@
             <property name="option" value="text"/>
         </module>
 
-        <!-- ── Visibilité ──────────────────────────────────────────────────── -->
+        <!-- ── Visibility ──────────────────────────────────────────────────── -->
         <module name="VisibilityModifier">
-            <!-- Les champs injectés par Spring peuvent être package-private ou protected -->
+            <!-- Fields injected by Spring may be package-private or protected -->
             <property name="protectedAllowed" value="true"/>
             <property name="allowPublicFinalFields" value="true"/>
-            <!-- Annotations Spring/JUnit qui autorisent les champs non-private -->
+            <!-- Spring/JUnit annotations that allow non-private fields -->
             <property name="ignoreAnnotationCanonicalNames"
                       value="org.springframework.beans.factory.annotation.Autowired,
                              org.springframework.beans.factory.annotation.Value,
@@ -72,16 +79,16 @@
                              org.mockito.Captor"/>
         </module>
 
-        <!-- ── Code mort / inutile ─────────────────────────────────────────── -->
+        <!-- ── Dead / unnecessary code ─────────────────────────────────────── -->
         <module name="EmptyStatement"/>
         <module name="UnnecessaryParentheses"/>
 
-        <!-- ── Modificateurs ──────────────────────────────────────────────── -->
+        <!-- ── Modifiers ───────────────────────────────────────────────────── -->
         <module name="ModifierOrder"/>
         <module name="RedundantModifier"/>
 
-        <!-- ── Longueur des méthodes et classes ───────────────────────────── -->
-        <!-- PMD gère aussi ceci — ici c'est un filet de sécurité -->
+        <!-- ── Method and class length ─────────────────────────────────────── -->
+        <!-- PMD also covers this — this is a safety net -->
         <module name="MethodLength">
             <property name="max" value="100"/>
         </module>
