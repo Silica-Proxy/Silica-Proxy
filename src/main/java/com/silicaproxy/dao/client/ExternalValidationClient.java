@@ -68,7 +68,10 @@ public class ExternalValidationClient {
                     .body(Map.class);
 
             long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-            LOG.debug("External validation sync call to {} completed in {}ms", url, elapsedMs);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("External validation sync call to {} completed in {}ms", url, elapsedMs);
+                LOG.debug("External validation sync call response from {}: {}", url, response);
+            }
 
             if (response == null) {
                 return null;

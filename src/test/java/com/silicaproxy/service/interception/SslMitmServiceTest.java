@@ -61,7 +61,7 @@ class SslMitmServiceTest {
 
     @Test
     void shouldGetCaCertPem() throws Exception {
-        var service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
         service.init();
 
         assertThat(service.getCaCertPem())
