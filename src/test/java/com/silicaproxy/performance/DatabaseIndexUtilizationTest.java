@@ -47,8 +47,29 @@ class DatabaseIndexUtilizationTest extends BaseIntegrationTest {
                 """;
 
         String explainResult = jdbcClient.sql(explainSql).query(String.class).single();
-        
+
         assertThat(explainResult).contains("idx_public_vuln_search");
+        assertThat(explainResult).contains("Index Scan");
+    }
+
+    // ExternalValidationVerdictsDao.findAllByPackage() filters by (package_name, ecosystem,
+    // package_version) without service_name — the older idx_ext_verdicts_lookup index has
+    // service_name as its leftmost column so it can't serve this query. Confirms
+    // idx_ext_verdicts_by_package (V9 migration) is actually used instead of a seq scan.
+    @Test
+    void shouldUtilizeCoveringIndexForExternalValidationVerdictsByPackage() {
+        String explainSql = """
+                EXPLAIN (FORMAT JSON)
+                SELECT id, service_name, package_name, ecosystem, package_version, reason, created_at
+                FROM external_validation_verdicts
+                WHERE package_name    = 'lodash'
+                  AND ecosystem       = 'npm'
+                  AND package_version = '4.17.21'
+                """;
+
+        String explainResult = jdbcClient.sql(explainSql).query(String.class).single();
+
+        assertThat(explainResult).contains("idx_ext_verdicts_by_package");
         assertThat(explainResult).contains("Index Scan");
     }
 }

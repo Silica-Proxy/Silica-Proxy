@@ -175,6 +175,28 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
+    // A malformed/unexpected verdict must still honor fail-open (request forwarded here,
+    // since this test class is configured fail-open=true) instead of being silently ALLOWED
+    // as if the verdict had been "ALLOWED" — see sync_malformedVerdict_failClosed_returns403
+    // in ExternalValidationSyncFailClosedTest for the fail-closed counterpart.
+    @Test
+    void sync_malformedVerdict_failOpen_requestIsForwarded() {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"UNKNOWN\"}")));
+
+        var response = proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve()
+                .toEntity(byte[].class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // Recorded as TIMEOUT, not cached as a real ALLOWED verdict
+        var cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        assertThat(cached).isPresent();
+        assertThat(cached.get().status()).isEqualTo("TIMEOUT");
+    }
+
     // Test 39 — sync_http500_failOpen_requestForwarded
     @Test
     void sync_http500_failOpen_requestIsForwarded() {

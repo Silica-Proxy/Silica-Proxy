@@ -220,7 +220,7 @@ public record SilicaProxyProperties(
         @DefaultValue("1") int timeoutSeconds,
         @DefaultValue("true") boolean failOpen,
         @DefaultValue("true") boolean blocking,
-        int cacheTtlMinutes,
-        int pendingTtlMinutes
+        @DefaultValue("60") int cacheTtlMinutes,
+        @DefaultValue("30") int pendingTtlMinutes
     ) {}
 }

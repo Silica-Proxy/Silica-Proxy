@@ -211,6 +211,7 @@ public class ExternalValidationCacheDao {
         int deleted = jdbcClient.sql("""
                 DELETE FROM external_validation_cache
                 WHERE callback_token = :token
+                  AND status         = 'PENDING'
                 """)
                 .param("token", callbackToken)
                 .update();

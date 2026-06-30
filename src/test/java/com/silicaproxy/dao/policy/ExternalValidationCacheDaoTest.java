@@ -321,6 +321,22 @@ class ExternalValidationCacheDaoTest extends BaseIntegrationTest {
         assertThat(deleted).isFalse();
     }
 
+    // Guards against double-processing a racing/duplicate callback delivery for the same
+    // token : once the entry is no longer PENDING (already resolved by a concurrent call),
+    // deleteByToken must not delete it again or report success.
+    @Test
+    void deleteByToken_nonPendingEntry_returnsFalseAndLeavesEntryIntact() {
+        UUID token = UUID.randomUUID();
+        dao.upsertPendingAsync(token, "svc", "lodash", "npm", "4.17.21",
+                Instant.now().plus(30, ChronoUnit.MINUTES));
+        dao.updateToAllowedByToken(token, "Already resolved", Instant.now().plus(60, ChronoUnit.MINUTES));
+
+        boolean deleted = dao.deleteByToken(token);
+
+        assertThat(deleted).isFalse();
+        assertThat(dao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isPresent();
+    }
+
     // updateToAllowedByToken — used when async callback returns ALLOWED
     @Test
     void updateToAllowedByToken_pendingEntry_updatesAndReturnsTrue() {

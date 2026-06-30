@@ -148,6 +148,40 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
         }
     }
 
+    // A response that parses as JSON but doesn't carry a recognized verdict (missing field,
+    // typo, unexpected value) must be treated like a transport error — NOT silently allowed —
+    // so fail-open/fail-closed is honored instead of bypassed by a non-conformant body.
+    @Test
+    void sync_malformedVerdict_failClosed_returns403() {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"UNKNOWN\"}")));
+
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+    }
+
+    // Same as above but with the verdict field missing entirely from the response body.
+    @Test
+    void sync_missingVerdictField_failClosed_returns403() {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"reason\":\"no verdict field at all\"}")));
+
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+    }
+
     // Test 40b — service unreachable still records TIMEOUT in cache
     @Test
     void sync_timeout_failClosed_recordsTimeoutInCache() {

@@ -174,10 +174,13 @@ Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
         "callbackUrl": "https://proxy.yourcompany.com/external-validation/callback/{token}" }
 
 → Callback (later): POST /external-validation/callback/{token}
+  Header: Authorization: Bearer {api-key}   # only required if api-key is configured for this service
   Body: { "verdict": "ALLOWED", "reason": "Clean." }
 ```
 
 The callback token is a UUID generated per request. The endpoint returns `404` if the token is unknown or has already been resolved.
+
+If `api-key` is configured for the service (see [Configuration Reference](#full-variable-table)), the callback must present it back as `Authorization: Bearer {api-key}`, or the endpoint returns `401`. This is optional: a service with no `api-key` configured accepts callbacks with no `Authorization` header at all, exactly as before. The unguessable per-request UUID token is itself some protection, but it's not authentication — anyone who learns a pending token (logs, a leaked URL, a network observer) can otherwise forge a verdict for that request without it.
 
 #### Persistence
 
@@ -407,7 +410,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK` | `false` | If true, async services are triggered even when a sync service already blocks |
 | | `silicaproxy.external-validation.services.<name>.enabled` | — | `false` | Enable this external validation service |
 | | `silicaproxy.external-validation.services.<name>.url` | — | — | HTTP endpoint to POST validation requests to |
-| | `silicaproxy.external-validation.services.<name>.api-key` | — | _(empty)_ | Sent as `Authorization` header if set |
+| | `silicaproxy.external-validation.services.<name>.api-key` | — | _(empty)_ | Sent as `Authorization` header on outbound calls; for async services, also required back as `Authorization: Bearer {api-key}` on the callback if set (optional otherwise) |
 | | `silicaproxy.external-validation.services.<name>.mode` | — | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
 | | `silicaproxy.external-validation.services.<name>.timeout-seconds` | — | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
 | | `silicaproxy.external-validation.services.<name>.fail-open` | — | `true` | `true` = allow on error/timeout/pending; `false` = block |

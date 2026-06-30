@@ -43,9 +43,10 @@ import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-// When trigger-async-on-sync-block=true, async services are triggered even when sync BLOCKS.
-// This is useful to collect deep-scan data even when a quick sync check already blocked the package.
-class ExternalValidationTriggerAsyncOnSyncBlockTest extends BaseIntegrationTest {
+// buildBlockReason() must only attribute the 403 reason to a service configured blocking=true —
+// a non-blocking (informational) service's stored verdict must never be reported as "the" reason
+// the package was blocked, even if it's the only verdict present in the table.
+class ExternalValidationBlockReasonAttributionTest extends BaseIntegrationTest {
 
     @LocalServerPort
     private int port;
@@ -62,23 +63,25 @@ class ExternalValidationTriggerAsyncOnSyncBlockTest extends BaseIntegrationTest 
     static void configureExternalValidation(DynamicPropertyRegistry registry) {
         String base = "http://localhost:" + wireMock.port();
         registry.add("silicaproxy.external-validation.callback-base-url", () -> "http://localhost:0");
-        registry.add("silicaproxy.external-validation.trigger-async-on-sync-block", () -> "true");
+        registry.add("silicaproxy.external-validation.trigger-async-on-sync-block", () -> "false");
 
-        registry.add("silicaproxy.external-validation.services.scanner-sync.enabled", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.url", () -> base + "/ext-sync");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.mode", () -> "sync");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.timeout-seconds", () -> "1");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.fail-open", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.blocking", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-sync.cache-ttl-minutes", () -> "60");
+        // Blocking service — fail-closed on timeout, never writes a verdict in that case.
+        registry.add("silicaproxy.external-validation.services.scanner-strict.enabled", () -> "true");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.url", () -> base + "/ext-strict");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.mode", () -> "sync");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.timeout-seconds", () -> "1");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.fail-open", () -> "false");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.blocking", () -> "true");
+        registry.add("silicaproxy.external-validation.services.scanner-strict.cache-ttl-minutes", () -> "60");
 
-        registry.add("silicaproxy.external-validation.services.scanner-async.enabled", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-async.url", () -> base + "/ext-async");
-        registry.add("silicaproxy.external-validation.services.scanner-async.mode", () -> "async");
-        registry.add("silicaproxy.external-validation.services.scanner-async.fail-open", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-async.blocking", () -> "true");
-        registry.add("silicaproxy.external-validation.services.scanner-async.cache-ttl-minutes", () -> "60");
-        registry.add("silicaproxy.external-validation.services.scanner-async.pending-ttl-minutes", () -> "30");
+        // Informational service — never enforces, but may have a stored verdict/reason.
+        registry.add("silicaproxy.external-validation.services.scanner-info.enabled", () -> "true");
+        registry.add("silicaproxy.external-validation.services.scanner-info.url", () -> base + "/ext-info");
+        registry.add("silicaproxy.external-validation.services.scanner-info.mode", () -> "sync");
+        registry.add("silicaproxy.external-validation.services.scanner-info.timeout-seconds", () -> "1");
+        registry.add("silicaproxy.external-validation.services.scanner-info.fail-open", () -> "true");
+        registry.add("silicaproxy.external-validation.services.scanner-info.blocking", () -> "false");
+        registry.add("silicaproxy.external-validation.services.scanner-info.cache-ttl-minutes", () -> "60");
 
         registry.add("silicaproxy.http-client.external-validation-read-timeout-seconds", () -> "1");
         registry.add("silicaproxy.quarantine.enabled", () -> "false");
@@ -109,63 +112,21 @@ class ExternalValidationTriggerAsyncOnSyncBlockTest extends BaseIntegrationTest 
                 .thenReturn(new ProxyStreamClient.StreamResponse(
                         HttpStatus.OK, new HttpHeaders(),
                         new ByteArrayInputStream("fake-content".getBytes())));
-
-        wireMock.stubFor(post(urlEqualTo("/ext-async"))
-                .willReturn(aResponse().withStatus(202)));
     }
 
-    // Test 71b — syncBlocked_triggerAsyncTrue_asyncIsTriggered
     @Test
-    void syncBlocked_triggerAsyncOnSyncBlockTrue_asyncIsStillTriggered() throws InterruptedException {
-        wireMock.stubFor(post(urlEqualTo("/ext-sync"))
-                .willReturn(okJson("{\"verdict\":\"BLOCKED\",\"reason\":\"Sync blocked\"}")));
-
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-        } catch (HttpClientErrorException ignored) {}
-
-        Thread.sleep(200);
-
-        // Sync was called
-        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/ext-sync")));
-        // Async was ALSO triggered despite sync blocking (trigger-async-on-sync-block=true)
-        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/ext-async")));
-    }
-
-    // When the package already has a permanent BLOCK verdict from a prior request (so this
-    // request short-circuits and never re-calls scanner-sync), trigger-async-on-sync-block=true
-    // must still fire-and-forget trigger scanner-async if it hasn't weighed in yet — the
-    // short-circuit optimization must not silently narrow this flag's audit-trail purpose.
-    @Test
-    void permanentlyBlocked_triggerAsyncTrue_asyncStillTriggeredButSyncIsNot() throws InterruptedException {
+    void nonBlockingServiceReason_isNeverAttributedToTheBlock() {
+        // scanner-info (blocking=false) has a stored informational verdict with a reason.
         jdbcClient.sql("""
                 INSERT INTO external_validation_verdicts
                     (service_name, package_name, ecosystem, package_version, reason)
-                VALUES ('scanner-sync', 'lodash', 'npm', '4.17.21', 'Already blocked previously')
+                VALUES ('scanner-info', 'lodash', 'npm', '4.17.21', 'Informational note from scanner-info')
                 """).update();
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException ignored) {}
-
-        Thread.sleep(200);
-
-        // Short-circuit avoided the redundant sync call...
-        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-sync")));
-        // ...but scanner-async, which never weighed in on this package yet, was still triggered.
-        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/ext-async")));
-    }
-
-    // Even with trigger=true, the final verdict is still BLOCKED (sync BLOCK takes priority)
-    @Test
-    void syncBlocked_triggerAsyncTrue_finalVerdictIsStillBlocked() {
-        wireMock.stubFor(post(urlEqualTo("/ext-sync"))
-                .willReturn(okJson("{\"verdict\":\"BLOCKED\",\"reason\":\"Sync blocked\"}")));
+        // scanner-strict (blocking=true, fail-open=false) times out — fail-closed BLOCK,
+        // but writes no verdict of its own.
+        wireMock.stubFor(post(urlEqualTo("/ext-strict"))
+                .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
         try {
             proxyRestClient.get()
@@ -174,6 +135,9 @@ class ExternalValidationTriggerAsyncOnSyncBlockTest extends BaseIntegrationTest 
             fail("Expected 403");
         } catch (HttpClientErrorException e) {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            // Must NOT show scanner-info's informational reason — that service never blocks.
+            assertThat(e.getResponseBodyAsString()).doesNotContain("Informational note from scanner-info");
+            assertThat(e.getResponseBodyAsString()).contains("Package blocked by external validation service.");
         }
     }
 }
