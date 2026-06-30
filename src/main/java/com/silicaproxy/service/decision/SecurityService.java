@@ -59,6 +59,7 @@ public class SecurityService {
     private final MetadataCacheDao metadataCacheDao;
     private final SilicaProxyProperties properties;
     private final ApiCallLogDao apiCallLogDao;
+    private final ExternalValidationService externalValidationService;
     private final Map<String, SeverityMapping> severityMappings = new ConcurrentHashMap<>();
 
     public SecurityService(
@@ -67,13 +68,15 @@ public class SecurityService {
             VulnerabilityApiClients apiClients,
             MetadataCacheDao metadataCacheDao,
             SilicaProxyProperties properties,
-            ApiCallLogDao apiCallLogDao) {
+            ApiCallLogDao apiCallLogDao,
+            ExternalValidationService externalValidationService) {
         this.decisionDao = decisionDao;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
         this.metadataCacheDao = metadataCacheDao;
         this.properties = properties;
         this.apiCallLogDao = apiCallLogDao;
+        this.externalValidationService = externalValidationService;
     }
 
     @PostConstruct
@@ -151,6 +154,13 @@ public class SecurityService {
                         packageName, version, ageInDays, minAgeDays);
                 return new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", reason);
             }
+        }
+
+        // External validation services (before OSV/deps.dev — skips OSV when configured)
+        Optional<DecisionResult> extResult =
+                externalValidationService.checkExternalServices(packageName, version, ecosystem);
+        if (extResult.isPresent()) {
+            return extResult.get();
         }
 
         // External API scan (Fallback Chain) : OSV, deps.dev, queried sequentially.
