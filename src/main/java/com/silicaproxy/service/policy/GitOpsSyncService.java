@@ -123,15 +123,25 @@ public class GitOpsSyncService {
 
     // The GitOps Git repository is an external source : a malicious <ecosystem>.yaml file could
     // be replaced by a symbolic link pointing outside `directory-path` (to the host system).
-    // We resolve the canonical path and verify that it stays under the configured directory
-    // before any reading.
+    // We only ever build a File from one of the known ecosystem filename literals below
+    // (never from the `filename` parameter directly), then additionally resolve the
+    // canonical path and verify it stays under the configured directory before any reading.
     private File resolveSafeFile(File baseDir, String filename) throws IOException {
-        File file = new File(baseDir, filename);
+        String safeName = switch (filename) {
+            case "npm.yaml" -> "npm.yaml";
+            case "npm.yml" -> "npm.yml";
+            case "pypi.yaml" -> "pypi.yaml";
+            case "pypi.yml" -> "pypi.yml";
+            case "maven.yaml" -> "maven.yaml";
+            case "maven.yml" -> "maven.yml";
+            default -> throw new SecurityException("Refusing to read unrecognized GitOps file: " + filename);
+        };
+        File file = new File(baseDir, safeName);
         Path baseCanonical = baseDir.getCanonicalFile().toPath();
         Path fileCanonical = file.getCanonicalFile().toPath();
         if (!fileCanonical.startsWith(baseCanonical)) {
             throw new SecurityException(
-                    "Refusing to read GitOps file '" + filename + "' : resolved path outside the configured directory.");
+                    "Refusing to read GitOps file '" + safeName + "' : resolved path outside the configured directory.");
         }
         return file;
     }

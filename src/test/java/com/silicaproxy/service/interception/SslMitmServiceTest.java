@@ -46,21 +46,22 @@ class SslMitmServiceTest {
             Map.of(),
             new SilicaProxyProperties.GitOpsProperties(false, "http://example.com", "/rules", null, 60),
             new SilicaProxyProperties.CorporateProxyProperties(false, "proxy.example.com", 8080, "localhost",
-                new SilicaProxyProperties.CorporateProxyScopeProperties(false, false, false, false)),
+                new SilicaProxyProperties.CorporateProxyScopeProperties(false, false, false, false, false)),
             new SilicaProxyProperties.RegistriesProperties("http://npm.example.com", "http://pypi.example.com", "http://maven.example.com"),
             new SilicaProxyProperties.ProxyProperties(0),
             new SilicaProxyProperties.SecurityProperties(new SilicaProxyProperties.SsrfProtectionProperties(false)),
-            new SilicaProxyProperties.HttpClientProperties(5, 5, 5),
+            new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
             new SilicaProxyProperties.SslMitmProperties(keystorePath, password, null),
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),
             new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25),
-            new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100)
+            new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100),
+            new SilicaProxyProperties.ExternalValidationProperties(null, false, Map.of())
         );
     }
 
     @Test
     void shouldGetCaCertPem() throws Exception {
-        var service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
         service.init();
 
         assertThat(service.getCaCertPem())

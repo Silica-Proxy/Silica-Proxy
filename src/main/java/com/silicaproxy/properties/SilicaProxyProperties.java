@@ -20,6 +20,7 @@ package com.silicaproxy.properties;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
@@ -44,7 +45,8 @@ public record SilicaProxyProperties(
     @NotNull SslMitmProperties sslMitm,
     @NotNull ApiCacheProperties apiCache,
     @NotNull OsvIncrementalProperties osvIncremental,
-    @NotNull ApiCallLogProperties apiCallLog
+    @NotNull ApiCallLogProperties apiCallLog,
+    @NotNull ExternalValidationProperties externalValidation
 ) {
     public SilicaProxyProperties {
         apiFallback = Collections.unmodifiableMap(new HashMap<>(apiFallback));
@@ -54,13 +56,14 @@ public record SilicaProxyProperties(
         int port
     ) {}
 
-    // Timeouts for outgoing HTTP clients (registries, security APIs). Without timeout, a silent 
-    // remote server (not in error, just frozen) would block indefinately the virtual thread 
-    // caller, preventing the fail-open/fail-closed mechanism from ever trigger.
+    // Timeouts for outgoing HTTP clients (registries, security APIs, external validation).
+    // Without timeout, a silent remote server (not in error, just frozen) would block
+    // indefinitely the virtual thread caller, preventing fail-open/fail-closed from triggering.
     public record HttpClientProperties(
         int connectTimeoutSeconds,
         int registriesReadTimeoutSeconds,
-        int securityApisReadTimeoutSeconds
+        int securityApisReadTimeoutSeconds,
+        int externalValidationReadTimeoutSeconds
     ) {}
 
     public record SecurityProperties(
@@ -140,15 +143,16 @@ public record SilicaProxyProperties(
         @NotNull CorporateProxyScopeProperties scope
     ) {}
 
-    // Enable or disable relay through corporate proxy independently by outgoing traffic category, 
-    // once `corporate-proxy.enabled` is true. The internal Git repository (GitOps) is 
-    // distinguished from external Git repositories (GHSA/OpenSSF/GitLab) because it is typically 
+    // Enable or disable relay through corporate proxy independently by outgoing traffic category,
+    // once `corporate-proxy.enabled` is true. The internal Git repository (GitOps) is
+    // distinguished from external Git repositories (GHSA/OpenSSF/GitLab) because it is typically
     // intra-network traffic that dont necessarily need to go through the outgoing proxy to Internet.
     public record CorporateProxyScopeProperties(
         boolean registries,
         boolean securityApis,
         boolean externalGitRepositories,
-        boolean internalGitRepository
+        boolean internalGitRepository,
+        boolean externalValidation
     ) {}
 
     // Persistence of MITM CA between restarts. If caKeystorePath is not empty, the CA is 
@@ -168,7 +172,7 @@ public record SilicaProxyProperties(
         int initialLookbackHours
     ) {}
 
-    // Audit of calls to external security APIs in api_call_log. 
+    // Audit of calls to external security APIs in api_call_log.
     // Disabled by default : can generate one line per unknown proxy request, high volume.
     public record ApiCallLogProperties(
         boolean enabled,
@@ -176,12 +180,47 @@ public record SilicaProxyProperties(
         int bufferCapacity
     ) {}
 
-    // Cache of results from external APIs (OSV Live, deps.dev). 
-    // Allows to configure differently TTL for ALLOW and BLOCK verdicts, 
+    // Cache of results from external APIs (OSV Live, deps.dev).
+    // Allows to configure differently TTL for ALLOW and BLOCK verdicts,
     // and optionally not cache ALLOW at all.
     public record ApiCacheProperties(
         boolean cacheAllowVerdict,
         int blockVerdictTtlMinutes,
         int allowVerdictTtlMinutes
+    ) {}
+
+    public record ExternalValidationProperties(
+        @Nullable String callbackBaseUrl,
+        boolean triggerAsyncOnSyncBlock,
+        @Nullable Map<String, ExternalValidationServiceProperties> services
+    ) {
+        public ExternalValidationProperties {
+            if (services == null) {
+                services = Map.of();
+            } else {
+                services = Collections.unmodifiableMap(new HashMap<>(services));
+            }
+        }
+
+        // Explicit, never-null accessor: the compact constructor above always
+        // normalizes `services` to a non-null, already-unmodifiable map. Re-declaring it
+        // here (instead of relying on the implicit record accessor) drops the @Nullable
+        // inherited from the constructor parameter and re-wraps defensively, so callers
+        // don't need a null-check and can't mutate the backing map.
+        public Map<String, ExternalValidationServiceProperties> services() {
+            return Collections.unmodifiableMap(services);
+        }
+    }
+
+    public record ExternalValidationServiceProperties(
+        boolean enabled,
+        @NotBlank String url,
+        @Nullable String apiKey,
+        @NotBlank String mode,
+        @DefaultValue("1") int timeoutSeconds,
+        @DefaultValue("true") boolean failOpen,
+        @DefaultValue("true") boolean blocking,
+        @DefaultValue("60") int cacheTtlMinutes,
+        @DefaultValue("30") int pendingTtlMinutes
     ) {}
 }
