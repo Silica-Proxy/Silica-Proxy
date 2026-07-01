@@ -281,6 +281,8 @@ The proxy listens on **port 8080**. Configure your artifact repository to route 
 
 ### Production — Docker
 
+Pre-built images are available on [Docker Hub](https://hub.docker.com/r/silicaproxy/silicaproxy).
+
 ```bash
 docker build -t silicaproxy .
 ```
