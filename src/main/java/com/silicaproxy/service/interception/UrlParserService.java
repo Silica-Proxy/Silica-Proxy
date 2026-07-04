@@ -45,8 +45,18 @@ public class UrlParserService {
     private static final Pattern NPM_METADATA_PATTERN = Pattern.compile("^/([^/]+|@[^/]+/[^/]+)$");
 
     private static final Pattern PYPI_JSON_PATTERN = Pattern.compile("^/pypi/([^/]+)/json$");
-    private static final Pattern PYPI_WHL_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-([\\d\\.]+.*)-(?:py|cp|pp|jy).*?\\.whl$");
-    private static final Pattern PYPI_TAR_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)/\\1-([\\d\\.]+.*)\\.tar\\.gz$");
+    // Version group is [^-/]* (not .*): compiled-wheel filenames repeat the ABI tag
+    // (e.g. "tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl"), and a greedy ".*" backtracks
+    // to the LAST "-cp"/"-py" occurrence instead of the first, swallowing part of the tag into
+    // the version ("1.6.0-cp27"). Forbidding '-' after the leading digit stops the version at
+    // the first tag boundary, matching how PyPI itself delimits {name}-{version}-{tag}.whl.
+    private static final Pattern PYPI_WHL_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-(\\d[^-/]*)-(?:py|cp|pp|jy)[^/]*\\.whl$");
+    // Filename-anchored, not directory-anchored: real PyPI sdist storage is content-addressed
+    // (hash directories), so a package-name-as-directory backreference only matches the legacy
+    // /packages/source/{letter}/{name}/ layout that pip no longer requests in practice. The
+    // version group is restricted to [^/]* (not .*) so it can't "tunnel" through a "/" and
+    // wrongly consume a directory segment when the legacy layout repeats the name in the path.
+    private static final Pattern PYPI_TAR_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-([\\d\\.]+[^/]*)\\.tar\\.gz$");
 
     private static final Pattern MAVEN_PATTERN = Pattern.compile("^/maven2/(.+)/([^/]+)/([^/]+)/[^/]+$");
     private static final Pattern MAVEN_STRUCTURAL_PATTERN =

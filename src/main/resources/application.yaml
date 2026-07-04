@@ -22,6 +22,8 @@ logging:
     org.flywaydb: DEBUG
     org.springframework.boot.autoconfigure.flyway: DEBUG
     com.silicaproxy: DEBUG
+    com.silicaproxy.controller.MonitoringController: INFO
+    com.silicaproxy.service.interception.LoomProxyServer: INFO
 
 management:
   endpoints:

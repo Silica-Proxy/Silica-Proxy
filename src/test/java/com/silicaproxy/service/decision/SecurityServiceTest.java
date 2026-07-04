@@ -140,6 +140,64 @@ class SecurityServiceTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldBlockWhenDeprecatedEvenWhenPublishedAtAlreadyCached() {
+        // Regression: package_metadata only ever persists published_at, never deprecation
+        // status (by design -- deprecation must stay fresh, see SecurityService comment at
+        // step 3). Pre-populating published_at here simulates a package/version already
+        // resolved by an earlier, unrelated request (e.g. a prior quarantine check), and
+        // verifies that this does NOT skip the live deprecation check on this request.
+        Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
+        jdbcClient.sql("""
+                INSERT INTO package_metadata (package_name, ecosystem, package_version, published_at)
+                VALUES ('precached-deprecated-pkg', 'npm', '1.0.0', ?)
+                """).params(Timestamp.from(publishedAt)).update();
+
+        wireMock.stubFor(get(urlEqualTo("/precached-deprecated-pkg"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{" +
+                                "  \"time\": {\"1.0.0\": \"" + publishedAt.toString() + "\"}," +
+                                "  \"versions\": {" +
+                                "    \"1.0.0\": {" +
+                                "      \"name\": \"precached-deprecated-pkg\"," +
+                                "      \"version\": \"1.0.0\"," +
+                                "      \"deprecated\": \"Deprecated warning\"" +
+                                "    }" +
+                                "  }" +
+                                "}")));
+
+        DecisionResult decision = securityService.getDecision("precached-deprecated-pkg", "1.0.0", "npm");
+
+        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo("REGISTRY_DEPRECATION");
+        wireMock.verify(1, getRequestedFor(urlEqualTo("/precached-deprecated-pkg")));
+    }
+
+    @Test
+    void shouldFallBackToCachedPublishedAtWhenRegistryFailsButAlreadyKnown() {
+        // If the registry is transiently down but this package/version was already resolved
+        // before, quarantine must keep working off the cached publish date instead of failing
+        // the whole request -- deprecation is simply left unknown (not deprecated) this round.
+        Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
+        jdbcClient.sql("""
+                INSERT INTO package_metadata (package_name, ecosystem, package_version, published_at)
+                VALUES ('registry-down-known-pkg', 'npm', '1.0.0', ?)
+                """).params(Timestamp.from(publishedAt)).update();
+
+        wireMock.stubFor(get(urlEqualTo("/registry-down-known-pkg"))
+                .willReturn(aResponse().withStatus(500)));
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{}")));
+
+        DecisionResult decision = securityService.getDecision("registry-down-known-pkg", "1.0.0", "npm");
+
+        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+    }
+
+    @Test
     void shouldCallFallbackOsvAndCacheWhenSafe() {
         Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
 

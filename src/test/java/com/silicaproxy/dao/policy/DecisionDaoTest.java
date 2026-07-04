@@ -55,6 +55,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         jdbcClient.sql("TRUNCATE company_policies RESTART IDENTITY CASCADE").update();
         jdbcClient.sql("TRUNCATE public_vulnerabilities RESTART IDENTITY CASCADE").update();
         jdbcClient.sql("TRUNCATE api_cache RESTART IDENTITY CASCADE").update();
+        jdbcClient.sql("TRUNCATE vulnerability_ingestion_anomalies RESTART IDENTITY CASCADE").update();
 
         // 1. Insertion of 10,000 internal governance rules
         List<Object[]> policies = new ArrayList<>();
@@ -292,6 +293,58 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", 7.0);
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+    }
+
+    @Test
+    void shouldBlockViaAnomalyMatchWhenSuspiciousVersionMatchesRequestedPackage() {
+        // Mirrors the real gradio case: package_name/ecosystem on the anomaly row reflect
+        // the WRONG outer advisory ("gradio"/pypi) -- only suspicious_version carries the
+        // real embedded identifier of the actual requested package ("@gradio/chatbot", npm).
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('PYSEC-mock', 'OSV', 'gradio', 'pypi', '@gradio/chatbot@0.4.2', 8.1)
+            """).update();
+
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("@gradio/chatbot", "0.4.2", "npm", 7.0);
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo("PUBLIC_VULN_ANOMALY");
+        assertThat(decision.get().result()).isEqualTo("BLOCK");
+    }
+
+    @Test
+    void shouldNotBlockAnomalyMatchWhenBelowCvssThreshold() {
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('PYSEC-mock-low', 'OSV', 'gradio', 'pypi', '@gradio/low-severity@1.0.0', 3.0)
+            """).update();
+
+        Optional<DecisionResult> decision =
+                decisionDao.evaluateDecision("@gradio/low-severity", "1.0.0", "npm", 7.0);
+
+        assertThat(decision).isEmpty();
+    }
+
+    @Test
+    void shouldPrioritizeCompanyPolicyOverAnomalyMatch() {
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('PYSEC-mock-override', 'OSV', 'gradio', 'pypi', '@gradio/approved-fork@2.0.0', 9.0)
+            """).update();
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('@gradio/approved-fork', 'npm', '2.0.0', 'WHITELIST', 'Reviewed and approved fork', 'security-team')
+            """).update();
+
+        Optional<DecisionResult> decision =
+                decisionDao.evaluateDecision("@gradio/approved-fork", "2.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
