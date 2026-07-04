@@ -459,7 +459,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
 
     @Test
     void shouldBlockViaQuarantineAndNotPersistApiCacheEntry() throws Exception {
-        Instant publishedAt = Instant.now().minus(2, ChronoUnit.DAYS); // < 7 jours (seuil npm par defaut)
+        Instant publishedAt = Instant.now().minus(2, ChronoUnit.DAYS); // < 7 days (default npm threshold)
         wireMock.stubFor(get(urlEqualTo("/brand-new-pkg"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "application/json")
