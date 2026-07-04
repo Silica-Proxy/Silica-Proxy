@@ -9,6 +9,9 @@ on:
       - main
       - develop # Triggers on any PR targeting main or develop
 
+permissions:
+  contents: read
+
 jobs:
   # ── Build ─────────────────────────────────────────────────────────────────────
   build:
