@@ -488,6 +488,11 @@ rules:
     version: "0.8.*"
     action: "block"
     reason: "Forbidden — use child_process directly"
+
+  - package: "@compromised-scope/*"
+    version: "*"
+    action: "block"
+    reason: "Entire npm scope compromised in a supply-chain attack"
 ```
 
 #### Version patterns
@@ -498,11 +503,23 @@ rules:
 | `1.*` | `1.%` | any version starting with `1.` |
 | `*` | `%` | all versions |
 
+#### Package name patterns
+
+`package` also accepts a `*` wildcard, to apply one rule to a whole family of packages (e.g. an entire compromised scope) instead of listing every affected name individually:
+
+| Written in YAML | Matches |
+|---|---|
+| `event-stream` | exact package name only |
+| `@compromised-scope/*` | any package name starting with `@compromised-scope/` |
+| `*` | all packages |
+
+Unlike version patterns, the letter `x` is **not** treated as a wildcard in package names — only `*` is. Many real package names legitimately contain an `x` (`axios`, `next`, `xml2js`...), so interpreting it as a wildcard would cause unintended matches.
+
 #### Conflict resolution when multiple rules match
 
-When several rules match the same package/version, **the most specific pattern wins**, regardless of the action:
+When several rules match the same package/version, **the most specific pattern wins**, regardless of the action. An exact package name always beats a wildcard package pattern; the version pattern is only used as a tie-breaker between rules that have the same package specificity:
 
-| Rules | Requested version | Winner | Outcome |
+| Rules | Requested package / version | Winner | Outcome |
 |---|---|---|---|
 | `* → allow` + `1.0.0 → block` | `1.0.0` | `1.0.0` (exact) | 🚫 blocked |
 | `* → allow` + `1.0.0 → block` | `2.0.0` | `*` | ✅ allowed |
@@ -510,8 +527,9 @@ When several rules match the same package/version, **the most specific pattern w
 | `* → block` + `1.0.0 → allow` | `2.0.0` | `*` | 🚫 blocked |
 | `1.* → block` + `1.0.0 → allow` | `1.0.0` | `1.0.0` (exact) | ✅ allowed |
 | `1.* → block` + `1.0.0 → allow` | `1.1.0` | `1.*` | 🚫 blocked |
+| `@scope/* → block` + `@scope/pkg → allow` (any version) | `@scope/pkg` | `@scope/pkg` (exact package) | ✅ allowed |
 
-This makes it possible to open a precise exception on a single version inside a globally blocked package, and vice versa. If two wildcard patterns of different breadth (`*` and `1.*`) conflict without an exact rule, the result is undefined — add an exact version rule to resolve it.
+This makes it possible to open a precise exception on a single version inside a globally blocked package (or a single package inside a globally blocked scope), and vice versa. If two wildcard patterns of different breadth (`*` and `1.*`, or `*` and `@scope/*`) conflict without a more specific rule, the result is undefined — add a more specific rule to resolve it.
 
 #### Severity and CVSS thresholds
 

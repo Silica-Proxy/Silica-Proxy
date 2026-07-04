@@ -34,7 +34,9 @@ import java.util.List;
  * Two modes : database query via {@code GitOpsDao} ({@code evaluateFromDb}), or
  * pure in-memory simulation with rules provided as parameters ({@code simulate}).
  * The resolution logic faithfully reproduces that of the SQL in {@code DecisionDao} :
- * an exact rule (specificity 0) always takes precedence over a generic pattern (specificity 1).
+ * an exact package name always takes precedence over a wildcard package pattern, and
+ * (as a tie-breaker within the same package specificity) an exact version always takes
+ * precedence over a wildcard version pattern.
  */
 @Service
 @NullMarked
@@ -62,23 +64,45 @@ public class PolicySimulationService {
 
         List<MatchedPolicyDto> matches = new ArrayList<>();
         for (SimulationPolicyInput policy : policies) {
-            if (!policy.packageName().equals(packageName)) {
+            if (!packageMatchesPattern(packageName, policy.packageName())) {
                 continue;
             }
             if (!versionMatchesPattern(version, policy.versionPattern())) {
                 continue;
             }
-            int specificity = policy.versionPattern().equals(version) ? 0 : 1;
+            int packageSpecificity = policy.packageName().equals(packageName) ? 0 : 2;
+            int versionSpecificity = policy.versionPattern().equals(version) ? 0 : 1;
             matches.add(new MatchedPolicyDto(
                     policy.packageName(),
                     policy.versionPattern(),
                     policy.policyAction(),
                     policy.reason(),
-                    specificity,
+                    packageSpecificity + versionSpecificity,
                     false));
         }
         matches.sort(Comparator.comparingInt(MatchedPolicyDto::specificity));
         return matches;
+    }
+
+    // Reproduces SQL logic : REPLACE(package_name, '*', '%'). Unlike versions, 'x' is NOT
+    // treated as a wildcard here : real package names commonly contain the literal letter 'x'
+    // (axios, next, xml2js, regexp...), so doing so would cause unintended broad matches.
+    private boolean packageMatchesPattern(String packageName, String pattern) {
+        StringBuilder regex = new StringBuilder("^");
+        for (int i = 0; i < pattern.length(); i++) {
+            char c = pattern.charAt(i);
+            if (c == '*') {
+                regex.append(".*");
+            } else if (c == '.') {
+                regex.append("\\.");
+            } else if ("\\+?()[]{}^$|".indexOf(c) >= 0) {
+                regex.append('\\').append(c);
+            } else {
+                regex.append(c);
+            }
+        }
+        regex.append("$");
+        return packageName.matches(regex.toString());
     }
 
     private PolicyEvaluationResponse buildResponse(List<MatchedPolicyDto> matches) {
