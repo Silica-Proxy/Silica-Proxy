@@ -18,6 +18,7 @@
 package com.silicaproxy.dao.client;
 
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -28,6 +29,7 @@ import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.stereotype.Component;
 import io.micrometer.core.annotation.Timed;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -73,17 +75,37 @@ public class ProxyStreamClient {
         return new StreamResponse(
                 (HttpStatus) response.getStatusCode(),
                 response.getHeaders(),
-                response.getBody()
+                response.getBody(),
+                response
         );
     }
 
+    /**
+     * {@code underlyingResponse} is only used to release the connection on {@link #close()} --
+     * closing just the {@code body} InputStream is not guaranteed by {@link ClientHttpResponse}'s
+     * contract to free everything the response holds (e.g. HTTP/2 stream bookkeeping). Callers
+     * that don't have a real response to release (tests constructing a fake stream) can use the
+     * 3-arg constructor, which makes {@link #close()} a no-op.
+     */
     public record StreamResponse(
             HttpStatus status,
             HttpHeaders headers,
-            InputStream body
-    ) {
+            InputStream body,
+            @Nullable Closeable underlyingResponse
+    ) implements Closeable {
         public StreamResponse {
             headers = HttpHeaders.readOnlyHttpHeaders(headers);
+        }
+
+        public StreamResponse(HttpStatus status, HttpHeaders headers, InputStream body) {
+            this(status, headers, body, null);
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (underlyingResponse != null) {
+                underlyingResponse.close();
+            }
         }
     }
 }

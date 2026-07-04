@@ -65,7 +65,7 @@ class SslMitmServiceTest {
             new SilicaProxyProperties.CorporateProxyProperties(false, "proxy.example.com", 8080, "localhost",
                 new SilicaProxyProperties.CorporateProxyScopeProperties(false, false, false, false, false)),
             new SilicaProxyProperties.RegistriesProperties("http://npm.example.com", "http://pypi.example.com", "http://maven.example.com"),
-            new SilicaProxyProperties.ProxyProperties(0),
+            new SilicaProxyProperties.ProxyProperties(0, 30, 60),
             new SilicaProxyProperties.SecurityProperties(new SilicaProxyProperties.SsrfProtectionProperties(false)),
             new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
             new SilicaProxyProperties.SslMitmProperties(keystorePath, password, null),
@@ -104,7 +104,7 @@ class SslMitmServiceTest {
 
     @Test
     void shouldGetCaCertPem() throws Exception {
-        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service.init();
 
         assertThat(service.getCaCertPem())
@@ -116,7 +116,7 @@ class SslMitmServiceTest {
     void shouldGenerateAndSaveKeystoreWhenPathNotExists() throws Exception {
         Path keystorePath = tempDir.resolve("ca.p12");
         SslMitmService service = new SslMitmService(
-            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
+            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -127,7 +127,7 @@ class SslMitmServiceTest {
     void shouldGenerateAndSaveKeystoreWithPassword() throws Exception {
         Path keystorePath = tempDir.resolve("ca-pwd.p12");
         SslMitmService service = new SslMitmService(
-            makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
+            makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory(), new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -140,12 +140,12 @@ class SslMitmServiceTest {
         MitmCertificateFactory factory = new MitmCertificateFactory();
 
         SslMitmService service1 = new SslMitmService(
-            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider());
+            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service1.init();
         String pemFirst = service1.getCaCertPem();
 
         SslMitmService service2 = new SslMitmService(
-            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider());
+            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service2.init();
 
         assertThat(service2.getCaCertPem()).isEqualTo(pemFirst);
@@ -153,7 +153,7 @@ class SslMitmServiceTest {
 
     @Test
     void shouldCacheSSLContextPerHost() throws Exception {
-        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service.init();
 
         SSLContext ctx1 = service.getContextForHost("example.com");
@@ -170,7 +170,7 @@ class SslMitmServiceTest {
             .when(factory)
             .generateKeyPair();
 
-        SslMitmService service = new SslMitmService(makeProperties(null, null), factory, new AlwaysAvailableLockProvider());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), factory, new AlwaysAvailableLockProvider(), new HostSslContextCache());
         service.init();
 
         assertThatThrownBy(() -> service.getContextForHost("fail.com"))
@@ -188,13 +188,13 @@ class SslMitmServiceTest {
         List<Callable<String>> tasks = List.of(
             () -> {
                 startLatch.await();
-                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider);
+                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider, new HostSslContextCache());
                 service.init();
                 return service.getCaCertPem();
             },
             () -> {
                 startLatch.await();
-                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider);
+                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider, new HostSslContextCache());
                 service.init();
                 return service.getCaCertPem();
             }
@@ -227,7 +227,7 @@ class SslMitmServiceTest {
         LockProvider raceWinnerAlreadyDone = lockConfiguration -> {
             try {
                 SslMitmService other = new SslMitmService(
-                    makeProperties(keystorePath.toString(), null), factory, new AlwaysAvailableLockProvider());
+                    makeProperties(keystorePath.toString(), null), factory, new AlwaysAvailableLockProvider(), new HostSslContextCache());
                 other.init();
                 otherInstancePem.set(other.getCaCertPem());
             } catch (Exception e) {
@@ -237,7 +237,7 @@ class SslMitmServiceTest {
         };
 
         SslMitmService service = new SslMitmService(
-            makeProperties(keystorePath.toString(), null), factory, raceWinnerAlreadyDone,
+            makeProperties(keystorePath.toString(), null), factory, raceWinnerAlreadyDone, new HostSslContextCache(),
             Duration.ofSeconds(2), Duration.ofMillis(20));
         service.init();
 
@@ -250,7 +250,7 @@ class SslMitmServiceTest {
         LockProvider neverGrants = lockConfiguration -> Optional.empty();
 
         SslMitmService service = new SslMitmService(
-            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), neverGrants,
+            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), neverGrants, new HostSslContextCache(),
             Duration.ofMillis(150), Duration.ofMillis(20));
 
         assertThatThrownBy(service::init)

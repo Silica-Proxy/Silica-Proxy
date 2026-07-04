@@ -41,9 +41,7 @@ import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @NullMarked
@@ -64,24 +62,26 @@ public class SslMitmService {
     private final SilicaProxyProperties properties;
     private final MitmCertificateFactory certFactory;
     private final LockProvider lockProvider;
+    private final HostSslContextCache hostSslContextCache;
     private final Duration lockWaitTimeout;
     private final Duration lockPollInterval;
 
     private KeyPair caKeyPair;
     private X509Certificate caCert;
     private String caCertPem;
-    private final Map<String, SSLContext> contextCache = new ConcurrentHashMap<>();
 
     @Autowired
-    public SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory, LockProvider lockProvider) {
-        this(properties, certFactory, lockProvider, DEFAULT_LOCK_WAIT_TIMEOUT, DEFAULT_LOCK_POLL_INTERVAL);
+    public SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory,
+            LockProvider lockProvider, HostSslContextCache hostSslContextCache) {
+        this(properties, certFactory, lockProvider, hostSslContextCache, DEFAULT_LOCK_WAIT_TIMEOUT, DEFAULT_LOCK_POLL_INTERVAL);
     }
 
     SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory, LockProvider lockProvider,
-            Duration lockWaitTimeout, Duration lockPollInterval) {
+            HostSslContextCache hostSslContextCache, Duration lockWaitTimeout, Duration lockPollInterval) {
         this.properties = properties;
         this.certFactory = certFactory;
         this.lockProvider = lockProvider;
+        this.hostSslContextCache = hostSslContextCache;
         this.lockWaitTimeout = lockWaitTimeout;
         this.lockPollInterval = lockPollInterval;
     }
@@ -163,13 +163,15 @@ public class SslMitmService {
     }
 
     public SSLContext getContextForHost(String host) {
-        return contextCache.computeIfAbsent(host, h -> {
-            try {
-                return buildSSLContext(h);
-            } catch (Exception e) {
-                throw new RuntimeException("SSL context generation failed for " + h, e);
-            }
-        });
+        return hostSslContextCache.getOrCompute(host, this::buildSSLContextOrThrow);
+    }
+
+    private SSLContext buildSSLContextOrThrow(String host) {
+        try {
+            return buildSSLContext(host);
+        } catch (Exception e) {
+            throw new RuntimeException("SSL context generation failed for " + host, e);
+        }
     }
 
     private void generateNewCA() throws Exception {

@@ -20,22 +20,33 @@ package com.silicaproxy.service.interception;
 import com.silicaproxy.BaseIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.context.TestPropertySource;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+// Reduced from the 30s/60s production defaults so the idle-timeout test below runs in ~1s
+// instead of 30s. A distinct property set gives this class its own (not shared) Spring context,
+// so it doesn't affect the timeouts other test classes see.
+@TestPropertySource(properties = {
+        "silicaproxy.proxy.header-read-timeout-seconds=1",
+        "silicaproxy.proxy.relay-idle-timeout-seconds=1"
+})
 class LoomProxyServerTest extends BaseIntegrationTest {
 
     private final LoomProxyServer loomProxyServer;
@@ -109,6 +120,73 @@ class LoomProxyServerTest extends BaseIntegrationTest {
 
             assertThat(targetResponse.toString()).contains("200");
             assertThat(targetResponse.toString()).contains("Hello from WireMock Tunnel!");
+        }
+    }
+
+    @Test
+    void shouldCloseConnectionWhenRequestLineExceedsMaxLength() throws Exception {
+        int proxyPort = loomProxyServer.getProxyPort();
+
+        try (Socket socket = new Socket("127.0.0.1", proxyPort)) {
+            socket.setSoTimeout(5000);
+            OutputStream out = socket.getOutputStream();
+
+            // No '\n' anywhere in this line, and it's larger than the 8192-byte cap : readLine()
+            // must give up instead of growing its buffer forever (SOUCIS.md #3).
+            byte[] junk = new byte[9000];
+            Arrays.fill(junk, (byte) 'A');
+            out.write(junk);
+            out.flush();
+
+            assertConnectionWasClosedByServer(socket);
+        }
+    }
+
+    @Test
+    void shouldCloseConnectionWhenTooManyHeaderLinesAreSent() throws Exception {
+        int proxyPort = loomProxyServer.getProxyPort();
+
+        try (Socket socket = new Socket("127.0.0.1", proxyPort)) {
+            socket.setSoTimeout(5000);
+            OutputStream out = socket.getOutputStream();
+
+            out.write("CONNECT 127.0.0.1:9999 HTTP/1.1\r\n".getBytes(StandardCharsets.UTF_8));
+            // More than MAX_HEADER_LINES (100), and the terminating blank line is never sent :
+            // skipHeaders() must give up instead of consuming header lines forever.
+            for (int i = 0; i < 150; i++) {
+                out.write(("X-Filler-" + i + ": value\r\n").getBytes(StandardCharsets.UTF_8));
+            }
+            out.flush();
+
+            // The 100+ header lines make skipHeaders() throw before the "200 Connection
+            // Established" response is ever written, so the client sees the connection close.
+            assertConnectionWasClosedByServer(socket);
+        }
+    }
+
+    @Test
+    void shouldCloseIdleConnectionAfterHeaderReadTimeout() throws Exception {
+        int proxyPort = loomProxyServer.getProxyPort();
+
+        try (Socket socket = new Socket("127.0.0.1", proxyPort)) {
+            // Connects but never sends anything. With header-read-timeout-seconds=1 (overridden
+            // for this test class), the server must give up and close the connection instead of
+            // holding the virtual thread and socket open indefinitely (SOUCIS.md #4).
+            socket.setSoTimeout(5000);
+            assertConnectionWasClosedByServer(socket);
+        }
+    }
+
+    // The server closing a socket that still has unread bytes buffered on the wire (the "junk"
+    // sent past the cap, or headers past the count limit) triggers a TCP reset rather than a
+    // graceful FIN on some platforms -- surfacing here as SocketException rather than a clean
+    // read() == -1. Both outcomes equally confirm the server closed the connection instead of
+    // hanging, which is the only thing these tests care about.
+    private void assertConnectionWasClosedByServer(Socket socket) throws IOException {
+        try {
+            assertThat(socket.getInputStream().read()).isEqualTo(-1);
+        } catch (SocketException expected) {
+            // Connection reset: also an acceptable sign the server closed the connection.
         }
     }
 }

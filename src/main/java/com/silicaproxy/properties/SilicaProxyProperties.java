@@ -53,7 +53,14 @@ public record SilicaProxyProperties(
     }
 
     public record ProxyProperties(
-        int port
+        int port,
+        // Idle timeout while LoomProxyServer reads the request line/headers, before any relay
+        // starts. Short: a genuine client sends these essentially immediately.
+        @DefaultValue("30") int headerReadTimeoutSeconds,
+        // Idle timeout during the binary relay (LoomProxyServer.copyStream). Socket.setSoTimeout
+        // only fires when read() gets zero bytes for this long -- it does not cap total transfer
+        // time, so a large file downloaded slowly but continuously never trips it.
+        @DefaultValue("60") int relayIdleTimeoutSeconds
     ) {}
 
     // Timeouts for outgoing HTTP clients (registries, security APIs, external validation).

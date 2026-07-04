@@ -55,6 +55,13 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
 
     private static final Logger LOG = LoggerFactory.getLogger(LoomProxyServer.class);
 
+    // Caps a single request-line/header line (readLine has no other bound on how far it reads
+    // looking for '\n') and the number of header lines skipHeaders will consume before giving up
+    // -- both generous relative to real HTTP traffic (Tomcat/Apache default per-field limits are
+    // in the same ~8 KB range, and real requests rarely carry more than a few dozen headers).
+    private static final int MAX_LINE_LENGTH = 8192;
+    private static final int MAX_HEADER_LINES = 100;
+
     private int proxyPort;
     private int tomcatPort;
     private ServerSocket serverSocket;
@@ -62,10 +69,21 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final SslMitmService sslMitmService;
     private final Timer sslHandshakeTimer;
+    // Applies while reading the request line and headers, before any relay starts : a genuine
+    // client sends these essentially immediately, so this can stay short.
+    private final int headerReadTimeoutMs;
+    // Applies during the binary relay (copyStream). This is an IDLE timeout (Socket.setSoTimeout
+    // only fires when read() gets zero bytes for this long) -- not a cap on total transfer time.
+    // A large file downloaded slowly but continuously never trips it, since every byte received
+    // resets the clock for the next read(); only a connection that goes completely silent for
+    // the full duration (a truly stuck/abandoned tunnel) gets closed.
+    private final int relayIdleTimeoutMs;
 
     public LoomProxyServer(SilicaProxyProperties properties, SslMitmService sslMitmService, MeterRegistry meterRegistry) {
         this.proxyPort = properties.proxy().port();
         this.sslMitmService = sslMitmService;
+        this.headerReadTimeoutMs = properties.proxy().headerReadTimeoutSeconds() * 1000;
+        this.relayIdleTimeoutMs = properties.proxy().relayIdleTimeoutSeconds() * 1000;
         this.sslHandshakeTimer = Timer.builder("silicaproxy.loom.ssl.handshake")
                 .description("Duration of TLS MITM handshake in LoomProxyServer")
                 .publishPercentiles(0.5, 0.9, 0.95, 0.99)
@@ -99,6 +117,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
 
     private void handleClient(Socket clientSocket) {
         try (clientSocket) {
+            clientSocket.setSoTimeout(headerReadTimeoutMs);
             InputStream clientIn = clientSocket.getInputStream();
             OutputStream clientOut = clientSocket.getOutputStream();
 
@@ -110,7 +129,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             if (firstLine.startsWith("CONNECT")) {
                 handleConnect(firstLine, clientSocket, clientIn, clientOut);
             } else {
-                forwardToTomcat(firstLine, clientIn, clientOut);
+                forwardToTomcat(firstLine, clientSocket, clientIn, clientOut);
             }
         } catch (IOException e) {
             if (LOG.isDebugEnabled()) {
@@ -139,10 +158,16 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             LOG.debug("CONNECT MITM for {}", host);
         }
 
-        try {
-            SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
-                    .getSocketFactory()
-                    .createSocket(clientSocket, clientSocket.getInputStream(), false);
+        // autoClose=false: closing sslSocket must not close the underlying clientSocket, which
+        // is already owned and closed by the try-with-resources in handleClient().
+        try (SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
+                .getSocketFactory()
+                .createSocket(clientSocket, clientSocket.getInputStream(), false)) {
+            // Explicit rather than relying on inheriting clientSocket's timeout: a layered
+            // SSLSocket's own SoTimeout is what actually governs its startHandshake()/read()
+            // calls, and a slow/stalled TLS handshake is exactly the kind of stuck connection
+            // this timeout is meant to catch.
+            sslSocket.setSoTimeout(headerReadTimeoutMs);
             sslSocket.setUseClientMode(false);
             long t0 = System.nanoTime();
             sslSocket.startHandshake();
@@ -151,19 +176,24 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
 
             String httpFirstLine = readLine(sslSocket.getInputStream());
             if (!httpFirstLine.isEmpty()) {
-                forwardToTomcat(httpFirstLine, sslSocket.getInputStream(), sslSocket.getOutputStream());
+                forwardToTomcat(httpFirstLine, sslSocket, sslSocket.getInputStream(), sslSocket.getOutputStream());
             }
         } catch (Exception e) {
             LOG.warn("SSL MITM failed for {} : {} — is the CA imported in the artifacts repository ?", host, e.getMessage());
         }
     }
 
-    private void forwardToTomcat(String firstLine, InputStream clientIn, OutputStream clientOut) {
+    private void forwardToTomcat(String firstLine, Socket clientSideSocket, InputStream clientIn, OutputStream clientOut) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("HTTP request forwarded to Tomcat: {}", firstLine);
         }
 
         try (Socket tomcatSocket = new Socket("127.0.0.1", tomcatPort)) {
+            // Switch both ends from the short header-read timeout to the longer relay idle
+            // timeout now that the binary transfer (headers already parsed) is about to start.
+            tomcatSocket.setSoTimeout(relayIdleTimeoutMs);
+            clientSideSocket.setSoTimeout(relayIdleTimeoutMs);
+
             OutputStream tomcatOut = tomcatSocket.getOutputStream();
             InputStream tomcatIn = tomcatSocket.getInputStream();
 
@@ -188,14 +218,21 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             }
             if (b != '\r') {
                 sb.append((char) b);
+                if (sb.length() > MAX_LINE_LENGTH) {
+                    throw new IOException("Request line or header exceeds maximum allowed length of "
+                            + MAX_LINE_LENGTH + " bytes");
+                }
             }
         }
         return sb.toString().trim();
     }
 
     private void skipHeaders(InputStream in) throws IOException {
+        int lineCount = 0;
         while (!readLine(in).isEmpty()) {
-            // consume header lines until blank line
+            if (++lineCount > MAX_HEADER_LINES) {
+                throw new IOException("Too many header lines (> " + MAX_HEADER_LINES + ")");
+            }
         }
     }
 

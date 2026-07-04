@@ -23,6 +23,7 @@ import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.UrlParserService;
 import io.micrometer.core.instrument.MeterRegistry;
+import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -80,6 +81,9 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     private RestClient proxyRestClient;
 
@@ -674,7 +678,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         when(mockRequest.getRequestURI()).thenReturn("/ftp://example.com/package.tar.gz");
         
         // Create the controller
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry);
+        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

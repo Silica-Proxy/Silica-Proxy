@@ -35,6 +35,13 @@ silicaproxy:
   # Proxy server listening port (CONNECT and HTTP)
   proxy:
     port: ${SILICAPROXY_PROXY_PORT:8080}
+    # Idle timeout while reading the request line/headers (LoomProxyServer), before any relay
+    # starts. Not a cap on total transfer time -- see relay-idle-timeout-seconds below.
+    header-read-timeout-seconds: 30
+    # Idle timeout during the binary relay. Socket.setSoTimeout only fires when no bytes are
+    # received for this long: a large file downloaded slowly but continuously never trips it,
+    # only a truly stuck/abandoned connection does.
+    relay-idle-timeout-seconds: 60
 
   # 1. Temporal quarantine configuration (Anti-Typosquatting)
   quarantine:
