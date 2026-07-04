@@ -9,6 +9,11 @@ on:
       - main
       - develop # Triggers on any PR targeting main or develop
 
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
 jobs:
   # ── Build ─────────────────────────────────────────────────────────────────────
   build:
