@@ -17,7 +17,6 @@
 
 package com.silicaproxy.service.decision;
 
-import com.silicaproxy.dao.audit.ApiCallLogDao;
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.dao.client.RegistryClient;
@@ -56,7 +55,6 @@ public class SecurityService {
     private final VulnerabilityApiClients apiClients;
     private final MetadataCacheDao metadataCacheDao;
     private final SilicaProxyProperties properties;
-    private final ApiCallLogDao apiCallLogDao;
     private final ExternalValidationService externalValidationService;
     private final SeverityMappingsCache severityMappingsCache;
 
@@ -66,7 +64,6 @@ public class SecurityService {
             VulnerabilityApiClients apiClients,
             MetadataCacheDao metadataCacheDao,
             SilicaProxyProperties properties,
-            ApiCallLogDao apiCallLogDao,
             ExternalValidationService externalValidationService,
             SeverityMappingsCache severityMappingsCache) {
         this.decisionDao = decisionDao;
@@ -74,7 +71,6 @@ public class SecurityService {
         this.apiClients = apiClients;
         this.metadataCacheDao = metadataCacheDao;
         this.properties = properties;
-        this.apiCallLogDao = apiCallLogDao;
         this.externalValidationService = externalValidationService;
         this.severityMappingsCache = severityMappingsCache;
     }
@@ -205,7 +201,7 @@ public class SecurityService {
         String verdict = (result.errorMessage() != null && result.httpStatus() != 200)
                 ? "ERROR"
                 : (result.vulnerable() ? "BLOCK" : "ALLOW");
-        apiCallLogDao.logCall(apiSource, packageName, ecosystem, version, verdict, result);
+        apiClients.apiCallLogDao().logCall(apiSource, packageName, ecosystem, version, verdict, result);
     }
 
     private boolean isApiFallbackEnabled(String sourceKey) {
