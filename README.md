@@ -307,6 +307,32 @@ docker run -d \
 
 ---
 
+### Production — Multiple instances / load balancing
+
+All instances behind a load balancer **must use the same CA keystore file** — otherwise each one generates its own CA, and clients get random SSL trust failures depending which backend they land on.
+
+**With shared storage** (NFS/EFS, a `ReadWriteMany` PVC, a bind-mounted volume): point every instance's `ca-keystore-path` at the same shared file. Instances can be started in any order, including all at once — CA generation is coordinated through a distributed lock (backed by the same PostgreSQL database every instance already uses, via the ShedLock table). Whichever instance starts first wins the lock, generates the CA and saves it; the others wait for the lock — or notice the file appear — and load it instead of generating their own. No staggered rollout is required.
+
+**Without shared storage** (independent servers, no shared filesystem): the lock only protects instances that read and write the *same file* — with no shared file, it can't help, so generate the CA once and copy the same file everywhere.
+
+1. Generate it with a throwaway instance against any reachable Postgres:
+   ```bash
+   docker run --rm -d --name ca-seed \
+     -e SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/security_db \
+     -e SPRING_DATASOURCE_USERNAME=postgres -e SPRING_DATASOURCE_PASSWORD=postgres \
+     -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/data/silicaproxy-ca.p12 \
+     -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=<strong-password> \
+     -v "$(pwd)/ca-seed:/data" \
+     silicaproxy
+   docker rm -f ca-seed   # once it logged "CA certificate generated and saved"
+   ```
+2. Copy `ca-seed/silicaproxy-ca.p12` to the same path on every server (`scp`, config management, secrets manager), with the same `ca-keystore-password`. Never generate it again per-server.
+3. Start SilicaProxy on each server pointing at the copied file — since it already exists, every instance loads it instead of generating its own.
+
+Either way, back up the keystore file: losing it means every server mints a new, different CA on its next restart, breaking SSL trust everywhere until it's re-imported.
+
+---
+
 ### Production — JAR
 
 ```bash

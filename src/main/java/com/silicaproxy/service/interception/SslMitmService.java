@@ -19,9 +19,13 @@ package com.silicaproxy.service.interception;
 
 import com.silicaproxy.properties.SilicaProxyProperties;
 import jakarta.annotation.PostConstruct;
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.core.SimpleLock;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -35,7 +39,10 @@ import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
@@ -45,17 +52,38 @@ public class SslMitmService {
     private static final Logger LOG = LoggerFactory.getLogger(SslMitmService.class);
     private static final String CA_ALIAS = "silicaproxy-ca";
 
+    // Coordinates CA generation across instances sharing the same keystore file/path — see
+    // the "Production — Multiple instances / load balancing" section of the README for why
+    // this matters: without it, every instance mints its own CA and clients trust none of them
+    // reliably behind a load balancer.
+    private static final String CA_INIT_LOCK_NAME = "silicaproxy_ca_init_lock";
+    private static final Duration LOCK_AT_MOST_FOR = Duration.ofMinutes(2);
+    private static final Duration DEFAULT_LOCK_WAIT_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_LOCK_POLL_INTERVAL = Duration.ofMillis(200);
+
     private final SilicaProxyProperties properties;
     private final MitmCertificateFactory certFactory;
+    private final LockProvider lockProvider;
+    private final Duration lockWaitTimeout;
+    private final Duration lockPollInterval;
 
     private KeyPair caKeyPair;
     private X509Certificate caCert;
     private String caCertPem;
     private final Map<String, SSLContext> contextCache = new ConcurrentHashMap<>();
 
-    public SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory) {
+    @Autowired
+    public SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory, LockProvider lockProvider) {
+        this(properties, certFactory, lockProvider, DEFAULT_LOCK_WAIT_TIMEOUT, DEFAULT_LOCK_POLL_INTERVAL);
+    }
+
+    SslMitmService(SilicaProxyProperties properties, MitmCertificateFactory certFactory, LockProvider lockProvider,
+            Duration lockWaitTimeout, Duration lockPollInterval) {
         this.properties = properties;
         this.certFactory = certFactory;
+        this.lockProvider = lockProvider;
+        this.lockWaitTimeout = lockWaitTimeout;
+        this.lockPollInterval = lockPollInterval;
     }
 
     @PostConstruct
@@ -63,25 +91,8 @@ public class SslMitmService {
         String keystorePath = properties.sslMitm().caKeystorePath();
         if (keystorePath != null && !keystorePath.isBlank()) {
             Path path = Path.of(keystorePath);
-            if (Files.exists(path)) {
-                try {
-                    loadFromKeystore(path);
-                    if (caCert != null) {
-                        LOG.info("CA certificate loaded from existing keystore {}", path.toAbsolutePath());
-                    } else {
-                        LOG.warn("Keystore exists but certificate not found, generating new CA");
-                        generateNewCA();
-                        saveToKeystore(path);
-                    }
-                } catch (Exception e) {
-                    LOG.warn("Failed to load keystore, generating new CA: {}", e.getMessage());
-                    generateNewCA();
-                    saveToKeystore(path);
-                }
-            } else {
-                generateNewCA();
-                saveToKeystore(path);
-                LOG.info("CA certificate generated and saved to new keystore {}", path.toAbsolutePath());
+            if (!tryLoadIfExists(path)) {
+                generateUnderLock(path);
             }
         } else {
             generateNewCA();
@@ -93,6 +104,58 @@ public class SslMitmService {
 
         caCertPem = certFactory.buildPem(caCert);
         exportCACert();
+    }
+
+    /** Returns {@code true} if a valid CA was loaded from {@code path}. */
+    private boolean tryLoadIfExists(Path path) {
+        if (!Files.exists(path)) {
+            return false;
+        }
+        try {
+            loadFromKeystore(path);
+            if (caCert != null) {
+                LOG.info("CA certificate loaded from existing keystore {}", path.toAbsolutePath());
+                return true;
+            }
+            LOG.warn("Keystore exists but certificate not found, generating new CA");
+        } catch (Exception e) {
+            LOG.warn("Failed to load keystore, generating new CA: {}", e.getMessage());
+        }
+        return false;
+    }
+
+    /**
+     * Generates and persists a new CA, coordinated through a distributed lock so that when
+     * several instances share the same keystore path, only one of them ever generates it —
+     * the others wait for the lock (or notice the file appear) and load it instead.
+     */
+    private void generateUnderLock(Path path) throws Exception {
+        Instant deadline = Instant.now().plus(lockWaitTimeout);
+        while (true) {
+            Optional<SimpleLock> lock = lockProvider.lock(
+                new LockConfiguration(Instant.now(), CA_INIT_LOCK_NAME, LOCK_AT_MOST_FOR, Duration.ZERO));
+            if (lock.isPresent()) {
+                try {
+                    // Another instance may have generated it while we were waiting for the lock.
+                    if (!tryLoadIfExists(path)) {
+                        generateNewCA();
+                        saveToKeystore(path);
+                        LOG.info("CA certificate generated and saved to new keystore {}", path.toAbsolutePath());
+                    }
+                    return;
+                } finally {
+                    lock.get().unlock();
+                }
+            }
+
+            if (tryLoadIfExists(path)) {
+                return;
+            }
+            if (Instant.now().isAfter(deadline)) {
+                throw new IllegalStateException("Timed out waiting for another instance to generate the CA keystore at " + path);
+            }
+            Thread.sleep(lockPollInterval.toMillis());
+        }
     }
 
     public String getCaCertPem() {
