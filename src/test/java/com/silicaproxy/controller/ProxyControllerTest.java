@@ -96,6 +96,33 @@ class ProxyControllerTest {
     }
 
     @Test
+    void shouldCloseUpstreamResponseAfterForwarding() throws Exception {
+        // Regression test: forwardRequest() used to never release the ClientHttpResponse behind
+        // streamContent() (StreamUtils.copy() only reads the body, it never closes anything),
+        // leaking a connection on every proxied request. The underlying response wrapped in
+        // StreamResponse must be closed once forwarding completes.
+        DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
+        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+
+        byte[] fakeTarball = "fake-tarball-content".getBytes();
+        java.io.Closeable underlyingResponse = mock(java.io.Closeable.class);
+        when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(
+                        HttpStatus.OK,
+                        new HttpHeaders(),
+                        new ByteArrayInputStream(fakeTarball),
+                        underlyingResponse
+                ));
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(fakeTarball));
+
+        verify(underlyingResponse).close();
+    }
+
+    @Test
     void shouldBlockPackageAndReturnRfc7807() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
         when(securityService.getDecision("lodash", "4.17.20", "npm")).thenReturn(blocked);
@@ -131,12 +158,45 @@ class ProxyControllerTest {
                         new ByteArrayInputStream(fakeTarball)
                 ));
 
-        // We simulate a request where Tomcat appended the connector port (e.g., 8080) to the reconstructed URL
-        mockMvc.perform(get("http://registry.npmjs.org:8080/lodash/-/lodash-4.17.21.tgz"))
+        // We simulate a request where Tomcat's own connector accepted the connection on port 8080
+        // (request.getLocalPort()), and that same port leaked into the reconstructed absolute URL
+        // -- a connector artifact, not a genuine target port, so it must be stripped.
+        mockMvc.perform(get("http://registry.npmjs.org:8080/lodash/-/lodash-4.17.21.tgz")
+                        .with(req -> {
+                            req.setLocalPort(8080);
+                            return req;
+                        }))
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(fakeTarball));
 
         verify(proxyStreamClient).streamContent(eq("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"), any(HttpHeaders.class));
+    }
+
+    @Test
+    void shouldPreserveGenuinePortDistinctFromConnectorPort() throws Exception {
+        // Unlike shouldStripPortWhenUpgradingToHttps above, here the absolute URI's port (8081)
+        // genuinely differs from the connector's own local port (8080, request.getLocalPort()):
+        // it is part of the original request (e.g. a private mirror on a non-standard port) and
+        // must be preserved rather than silently dropped (spec bug: previously always stripped).
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+
+        byte[] fakeContent = "mirror-content".getBytes();
+        when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(
+                        HttpStatus.OK,
+                        new HttpHeaders(),
+                        new ByteArrayInputStream(fakeContent)
+                ));
+
+        mockMvc.perform(get("http://mirror.interne:8081/artifact.jar")
+                        .with(req -> {
+                            req.setLocalPort(8080);
+                            return req;
+                        }))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(fakeContent));
+
+        verify(proxyStreamClient).streamContent(eq("https://mirror.interne:8081/artifact.jar"), any(HttpHeaders.class));
     }
 
     @Test

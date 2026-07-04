@@ -39,15 +39,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SecurityServiceTest extends BaseIntegrationTest {
 
     private final SecurityService securityService;
+    private final SeverityMappingsCache severityMappingsCache;
     private final JdbcClient jdbcClient;
     private final MetadataCacheDao metadataCacheDao;
 
     @Autowired
     SecurityServiceTest(
             SecurityService securityService,
+            SeverityMappingsCache severityMappingsCache,
             JdbcClient jdbcClient,
             MetadataCacheDao metadataCacheDao) {
         this.securityService = securityService;
+        this.severityMappingsCache = severityMappingsCache;
         this.jdbcClient = jdbcClient;
         this.metadataCacheDao = metadataCacheDao;
     }
@@ -58,6 +61,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
         jdbcClient.sql("TRUNCATE public_vulnerabilities RESTART IDENTITY CASCADE").update();
         jdbcClient.sql("TRUNCATE api_cache RESTART IDENTITY CASCADE").update();
         jdbcClient.sql("TRUNCATE package_metadata RESTART IDENTITY CASCADE").update();
+        // severity_mappings isn't truncated (it's reference data, not per-test fixtures), but
+        // shouldPickUpSeverityMappingChangesAfterRefresh mutates it directly -- reset it (DB and
+        // the in-memory cache, which TRUNCATE alone wouldn't touch) so that test's changes never
+        // bleed into others regardless of execution order.
+        jdbcClient.sql("UPDATE severity_mappings SET min_cvss = 7.0, max_cvss = 8.9 WHERE severity_level = 'HIGH'").update();
+        severityMappingsCache.refresh();
         wireMock.resetAll();
     }
 
@@ -85,6 +94,30 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+    }
+
+    @Test
+    void shouldPickUpSeverityMappingChangesAfterRefresh() {
+        // maven's configured floor is min(7.0 configured, severityMappings["HIGH"].minCvss());
+        // HIGH.min_cvss defaults to 7.0 (V1 migration), so a CVSS 6.0 vulnerability isn't blocked
+        // yet -- the package falls through to registry resolution instead (no WireMock stub for
+        // it here, so it ends up as a REGISTRY_ERROR fail-open ALLOW).
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
+            VALUES ('GHSA-refresh-test', 'OSV', 'refresh-pkg', 'maven', 'Moderate issue', '["1.0.0"]'::jsonb, 6.0)
+            """).update();
+
+        DecisionResult beforeRefresh = securityService.getDecision("refresh-pkg", "1.0.0", "maven");
+        assertThat(beforeRefresh.sourceType()).isNotEqualTo("PUBLIC_VULN");
+
+        // Lower HIGH's floor below 6.0 directly in the DB (as an administrator would), then
+        // refresh the in-memory cache without restarting the instance.
+        jdbcClient.sql("UPDATE severity_mappings SET min_cvss = 5.0 WHERE severity_level = 'HIGH'").update();
+        severityMappingsCache.refresh();
+
+        DecisionResult afterRefresh = securityService.getDecision("refresh-pkg", "1.0.0", "maven");
+        assertThat(afterRefresh.result()).isEqualTo("BLOCK");
+        assertThat(afterRefresh.sourceType()).isEqualTo("PUBLIC_VULN");
     }
 
     @Test

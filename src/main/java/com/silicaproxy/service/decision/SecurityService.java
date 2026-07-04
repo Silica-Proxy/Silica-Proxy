@@ -27,8 +27,8 @@ import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.entity.SeverityMapping;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.vulnerability.VulnerabilityApiClients;
-import jakarta.annotation.PostConstruct;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -36,9 +36,7 @@ import io.micrometer.core.annotation.Timed;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Central security decision orchestrator  : first evaluates the unique SQL 
@@ -60,7 +58,7 @@ public class SecurityService {
     private final SilicaProxyProperties properties;
     private final ApiCallLogDao apiCallLogDao;
     private final ExternalValidationService externalValidationService;
-    private final Map<String, SeverityMapping> severityMappings = new ConcurrentHashMap<>();
+    private final SeverityMappingsCache severityMappingsCache;
 
     public SecurityService(
             DecisionDao decisionDao,
@@ -69,7 +67,8 @@ public class SecurityService {
             MetadataCacheDao metadataCacheDao,
             SilicaProxyProperties properties,
             ApiCallLogDao apiCallLogDao,
-            ExternalValidationService externalValidationService) {
+            ExternalValidationService externalValidationService,
+            SeverityMappingsCache severityMappingsCache) {
         this.decisionDao = decisionDao;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
@@ -77,17 +76,7 @@ public class SecurityService {
         this.properties = properties;
         this.apiCallLogDao = apiCallLogDao;
         this.externalValidationService = externalValidationService;
-    }
-
-    @PostConstruct
-    public void init() {
-        try {
-            for (SeverityMapping mapping : decisionDao.findAllSeverityMappings()) {
-                severityMappings.put(mapping.severityLevel().toUpperCase(), mapping);
-            }
-        } catch (Exception e) {
-            LOG.error("Error while loading severity mappings", e);
-        }
+        this.severityMappingsCache = severityMappingsCache;
     }
 
     @Timed(value = "silicaproxy.service.security.getdecision",
@@ -275,7 +264,7 @@ public class SecurityService {
             return 11.0;
         }
 
-        SeverityMapping mapping = severityMappings.get(nextSeverity);
+        @Nullable SeverityMapping mapping = severityMappingsCache.get(nextSeverity);
         if (mapping != null) {
             return mapping.minCvss();
         }

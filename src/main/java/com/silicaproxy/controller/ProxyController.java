@@ -126,7 +126,7 @@ public class ProxyController {
         String ecosystem = parsed.ecosystem();
 
         if (ecosystem.equals("unknown") || packageName.equals("unknown") || version.equals("unknown")) {
-            String forwardUrl = convertToHttpsIfNeeded(fullUrl);
+            String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
             LOG.warn("Unknown ecosystem or direct resource. Bypassing security control for : {}", forwardUrl);
             forwardRequest(forwardUrl, request, response);
             return;
@@ -163,7 +163,7 @@ public class ProxyController {
             return;
         }
 
-        String forwardUrl = convertToHttpsIfNeeded(fullUrl);
+        String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
         if (LOG.isDebugEnabled()) {
             LOG.debug("Request ALLOWED : Forwarding to {}", forwardUrl);
         }
@@ -172,16 +172,18 @@ public class ProxyController {
 
     private void forwardRequest(String fullUrl, HttpServletRequest request, HttpServletResponse response) throws IOException {
         HttpHeaders headers = extractHeaders(request);
-        
-        try {
-            ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(fullUrl, headers);
-            
+
+        // try-with-resources: streamContent() opens the upstream connection, and nothing else
+        // ever released it (StreamUtils.copy() only reads the body stream, it never closes the
+        // response) -- every proxied request used to leak a connection, including on partial
+        // copies or bodyless responses.
+        try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(fullUrl, headers)) {
             response.setStatus(streamResponse.status().value());
-            
+
             streamResponse.headers().forEach((headerName, headerValues) -> {
-                // JdkClientHttpRequestFactory (Java HttpClient) exposes HTTP/2 pseudo-headers 
-                // (ex: ":status: 200") in the response map. Passing them as-is in 
-                // an HTTP/1.1 response causes "Invalid header: :status" for downstream 
+                // JdkClientHttpRequestFactory (Java HttpClient) exposes HTTP/2 pseudo-headers
+                // (ex: ":status: 200") in the response map. Passing them as-is in
+                // an HTTP/1.1 response causes "Invalid header: :status" for downstream
                 // HTTP/1.1 clients (Apache HttpClient used by artifacts repositories).
                 if (!headerName.equalsIgnoreCase("Transfer-Encoding") && !headerName.startsWith(":")) {
                     for (String headerValue : headerValues) {
@@ -259,15 +261,26 @@ public class ProxyController {
         response.getOutputStream().flush();
     }
 
-    private String convertToHttpsIfNeeded(String urlString) {
+    // Ports the servlet container itself is listening on can leak into request.getRequestURL()'s
+    // reconstructed authority even when the original absolute-URI request line had no port (or a
+    // different one) -- see shouldStripPortWhenUpgradingToHttps. Comparing against localPort
+    // (the actual local socket port this connection was accepted on, immune to Host-header or
+    // request-line spoofing) distinguishes that connector artifact from a genuine port that was
+    // part of the original request (e.g. a private mirror on a non-standard port), which must be
+    // preserved rather than silently dropped.
+    private String convertToHttpsIfNeeded(String urlString, int localPort) {
         if (urlString.startsWith("http://")) {
             try {
                 URI uri = URI.create(urlString);
                 String host = uri.getHost();
                 if (host != null && !host.equals("localhost") && !host.equals("127.0.0.1") && !host.equals("host.docker.internal")) {
+                    int port = uri.getPort();
+                    boolean isConnectorPort = port == localPort;
                     String path = uri.getRawPath();
                     String query = uri.getRawQuery();
-                    String newUrl = "https://" + host + (path != null ? path : "");
+                    String newUrl = "https://" + host
+                            + (port != -1 && !isConnectorPort ? ":" + port : "")
+                            + (path != null ? path : "");
                     if (query != null) {
                         newUrl += "?" + query;
                     }
