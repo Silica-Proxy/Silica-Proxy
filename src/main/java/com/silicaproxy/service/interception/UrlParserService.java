@@ -50,7 +50,15 @@ public class UrlParserService {
     // to the LAST "-cp"/"-py" occurrence instead of the first, swallowing part of the tag into
     // the version ("1.6.0-cp27"). Forbidding '-' after the leading digit stops the version at
     // the first tag boundary, matching how PyPI itself delimits {name}-{version}-{tag}.whl.
-    private static final Pattern PYPI_WHL_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-(\\d[^-/]*)-(?:py|cp|pp|jy)[^/]*\\.whl$");
+    // The name group is lazy ([^/]+?, not [^/]+): a greedy name backtracks past the FIRST
+    // "-digit" boundary when the optional build tag segment is present (e.g.
+    // "sentry-22.3.0-0-py38-none-any.whl" is {name}-{version}-{build tag}-{python tag}...),
+    // swallowing the real version into the name and leaving only the build tag digit as the
+    // captured "version". The optional (?:-\d[^-/]*)? group consumes that build tag explicitly.
+    // Implementation tag alternatives per PEP 425: py (generic), cp (CPython), pp (PyPy),
+    // jy (Jython), ip (IronPython) -- these are the only 5 abbreviations the spec defines.
+    private static final Pattern PYPI_WHL_PATTERN =
+            Pattern.compile("^/packages/.*?/([^/]+?)-(\\d[^-/]*)(?:-\\d[^-/]*)?-(?:py|cp|pp|jy|ip)[^/]*\\.whl$");
     // Filename-anchored, not directory-anchored: real PyPI sdist storage is content-addressed
     // (hash directories), so a package-name-as-directory backreference only matches the legacy
     // /packages/source/{letter}/{name}/ layout that pip no longer requests in practice. The
