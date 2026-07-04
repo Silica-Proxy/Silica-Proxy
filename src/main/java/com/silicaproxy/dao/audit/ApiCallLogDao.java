@@ -23,10 +23,14 @@ import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -57,12 +61,12 @@ public class ApiCallLogDao {
             int vulnerabilitiesCount,
             @Nullable String errorMessage) {}
 
-    private final JdbcClient jdbcClient;
+    private final JdbcTemplate jdbcTemplate;
     private final SilicaProxyProperties properties;
     private final LinkedBlockingQueue<ApiCallEntry> buffer;
 
-    public ApiCallLogDao(JdbcClient jdbcClient, SilicaProxyProperties properties) {
-        this.jdbcClient = jdbcClient;
+    public ApiCallLogDao(JdbcTemplate jdbcTemplate, SilicaProxyProperties properties) {
+        this.jdbcTemplate = jdbcTemplate;
         this.properties = properties;
         this.buffer = new LinkedBlockingQueue<>(properties.apiCallLog().bufferCapacity());
     }
@@ -108,12 +112,30 @@ public class ApiCallLogDao {
             String sql = "INSERT INTO api_call_log (api_source, package_name, ecosystem, package_version,"
                     + " http_status, response_time_ms, verdict, vulnerabilities_count, error_message)"
                     + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            for (ApiCallEntry e : batch) {
-                jdbcClient.sql(sql)
-                        .params(e.apiSource(), e.packageName(), e.ecosystem(), e.packageVersion(),
-                                e.httpStatus(), e.responseTimeMs(), e.verdict(), e.vulnerabilitiesCount(), e.errorMessage())
-                        .update();
-            }
+            jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+                @Override
+                public void setValues(PreparedStatement ps, int i) throws SQLException {
+                    ApiCallEntry e = batch.get(i);
+                    ps.setString(1, e.apiSource());
+                    ps.setString(2, e.packageName());
+                    ps.setString(3, e.ecosystem());
+                    ps.setString(4, e.packageVersion());
+                    ps.setInt(5, e.httpStatus());
+                    ps.setInt(6, e.responseTimeMs());
+                    ps.setString(7, e.verdict());
+                    ps.setInt(8, e.vulnerabilitiesCount());
+                    if (e.errorMessage() != null) {
+                        ps.setString(9, e.errorMessage());
+                    } else {
+                        ps.setNull(9, Types.VARCHAR);
+                    }
+                }
+
+                @Override
+                public int getBatchSize() {
+                    return batch.size();
+                }
+            });
             LOG.debug("api_call_log: flushed {} entries.", batch.size());
         } catch (Exception e) {
             LOG.warn("Failed to flush {} api_call_log entries: {}", batch.size(), e.getMessage());

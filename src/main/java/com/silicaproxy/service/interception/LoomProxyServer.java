@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import jakarta.annotation.PreDestroy;
 
 import javax.net.ssl.SSLSocket;
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -118,7 +119,12 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
     private void handleClient(Socket clientSocket) {
         try (clientSocket) {
             clientSocket.setSoTimeout(headerReadTimeoutMs);
-            InputStream clientIn = clientSocket.getInputStream();
+            // Buffered so the request line/headers aren't parsed one syscall-backed read() per
+            // byte. Threaded through as-is into handleConnect/forwardToTomcat afterwards so any
+            // bytes it read ahead into its internal buffer (beyond what readLine/skipHeaders
+            // consumed) aren't lost -- see the createSocket(clientSocket, clientIn, false) call
+            // in handleConnect, which relies on this same instance to recover them.
+            InputStream clientIn = new BufferedInputStream(clientSocket.getInputStream());
             OutputStream clientOut = clientSocket.getOutputStream();
 
             String firstLine = readLine(clientIn);
@@ -159,10 +165,13 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         }
 
         // autoClose=false: closing sslSocket must not close the underlying clientSocket, which
-        // is already owned and closed by the try-with-resources in handleClient().
+        // is already owned and closed by the try-with-resources in handleClient(). Passing
+        // clientIn (rather than a fresh clientSocket.getInputStream()) matters now that it's
+        // buffered: any TLS ClientHello bytes it already read ahead into its internal buffer
+        // while skipHeaders was consuming the CONNECT headers must still reach the handshake.
         try (SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
                 .getSocketFactory()
-                .createSocket(clientSocket, clientSocket.getInputStream(), false)) {
+                .createSocket(clientSocket, clientIn, false)) {
             // Explicit rather than relying on inheriting clientSocket's timeout: a layered
             // SSLSocket's own SoTimeout is what actually governs its startHandshake()/read()
             // calls, and a slow/stalled TLS handshake is exactly the kind of stuck connection
@@ -174,9 +183,10 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             sslHandshakeTimer.record(System.nanoTime() - t0, TimeUnit.NANOSECONDS);
             LOG.info("MITM TLS established for {}", host);
 
-            String httpFirstLine = readLine(sslSocket.getInputStream());
+            InputStream sslIn = new BufferedInputStream(sslSocket.getInputStream());
+            String httpFirstLine = readLine(sslIn);
             if (!httpFirstLine.isEmpty()) {
-                forwardToTomcat(httpFirstLine, sslSocket, sslSocket.getInputStream(), sslSocket.getOutputStream());
+                forwardToTomcat(httpFirstLine, sslSocket, sslIn, sslSocket.getOutputStream());
             }
         } catch (Exception e) {
             LOG.warn("SSL MITM failed for {} : {} — is the CA imported in the artifacts repository ?", host, e.getMessage());
