@@ -155,13 +155,21 @@ class LoomProxyServerTest extends BaseIntegrationTest {
             socket.setSoTimeout(5000);
             OutputStream out = socket.getOutputStream();
 
-            out.write("CONNECT 127.0.0.1:9999 HTTP/1.1\r\n".getBytes(StandardCharsets.UTF_8));
-            // More than MAX_HEADER_LINES (100), and the terminating blank line is never sent :
-            // skipHeaders() must give up instead of consuming header lines forever.
-            for (int i = 0; i < 150; i++) {
-                out.write(("X-Filler-" + i + ": value\r\n").getBytes(StandardCharsets.UTF_8));
+            try {
+                out.write("CONNECT 127.0.0.1:9999 HTTP/1.1\r\n".getBytes(StandardCharsets.UTF_8));
+                // More than MAX_HEADER_LINES (100), and the terminating blank line is never sent :
+                // skipHeaders() must give up instead of consuming header lines forever.
+                for (int i = 0; i < 150; i++) {
+                    out.write(("X-Filler-" + i + ": value\r\n").getBytes(StandardCharsets.UTF_8));
+                }
+                out.flush();
+            } catch (SocketException expected) {
+                // The server now buffers its header reads, so on a loaded CI box it can count past
+                // MAX_HEADER_LINES and reset the connection before this loop finishes writing --
+                // a broken pipe here is the same "server closed the connection" signal as the
+                // read() == -1 / reset checked below, just observed from the write side.
+                return;
             }
-            out.flush();
 
             // The 100+ header lines make skipHeaders() throw before the "200 Connection
             // Established" response is ever written, so the client sees the connection close.
