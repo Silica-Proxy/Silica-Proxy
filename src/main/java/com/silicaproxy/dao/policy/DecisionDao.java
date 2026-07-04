@@ -71,13 +71,21 @@ public class DecisionDao {
             )
             SELECT source_type AS "sourceType", result, reason FROM (
                 -- PRIORITY 1 : Company whitelist or blacklist (company_policies)
-                -- specificity=0 for an exact version, 1 for a wildcard pattern : an explicit 
-                -- rule for 1.0.0 always overrides a generic * rule for the same package.
+                -- package_name may itself be a '*' wildcard pattern (e.g. "@Toto/Titi*"), but
+                -- 'x' is NOT a wildcard here (unlike version_pattern) : real package names
+                -- commonly contain the literal letter 'x' (axios, next, xml2js...).
+                -- specificity : exact package name always beats a wildcard package pattern ;
+                -- an exact version is then used as a tie-breaker over a wildcard version, so
+                -- an explicit rule for 1.0.0 always overrides a generic * rule for the same
+                -- package.
                 SELECT 1 AS priority,
-                       CASE WHEN version_pattern = p_version THEN 0 ELSE 1 END AS specificity,
+                       CASE WHEN package_name = p_name THEN 0 ELSE 2 END
+                           + CASE WHEN version_pattern = p_version THEN 0 ELSE 1 END AS specificity,
                        'COMPANY_POLICY' AS source_type, policy_action AS result, reason
                 FROM company_policies, checked_package
-                WHERE package_name = p_name AND ecosystem = p_ecosystem
+                WHERE p_name LIKE
+                      REPLACE(REPLACE(REPLACE(package_name, '_', '\\_'), '%', '\\%'), '*', '%') ESCAPE '\\'
+                  AND ecosystem = p_ecosystem
                   AND p_version LIKE REPLACE(REPLACE(version_pattern, '*', '%'), 'x', '%')
 
                 UNION ALL

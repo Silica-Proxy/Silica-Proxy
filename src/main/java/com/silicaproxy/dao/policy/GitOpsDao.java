@@ -105,18 +105,21 @@ public class GitOpsDao {
         statement.update();
     }
 
-    // Returns all company_policies rules matching the package/version/ecosystem, 
-    // sorted by specificity (exact=0 before generic=1), to visualize conflict resolution.
+    // Returns all company_policies rules matching the package/version/ecosystem, sorted by
+    // specificity (exact package beats wildcard package, exact version beats wildcard version),
+    // to visualize conflict resolution.
     public List<MatchedPolicyDto> findMatchingPolicies(String packageName, String version, String ecosystem) {
         return jdbcClient.sql("""
                 SELECT package_name AS "packageName",
                        version_pattern AS "versionPattern",
                        policy_action AS "policyAction",
                        reason,
-                       CASE WHEN version_pattern = :version THEN 0 ELSE 1 END AS specificity,
+                       CASE WHEN package_name = :packageName THEN 0 ELSE 2 END
+                           + CASE WHEN version_pattern = :version THEN 0 ELSE 1 END AS specificity,
                        false AS wins
                 FROM company_policies
-                WHERE package_name = :packageName
+                WHERE :packageName LIKE
+                      REPLACE(REPLACE(REPLACE(package_name, '_', '\\_'), '%', '\\%'), '*', '%') ESCAPE '\\'
                   AND ecosystem = :ecosystem
                   AND :version LIKE REPLACE(REPLACE(version_pattern, '*', '%'), 'x', '%')
                 ORDER BY specificity ASC
