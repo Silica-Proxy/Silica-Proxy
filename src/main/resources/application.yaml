@@ -74,7 +74,9 @@ silicaproxy:
 
   # 3. Filtering by qualitative severity and CVSS numerical score of vulnerabilities
   severity-threshold:
-    # Global activation of filtering based on security vulnerability severity
+    # Global activation of filtering based on security vulnerability severity.
+    # Even when set to false, known malware (id LIKE 'MAL-%' or source = 'OPENSSF') is
+    # still always blocked -- this flag only disables severity/CVSS filtering for regular CVEs.
     enabled: true
     # Default maximum allowed severity level (blocks higher levels, e.g. blocks HIGH and CRITICAL)
     default-max-allowed-severity: CRITICAL

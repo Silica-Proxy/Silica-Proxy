@@ -84,4 +84,34 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
         assertThat(decision.sourceType()).isNotEqualTo("PUBLIC_VULN");
         assertThat(decision.result()).isEqualTo("ALLOW");
     }
+
+    @Test
+    void shouldStillBlockMalwareByIdWhenSeverityThresholdDisabled() {
+        // Malware advisories carry cvss_score=0.0 (no CVSS vector exists for "malicious or not").
+        // The "id LIKE 'MAL-%'" bypass in DecisionDao is a plain SQL OR, independent of :minCvss,
+        // so it must still block even though computeMinCvss() returns the 11.0 sentinel here.
+        jdbcClient.sql("""
+                INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
+                VALUES ('MAL-severity-disabled-1', 'OSV', 'malware-pkg-1', 'npm', 'Known malware', '["1.0.0"]'::jsonb, 0.0)
+                """).update();
+
+        DecisionResult decision = securityService.getDecision("malware-pkg-1", "1.0.0", "npm");
+
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo("BLOCK");
+    }
+
+    @Test
+    void shouldStillBlockMalwareBySourceWhenSeverityThresholdDisabled() {
+        // Same bypass, triggered via source='OPENSSF' instead of the 'MAL-' id prefix.
+        jdbcClient.sql("""
+                INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
+                VALUES ('GHSA-severity-disabled-2', 'OPENSSF', 'malware-pkg-2', 'npm', 'Known malware', '["1.0.0"]'::jsonb, 0.0)
+                """).update();
+
+        DecisionResult decision = securityService.getDecision("malware-pkg-2", "1.0.0", "npm");
+
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo("BLOCK");
+    }
 }

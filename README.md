@@ -552,6 +552,25 @@ The system computes a minimum CVSS floor from the severity level (e.g., `CRITICA
 
 **To disable severity filtering entirely**, set `severity-threshold.enabled: false` — all packages pass the threshold check regardless of CVSS or severity score.
 
+> Even when set to `false`, known malware (`id LIKE 'MAL-%'` or `source = 'OPENSSF'`) is still always blocked — this flag only disables severity/CVSS filtering for regular CVEs.
+
+#### Malware always bypasses the severity/CVSS threshold
+
+Entries from the **OpenSSF Malicious Packages** source (typosquatting, sabotage, known malware — see [Public vulnerabilities](#2-public-vulnerabilities--nightly-batch-sync--hourly-incremental-priority-2)) are not CVEs: they carry no CVSS vector or qualitative severity, since a package is malicious or it isn't — there's no "how severe" scale. Ingestion therefore assigns them a default `cvss_score` of `0.0`.
+
+If the standard threshold logic applied as-is, a `0.0` score would always pass under `default-max-allowed-cvss` / `default-max-allowed-severity`, silently letting known-malicious packages through. To prevent this, `DecisionDao` adds an unconditional `OR` to the `public_vulnerabilities` lookup that ignores the configured thresholds entirely for these rows:
+
+```sql
+AND (cvss_score >= :minCvss::numeric OR id LIKE 'MAL-%' OR source = 'OPENSSF')
+```
+
+A row matches this bypass if its advisory `id` starts with `MAL-` (the OSV malware ID convention) **or** its `source` column is `OPENSSF`. Either one is always `BLOCK`, regardless of `severity-threshold.enabled` or any configured CVSS/severity value.
+
+| Entry type | Severity/CVSS threshold applies? |
+|---|---|
+| CVE (OSV, GHSA, GitLab) | Yes — `min(configured-cvss, severity-derived-cvss)` |
+| Malware (`MAL-*` id or `source = OPENSSF`) | No — always `BLOCK` |
+
 ---
 
 ## API Endpoints
