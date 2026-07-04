@@ -18,13 +18,29 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.properties.SilicaProxyProperties;
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.core.SimpleLock;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import javax.net.ssl.SSLContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,9 +76,35 @@ class SslMitmServiceTest {
         );
     }
 
+    /** Grants the lock immediately, every time — the uncontended, single-instance case. */
+    private static final class AlwaysAvailableLockProvider implements LockProvider {
+        @Override
+        public Optional<SimpleLock> lock(LockConfiguration lockConfiguration) {
+            return Optional.of(() -> { });
+        }
+    }
+
+    /** Real mutual exclusion (blocking) plus bookkeeping of how many holders overlapped. */
+    private static final class RecordingLockProvider implements LockProvider {
+        private final ReentrantLock lock = new ReentrantLock();
+        private final AtomicInteger concurrentHolders = new AtomicInteger();
+        private final AtomicInteger maxConcurrentHolders = new AtomicInteger();
+
+        @Override
+        public Optional<SimpleLock> lock(LockConfiguration lockConfiguration) {
+            lock.lock();
+            int holders = concurrentHolders.incrementAndGet();
+            maxConcurrentHolders.updateAndGet(max -> Math.max(max, holders));
+            return Optional.of(() -> {
+                concurrentHolders.decrementAndGet();
+                lock.unlock();
+            });
+        }
+    }
+
     @Test
     void shouldGetCaCertPem() throws Exception {
-        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
         service.init();
 
         assertThat(service.getCaCertPem())
@@ -73,7 +115,8 @@ class SslMitmServiceTest {
     @Test
     void shouldGenerateAndSaveKeystoreWhenPathNotExists() throws Exception {
         Path keystorePath = tempDir.resolve("ca.p12");
-        SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(
+            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -83,7 +126,8 @@ class SslMitmServiceTest {
     @Test
     void shouldGenerateAndSaveKeystoreWithPassword() throws Exception {
         Path keystorePath = tempDir.resolve("ca-pwd.p12");
-        SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(
+            makeProperties(keystorePath.toString(), "changeit"), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
         service.init();
 
         assertThat(keystorePath).exists();
@@ -95,11 +139,13 @@ class SslMitmServiceTest {
         Path keystorePath = tempDir.resolve("ca.p12");
         MitmCertificateFactory factory = new MitmCertificateFactory();
 
-        SslMitmService service1 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
+        SslMitmService service1 = new SslMitmService(
+            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider());
         service1.init();
         String pemFirst = service1.getCaCertPem();
 
-        SslMitmService service2 = new SslMitmService(makeProperties(keystorePath.toString(), "changeit"), factory);
+        SslMitmService service2 = new SslMitmService(
+            makeProperties(keystorePath.toString(), "changeit"), factory, new AlwaysAvailableLockProvider());
         service2.init();
 
         assertThat(service2.getCaCertPem()).isEqualTo(pemFirst);
@@ -107,7 +153,7 @@ class SslMitmServiceTest {
 
     @Test
     void shouldCacheSSLContextPerHost() throws Exception {
-        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory());
+        SslMitmService service = new SslMitmService(makeProperties(null, null), new MitmCertificateFactory(), new AlwaysAvailableLockProvider());
         service.init();
 
         SSLContext ctx1 = service.getContextForHost("example.com");
@@ -124,11 +170,91 @@ class SslMitmServiceTest {
             .when(factory)
             .generateKeyPair();
 
-        SslMitmService service = new SslMitmService(makeProperties(null, null), factory);
+        SslMitmService service = new SslMitmService(makeProperties(null, null), factory, new AlwaysAvailableLockProvider());
         service.init();
 
         assertThatThrownBy(() -> service.getContextForHost("fail.com"))
             .isInstanceOf(RuntimeException.class)
             .hasMessageContaining("SSL context generation failed for fail.com");
+    }
+
+    @Test
+    void shouldSerializeCaGenerationAcrossConcurrentInstancesSharingAKeystore() throws Exception {
+        Path keystorePath = tempDir.resolve("shared-ca.p12");
+        MitmCertificateFactory factory = new MitmCertificateFactory();
+        RecordingLockProvider lockProvider = new RecordingLockProvider();
+        CountDownLatch startLatch = new CountDownLatch(1);
+
+        List<Callable<String>> tasks = List.of(
+            () -> {
+                startLatch.await();
+                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider);
+                service.init();
+                return service.getCaCertPem();
+            },
+            () -> {
+                startLatch.await();
+                SslMitmService service = new SslMitmService(makeProperties(keystorePath.toString(), null), factory, lockProvider);
+                service.init();
+                return service.getCaCertPem();
+            }
+        );
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<String>> futures = tasks.stream().map(executor::submit).collect(Collectors.toList());
+            startLatch.countDown();
+
+            String pem1 = futures.get(0).get(10, TimeUnit.SECONDS);
+            String pem2 = futures.get(1).get(10, TimeUnit.SECONDS);
+
+            assertThat(pem1).isEqualTo(pem2);
+            assertThat(lockProvider.maxConcurrentHolders.get()).isEqualTo(1);
+            assertThat(keystorePath).exists();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shouldLoadKeystoreThatAppearedWhileWaitingForTheLock() throws Exception {
+        Path keystorePath = tempDir.resolve("late-ca.p12");
+        MitmCertificateFactory factory = new MitmCertificateFactory();
+        AtomicReference<String> otherInstancePem = new AtomicReference<>();
+
+        // Simulates a concurrent instance that holds the lock and finishes generating the CA
+        // exactly while our instance is asking for the lock.
+        LockProvider raceWinnerAlreadyDone = lockConfiguration -> {
+            try {
+                SslMitmService other = new SslMitmService(
+                    makeProperties(keystorePath.toString(), null), factory, new AlwaysAvailableLockProvider());
+                other.init();
+                otherInstancePem.set(other.getCaCertPem());
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return Optional.empty();
+        };
+
+        SslMitmService service = new SslMitmService(
+            makeProperties(keystorePath.toString(), null), factory, raceWinnerAlreadyDone,
+            Duration.ofSeconds(2), Duration.ofMillis(20));
+        service.init();
+
+        assertThat(service.getCaCertPem()).isEqualTo(otherInstancePem.get());
+    }
+
+    @Test
+    void shouldFailWhenLockNeverBecomesAvailableAndKeystoreNeverAppears() {
+        Path keystorePath = tempDir.resolve("never-ca.p12");
+        LockProvider neverGrants = lockConfiguration -> Optional.empty();
+
+        SslMitmService service = new SslMitmService(
+            makeProperties(keystorePath.toString(), null), new MitmCertificateFactory(), neverGrants,
+            Duration.ofMillis(150), Duration.ofMillis(20));
+
+        assertThatThrownBy(service::init)
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("Timed out waiting");
     }
 }
