@@ -48,7 +48,7 @@ COPY --from=builder /app/build/libs/*.jar /app/silicaproxy.jar
 
 # Run as non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
-    mkdir -p /app/logs /app/work /app/certs && chown -R appuser:appgroup /app/logs /app/work /app/certs
+    mkdir -p /app/logs /app/work /app/certs /app/policies && chown -R appuser:appgroup /app/logs /app/work /app/certs /app/policies
 USER appuser
 
 EXPOSE 8080
