@@ -104,6 +104,20 @@ class UrlParserServiceTest {
     }
 
     @Test
+    void parseUrl_shouldParsePypiWheelWithBuildTag() {
+        // Wheel filenames may include an optional build tag between version and python tag:
+        // {name}-{version}-{build tag}-{python tag}-{abi tag}-{platform}.whl. A greedy name
+        // group backtracks past the version's leading digit and swallows it into the name,
+        // leaving the build tag digit as the captured "version" instead. See sentry 22.3.0 on
+        // PyPI ("sentry-22.3.0-0-py38-none-any.whl") for a real-world example.
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/23/bf/example/sentry-22.3.0-0-py38-none-any.whl");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("sentry");
+        assertThat(parsed.version()).isEqualTo("22.3.0");
+    }
+
+    @Test
     void parseUrl_shouldParsePypiWheelWithPrereleaseVersion() {
         ParsedPackage parsed = urlParserService.parseUrl(
                 "https://files.pythonhosted.org/packages/ab/cd/example/my-pkg-2.0.0rc1-py2.py3-none-any.whl");
