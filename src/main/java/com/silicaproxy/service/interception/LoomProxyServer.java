@@ -139,10 +139,11 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             LOG.debug("CONNECT MITM for {}", host);
         }
 
-        try {
-            SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
-                    .getSocketFactory()
-                    .createSocket(clientSocket, clientSocket.getInputStream(), false);
+        // autoClose=false: closing sslSocket must not close the underlying clientSocket, which
+        // is already owned and closed by the try-with-resources in handleClient().
+        try (SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
+                .getSocketFactory()
+                .createSocket(clientSocket, clientSocket.getInputStream(), false)) {
             sslSocket.setUseClientMode(false);
             long t0 = System.nanoTime();
             sslSocket.startHandshake();

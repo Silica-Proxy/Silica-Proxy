@@ -30,6 +30,11 @@ import org.springframework.web.client.RestClient;
 import io.micrometer.core.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -52,12 +57,15 @@ public class RegistryClient {
 
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
+    private final ObjectMapper objectMapper;
 
     public RegistryClient(
             SilicaProxyProperties properties,
             @Qualifier("registriesRequestFactory") ClientHttpRequestFactory registriesRequestFactory,
-            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor) {
+            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
+            ObjectMapper objectMapper) {
         this.properties = properties;
+        this.objectMapper = objectMapper;
 
         this.restClient = RestClient.builder()
                 .requestFactory(registriesRequestFactory)
@@ -86,36 +94,102 @@ public class RegistryClient {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    // A full npm packument lists every published version of a package (dependency graphs,
+    // dist info, etc. per version) and can reach several MB for popular packages with
+    // thousands of releases. Only two scalar fields are actually needed here --
+    // time.{version} and versions.{version}.deprecated -- and npm's registry has no cheaper
+    // endpoint that carries the exact publish timestamp (neither the abbreviated packument
+    // format nor the per-version endpoint GET /{package}/{version} include it; the latter's
+    // Last-Modified header reflects CDN cache freshness, not the publish date, and would
+    // silently break the anti-typosquatting quarantine age check). So the response is parsed
+    // token-by-token instead of deserialized into a generic Map: unwanted version entries are
+    // skipped via skipChildren() without allocating any object graph for them.
     private Optional<PackageMetadataResult> fetchNpmMetadata(String packageName, String version) {
         String url = properties.registries().npmUrl() + "/" + packageName;
-        Map<String, Object> response = restClient.get()
+        return restClient.get()
                 .uri(url)
-                .retrieve()
-                .body(Map.class);
+                .exchange((request, response) -> {
+                    if (!response.getStatusCode().is2xxSuccessful()) {
+                        return Optional.empty();
+                    }
+                    try (InputStream body = response.getBody()) {
+                        return parseNpmPackument(body, version);
+                    }
+                });
+    }
 
-        if (response == null) {
-            return Optional.empty();
-        }
-
-        Map<String, String> timeMap = (Map<String, String>) response.get("time");
-        if (timeMap == null || !timeMap.containsKey(version)) {
-            return Optional.empty();
-        }
-        Instant publishedAt = Instant.parse(timeMap.get(version));
-
-        Map<String, Object> versionsMap = (Map<String, Object>) response.get("versions");
+    private Optional<PackageMetadataResult> parseNpmPackument(InputStream body, String version) throws IOException {
+        String publishedAtStr = null;
         boolean isDeprecated = false;
         @Nullable String deprecationReason = null;
-        if (versionsMap != null && versionsMap.containsKey(version)) {
-            Map<String, Object> versionDetail = (Map<String, Object>) versionsMap.get(version);
-            if (versionDetail.containsKey("deprecated")) {
-                isDeprecated = true;
-                deprecationReason = (String) versionDetail.get("deprecated");
+
+        try (JsonParser parser = objectMapper.createParser(body)) {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                return Optional.empty();
+            }
+            while (parser.nextToken() != JsonToken.END_OBJECT) {
+                String fieldName = parser.currentName();
+                JsonToken valueToken = parser.nextToken();
+                if ("time".equals(fieldName) && valueToken == JsonToken.START_OBJECT) {
+                    publishedAtStr = scanObjectForStringValue(parser, version);
+                } else if ("versions".equals(fieldName) && valueToken == JsonToken.START_OBJECT) {
+                    DeprecationInfo depInfo = scanVersionsForDeprecation(parser, version);
+                    isDeprecated = depInfo.deprecated();
+                    deprecationReason = depInfo.reason();
+                } else if (valueToken == JsonToken.START_OBJECT || valueToken == JsonToken.START_ARRAY) {
+                    parser.skipChildren();
+                }
             }
         }
 
-        return Optional.of(new PackageMetadataResult(publishedAt, isDeprecated, deprecationReason));
+        if (publishedAtStr == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new PackageMetadataResult(Instant.parse(publishedAtStr), isDeprecated, deprecationReason));
+    }
+
+    /** Scans the object the parser is currently positioned inside of for a flat string value at {@code key}. */
+    private @Nullable String scanObjectForStringValue(JsonParser parser, String key) throws IOException {
+        String result = null;
+        while (parser.nextToken() != JsonToken.END_OBJECT) {
+            String currentKey = parser.currentName();
+            JsonToken valueToken = parser.nextToken();
+            if (currentKey.equals(key) && valueToken == JsonToken.VALUE_STRING) {
+                result = parser.getString();
+            } else if (valueToken == JsonToken.START_OBJECT || valueToken == JsonToken.START_ARRAY) {
+                parser.skipChildren();
+            }
+        }
+        return result;
+    }
+
+    private record DeprecationInfo(boolean deprecated, @Nullable String reason) {}
+
+    /** Scans the "versions" object for the matching version entry's "deprecated" field. */
+    private DeprecationInfo scanVersionsForDeprecation(JsonParser parser, String version) throws IOException {
+        boolean deprecated = false;
+        String reason = null;
+        while (parser.nextToken() != JsonToken.END_OBJECT) {
+            String versionKey = parser.currentName();
+            JsonToken valueToken = parser.nextToken();
+            if (versionKey.equals(version) && valueToken == JsonToken.START_OBJECT) {
+                while (parser.nextToken() != JsonToken.END_OBJECT) {
+                    String innerKey = parser.currentName();
+                    JsonToken innerValueToken = parser.nextToken();
+                    if ("deprecated".equals(innerKey)) {
+                        deprecated = true;
+                        if (innerValueToken == JsonToken.VALUE_STRING) {
+                            reason = parser.getString();
+                        }
+                    } else if (innerValueToken == JsonToken.START_OBJECT || innerValueToken == JsonToken.START_ARRAY) {
+                        parser.skipChildren();
+                    }
+                }
+            } else if (valueToken == JsonToken.START_OBJECT || valueToken == JsonToken.START_ARRAY) {
+                parser.skipChildren();
+            }
+        }
+        return new DeprecationInfo(deprecated, reason);
     }
 
     @SuppressWarnings("unchecked")

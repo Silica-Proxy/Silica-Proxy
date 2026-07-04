@@ -104,64 +104,16 @@ public class SecurityService {
         }
 
         // 3. New Package / Missing from local database
-        // Deprecation/yanked status is never persisted (unlike published_at): it must stay
-        // fresh, so the registry is consulted here every time regardless of whether the publish
-        // date is already cached. Reaching this code already means step 2 found no cached
-        // verdict in api_cache, so in practice this only happens once per api_cache TTL window
-        // (24h for an ALLOW, effectively never again once a BLOCK is cached) -- not on every
-        // request for the package.
-        Optional<Instant> localPublishedAt = metadataCacheDao.getPackagePublishedAt(packageName, ecosystem, version);
-        Instant publishedAt;
-        boolean isDeprecated = false;
-        String deprecationReason = null;
-
-        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem);
-        if (registryMetaOpt.isPresent()) {
-            PackageMetadataResult registryMeta = registryMetaOpt.get();
-            publishedAt = registryMeta.publishedAt();
-            isDeprecated = registryMeta.isDeprecated();
-            deprecationReason = registryMeta.deprecationReason();
-
-            // Permanent registration in package_metadata (idempotent: no-op if already cached)
-            metadataCacheDao.savePackagePublishedAt(packageName, ecosystem, version, publishedAt);
-        } else if (localPublishedAt.isPresent()) {
-            // Registry temporarily unreachable but this package/version's publish date is
-            // already known: keep quarantine working off the cached date rather than failing
-            // the whole request over a transient registry hiccup for an already-vetted package.
-            // Deprecation status is unknown this round and left at its default (not deprecated).
-            publishedAt = localPublishedAt.get();
-        } else {
-            // Fail-open / fail-closed behavior
-            boolean failOpen = properties.quarantine().failOpen();
-            LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
-                    ecosystem, packageName, version, failOpen);
-            if (failOpen) {
-                return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
-            } else {
-                return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
-            }
+        Optional<PackageMetadataResult> metadataOpt = resolvePackageMetadata(packageName, version, ecosystem);
+        if (metadataOpt.isEmpty()) {
+            return registryUnavailableVerdict(packageName, version, ecosystem);
         }
+        PackageMetadataResult metadata = metadataOpt.get();
 
-        // Deprecation check (only if enabled)
-        if (isDeprecationFilteringEnabled(ecosystem) && isDeprecated) {
-            String reason = deprecationReason != null ? deprecationReason : "The package is deprecated or removed (yanked).";
-            // Verdict in persistent cache with infinite TTL (ex: 9999-12-31)
-            Instant infiniteExpiry = Instant.parse("9999-12-31T23:59:59Z");
-            metadataCacheDao.saveApiCache(packageName, ecosystem, version, false, "REGISTRY_DEPRECATION", infiniteExpiry);
-            return new DecisionResult("REGISTRY_DEPRECATION", "BLOCK", reason);
-        }
-
-        // Quarantine check (Anti-Typosquatting)
-        if (isQuarantineEnabled(ecosystem)) {
-            int minAgeDays = getQuarantineMinAgeDays(ecosystem);
-            long ageInDays = ChronoUnit.DAYS.between(publishedAt, Instant.now());
-            if (ageInDays < minAgeDays) {
-                String reason = String.format(
-                        "Package %s version %s was published %d days ago"
-                        + " (required threshold: %d days). Temporarily blocked by anti-typosquatting quarantine.",
-                        packageName, version, ageInDays, minAgeDays);
-                return new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", reason);
-            }
+        Optional<DecisionResult> gatedVerdict =
+                checkDeprecationAndQuarantine(packageName, version, ecosystem, metadata);
+        if (gatedVerdict.isPresent()) {
+            return gatedVerdict.get();
         }
 
         // External validation services (before OSV/deps.dev — skips OSV when configured)
@@ -171,9 +123,73 @@ public class SecurityService {
             return extResult.get();
         }
 
-        // External API scan (Fallback Chain) : OSV, deps.dev, queried sequentially.
-        // Only enabled sources are called ; the first enabled source concludes the
-        // chain (each call returns a definitive verdict, including in case of network error).
+        return runFallbackChain(packageName, version, ecosystem);
+    }
+
+    // Deprecation/yanked status is never persisted (unlike published_at): it must stay fresh, so
+    // the registry is consulted here every time regardless of whether the publish date is
+    // already cached. Reaching this code already means the SQL evaluation above found no cached
+    // verdict in api_cache, so in practice this only happens once per api_cache TTL window (24h
+    // for an ALLOW, effectively never again once a BLOCK is cached) -- not on every request for
+    // the package. Returns empty only when the registry is unreachable AND no local publish date
+    // is cached, in which case the caller applies fail-open/fail-closed.
+    private Optional<PackageMetadataResult> resolvePackageMetadata(String packageName, String version, String ecosystem) {
+        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem);
+        if (registryMetaOpt.isPresent()) {
+            PackageMetadataResult registryMeta = registryMetaOpt.get();
+            // Permanent registration in package_metadata (idempotent: no-op if already cached)
+            metadataCacheDao.savePackagePublishedAt(packageName, ecosystem, version, registryMeta.publishedAt());
+            return registryMetaOpt;
+        }
+
+        // Registry temporarily unreachable but this package/version's publish date is already
+        // known: keep quarantine working off the cached date rather than failing the whole
+        // request over a transient registry hiccup for an already-vetted package. Deprecation
+        // status is unknown this round and left at its default (not deprecated).
+        return metadataCacheDao.getPackagePublishedAt(packageName, ecosystem, version)
+                .map(publishedAt -> new PackageMetadataResult(publishedAt, false, null));
+    }
+
+    private DecisionResult registryUnavailableVerdict(String packageName, String version, String ecosystem) {
+        boolean failOpen = properties.quarantine().failOpen();
+        LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
+                ecosystem, packageName, version, failOpen);
+        if (failOpen) {
+            return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
+        }
+        return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
+    }
+
+    private Optional<DecisionResult> checkDeprecationAndQuarantine(
+            String packageName, String version, String ecosystem, PackageMetadataResult metadata) {
+        if (isDeprecationFilteringEnabled(ecosystem) && metadata.isDeprecated()) {
+            String reason = metadata.deprecationReason() != null
+                    ? metadata.deprecationReason() : "The package is deprecated or removed (yanked).";
+            // Verdict in persistent cache with infinite TTL (ex: 9999-12-31)
+            Instant infiniteExpiry = Instant.parse("9999-12-31T23:59:59Z");
+            metadataCacheDao.saveApiCache(packageName, ecosystem, version, false, "REGISTRY_DEPRECATION", infiniteExpiry);
+            return Optional.of(new DecisionResult("REGISTRY_DEPRECATION", "BLOCK", reason));
+        }
+
+        if (isQuarantineEnabled(ecosystem)) {
+            int minAgeDays = getQuarantineMinAgeDays(ecosystem);
+            long ageInDays = ChronoUnit.DAYS.between(metadata.publishedAt(), Instant.now());
+            if (ageInDays < minAgeDays) {
+                String reason = String.format(
+                        "Package %s version %s was published %d days ago"
+                        + " (required threshold: %d days). Temporarily blocked by anti-typosquatting quarantine.",
+                        packageName, version, ageInDays, minAgeDays);
+                return Optional.of(new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", reason));
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    // External API scan (Fallback Chain) : OSV, deps.dev, queried sequentially. Only enabled
+    // sources are called ; the first enabled source concludes the chain (each call returns a
+    // definitive verdict, including in case of network error).
+    private DecisionResult runFallbackChain(String packageName, String version, String ecosystem) {
         if (isApiFallbackEnabled("osv")) {
             ApiCheckResult osvResult = apiClients.osv().checkVulnerability(packageName, version, ecosystem);
             logApiCall("OSV_LIVE", packageName, ecosystem, version, osvResult);

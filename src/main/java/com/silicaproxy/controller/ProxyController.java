@@ -35,8 +35,10 @@ import org.springframework.web.bind.annotation.RestController;
 import io.micrometer.core.annotation.Timed;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,19 +64,35 @@ public class ProxyController {
     private final AuditLogService auditLogService;
     private final ProxyStreamClient proxyStreamClient;
     private final UrlParserService urlParserService;
-    private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper;
+    // Pre-built once at startup (like LoomProxyServer.sslHandshakeTimer) instead of calling
+    // Timer.builder(...).register(...) on every request: register() still does a registry
+    // lookup under a lock each time, which is unnecessary work on the hot request path.
+    private final Timer blockDecisionTimer;
+    private final Timer allowDecisionTimer;
 
     public ProxyController(
             SecurityService securityService,
             AuditLogService auditLogService,
             ProxyStreamClient proxyStreamClient,
             UrlParserService urlParserService,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            ObjectMapper objectMapper) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
         this.urlParserService = urlParserService;
-        this.meterRegistry = meterRegistry;
+        this.objectMapper = objectMapper;
+        this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
+        this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
+    }
+
+    private static Timer buildSecurityOverheadTimer(MeterRegistry meterRegistry, String decisionTag) {
+        return Timer.builder("silicaproxy.controller.security.overhead")
+                .description("Duration of security check only (excluding binary streaming)")
+                .tag("decision", decisionTag)
+                .publishPercentiles(0.5, 0.9, 0.95, 0.99)
+                .register(meterRegistry);
     }
 
     @GetMapping("/**")
@@ -121,12 +139,7 @@ public class ProxyController {
         DecisionResult decision = securityService.getDecision(packageName, version, ecosystem);
         long executionTimeMs = System.currentTimeMillis() - startTime;
         boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
-        Timer.builder("silicaproxy.controller.security.overhead")
-                .description("Duration of security check only (excluding binary streaming)")
-                .tag("decision", blocked ? "block" : "allow")
-                .publishPercentiles(0.5, 0.9, 0.95, 0.99)
-                .register(meterRegistry)
-                .record(Duration.ofMillis(executionTimeMs));
+        (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Final decision for {}/{} (ecosystem={}) : RESULT={} (Source={}, Reason: {}) [Calculated in {}ms]",
@@ -221,46 +234,29 @@ public class ProxyController {
             pd.setProperty("error", "SecurityBlocked");
         }
 
-        // We manually serialize since we are writing directly to response output stream to bypass stream forwarder
+        // We write directly to the response output stream to bypass the stream forwarder, so
+        // the body is serialized here rather than returned as a ResponseEntity<ProblemDetail>.
+        // Built as a plain map and serialized through Jackson (rather than hand-formatted via
+        // String.format) so a block reason or package name containing quotes, backslashes, or
+        // control characters always produces valid JSON instead of a corrupted response body.
+        // Written to the raw OutputStream rather than through PrintWriter.print/write(String):
+        // those two are exactly the API shape FindSecBugs' XSS_SERVLET check flags on any
+        // servlet response, regardless of declared Content-Type.
         URI pdType = pd.getType();
         URI pdInstance = pd.getInstance();
-        String json = String.format(
-                "{\"type\":\"%s\",\"title\":\"%s\",\"status\":%d,\"detail\":\"%s\","
-                + "\"instance\":\"%s\",\"error\":\"%s\",\"step\":\"%s\","
-                + "\"package\":\"%s\",\"version\":\"%s\",\"ecosystem\":\"%s\"}",
-                pdType != null ? escapeJson(pdType.toString()) : "about:blank",
-                escapeJson(pd.getTitle()),
-                pd.getStatus(),
-                escapeJson(pd.getDetail()),
-                pdInstance != null ? escapeJson(pdInstance.toString()) : "",
-                escapeJson(getPdProperty(pd, "error")),
-                escapeJson(getPdProperty(pd, "step")),
-                escapeJson(getPdProperty(pd, "package")),
-                escapeJson(getPdProperty(pd, "version")),
-                escapeJson(getPdProperty(pd, "ecosystem"))
-        );
-
-        response.getWriter().print(json);
-        response.getWriter().flush();
-    }
-
-    private static String getPdProperty(ProblemDetail pd, String key) {
-        Map<String, Object> props = pd.getProperties();
-        if (props == null) {
-            return "";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", pdType != null ? pdType.toString() : "about:blank");
+        body.put("title", pd.getTitle());
+        body.put("status", pd.getStatus());
+        body.put("detail", pd.getDetail());
+        body.put("instance", pdInstance != null ? pdInstance.toString() : "");
+        Map<String, Object> customProperties = pd.getProperties();
+        if (customProperties != null) {
+            body.putAll(customProperties);
         }
-        Object val = props.get(key);
-        return val != null ? val.toString() : "";
-    }
 
-    private static String escapeJson(String text) {
-        if (text == null) {
-            return "";
-        }
-        return text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "\\\"");
+        objectMapper.writeValue(response.getOutputStream(), body);
+        response.getOutputStream().flush();
     }
 
     private String convertToHttpsIfNeeded(String urlString) {
