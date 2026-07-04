@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.service.search.PackageSearchService;
 import com.silicaproxy.service.search.PackageSearchService.SearchResult;
+import com.silicaproxy.util.RegexValidator;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.ResponseEntity;
@@ -30,8 +31,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.Map;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 @RestController
 @RequestMapping("/api/packages")
@@ -65,9 +64,9 @@ public class PackageSearchController {
         }
         if (versionRegex != null) {
             try {
-                Pattern.compile(versionRegex);
-            } catch (PatternSyntaxException e) {
-                LOG.error("Invalid request : versionRegex '{}' is malformed.", sanitizeLog(versionRegex), e);
+                RegexValidator.validatePattern(versionRegex);
+            } catch (IllegalArgumentException e) {
+                LOG.error("Invalid request : versionRegex '{}' is invalid: {}", sanitizeLog(versionRegex), e.getMessage());
                 return ResponseEntity.badRequest()
                         .body(Map.of("message", "Invalid versionRegex: " + e.getMessage()));
             }

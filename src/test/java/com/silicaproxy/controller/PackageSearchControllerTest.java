@@ -27,6 +27,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -97,6 +98,14 @@ class PackageSearchControllerTest extends BaseIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).contains("Invalid versionRegex");
+    }
+
+    @Test
+    void shouldAcceptValidSafeRegex() {
+        ResponseEntity<String> response = getResponse(
+                "/api/packages/search?packageName=lodash&versionRegex=^\\d+\\.\\d+\\.\\d+$");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
     @Test
