@@ -49,10 +49,10 @@ public class MetadataCacheDao {
             percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Instant> getPackagePublishedAt(String packageName, String ecosystem, String version) {
         String sql = """
-            SELECT published_at 
-            FROM package_metadata 
-            WHERE package_name = :packageName 
-              AND ecosystem = :ecosystem 
+            SELECT published_at
+            FROM package_metadata
+            WHERE package_name = :packageName
+              AND ecosystem = :ecosystem
               AND package_version = :version
             """;
         return jdbcClient.sql(sql)

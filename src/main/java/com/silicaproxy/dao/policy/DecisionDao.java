@@ -94,6 +94,24 @@ public class DecisionDao {
 
                 UNION ALL
 
+                -- PRIORITY 2 (same tier as PUBLIC_VULN) : vulnerability_ingestion_anomalies.
+                -- Some upstream OSV advisories for multi-ecosystem monorepos flatten a
+                -- DIFFERENT package's identifier into one ecosystem's "versions" list (see
+                -- gradio PYSEC-2023-255/2024-184: "@gradio/chatbot@0.4.2", an npm sub-package,
+                -- listed inside the PyPI "gradio" advisory). package_name/ecosystem on this row
+                -- reflect that WRONG outer advisory, not the embedded package, so we deliberately
+                -- do NOT filter on them here -- only suspicious_version, matched as a literal
+                -- "name@version" string against the actual request, carries the real signal.
+                SELECT 2 AS priority, 0 AS specificity,
+                       'PUBLIC_VULN_ANOMALY' AS source_type, 'BLOCK' AS result,
+                       'Data-quality anomaly during OSV ingestion: this exact package/version was '
+                       || 'listed as affected inside advisory ' || vulnerability_id AS reason
+                FROM vulnerability_ingestion_anomalies, checked_package
+                WHERE suspicious_version = p_name || '@' || p_version
+                  AND cvss_score >= :minCvss::numeric
+
+                UNION ALL
+
                 -- PRIORITY 3 : External API analysis cache (api_cache)
                 SELECT 3 AS priority, 0 AS specificity, 'API_CACHE' AS source_type,
                        CASE WHEN is_secure THEN 'ALLOW' ELSE 'BLOCK' END AS result,

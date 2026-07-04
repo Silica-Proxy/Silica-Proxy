@@ -91,6 +91,28 @@ class UrlParserServiceTest {
     }
 
     @Test
+    void parseUrl_shouldParsePypiWheelWithDuplicatedAbiTag() {
+        // Compiled wheels repeat the ABI tag (e.g. "-cp27-cp27m-"). A greedy version regex
+        // backtracks to the LAST "-cp" occurrence and swallows part of the tag into the version
+        // ("1.6.0-cp27" instead of "1.6.0"), which then fails every exact-match vulnerability/
+        // policy lookup downstream. See tensorflow 1.6.0 on PyPI for a real-world example.
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/77/7b/example/tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("tensorflow");
+        assertThat(parsed.version()).isEqualTo("1.6.0");
+    }
+
+    @Test
+    void parseUrl_shouldParsePypiWheelWithPrereleaseVersion() {
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/ab/cd/example/my-pkg-2.0.0rc1-py2.py3-none-any.whl");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("my-pkg");
+        assertThat(parsed.version()).isEqualTo("2.0.0rc1");
+    }
+
+    @Test
     void parseUrl_shouldParsePypiTarGz() {
         ParsedPackage parsed = urlParserService.parseUrl("https://files.pythonhosted.org/packages/source/r/requests/requests-2.28.1.tar.gz");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
@@ -101,6 +123,26 @@ class UrlParserServiceTest {
     @Test
     void parseUrl_shouldParsePypiTarGzFromPypiOrgDirectly() {
         ParsedPackage parsed = urlParserService.parseUrl("http://pypi.org/packages/source/b/blocked-pypi-121/blocked-pypi-121-1.0.0.tar.gz");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("blocked-pypi-121");
+        assertThat(parsed.version()).isEqualTo("1.0.0");
+    }
+
+    @Test
+    void parseUrl_shouldParsePypiTarGzFromModernHashBasedPath() {
+        // Real PyPI sdist storage is content-addressed (hash directories), not the legacy
+        // /packages/source/{letter}/{name}/ layout — this is what pip actually requests today.
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/01/f3/936e209267d6ef7510322191003885de524fc48d1b43269810cd589ceaf5/typing_extensions-4.11.0.tar.gz");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("typing_extensions");
+        assertThat(parsed.version()).isEqualTo("4.11.0");
+    }
+
+    @Test
+    void parseUrl_shouldParsePypiTarGzWithHyphenatedNameFromModernHashBasedPath() {
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/70/e5/81f99b9fced59624562ab62a33df639a11b26c582be78864b339dafa420d/blocked-pypi-121-1.0.0.tar.gz");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
         assertThat(parsed.packageName()).isEqualTo("blocked-pypi-121");
         assertThat(parsed.version()).isEqualTo("1.0.0");
@@ -270,6 +312,15 @@ class UrlParserServiceTest {
     void parseUrl_shouldParsePypiWheelFromPrivateMirror() {
         ParsedPackage parsed = urlParserService.parseUrl(
                 "https://my-devpi.internal/packages/r/requests/requests-2.28.1-py3-none-any.whl");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("requests");
+        assertThat(parsed.version()).isEqualTo("2.28.1");
+    }
+
+    @Test
+    void parseUrl_shouldParsePypiTarGzFromModernHashBasedPathOnPrivateMirror() {
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://my-devpi.internal/packages/ab/cd/deadbeef1234/requests-2.28.1.tar.gz");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
         assertThat(parsed.packageName()).isEqualTo("requests");
         assertThat(parsed.version()).isEqualTo("2.28.1");

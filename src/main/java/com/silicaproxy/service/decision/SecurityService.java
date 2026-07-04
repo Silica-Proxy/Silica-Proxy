@@ -104,34 +104,42 @@ public class SecurityService {
         }
 
         // 3. New Package / Missing from local database
+        // Deprecation/yanked status is never persisted (unlike published_at): it must stay
+        // fresh, so the registry is consulted here every time regardless of whether the publish
+        // date is already cached. Reaching this code already means step 2 found no cached
+        // verdict in api_cache, so in practice this only happens once per api_cache TTL window
+        // (24h for an ALLOW, effectively never again once a BLOCK is cached) -- not on every
+        // request for the package.
         Optional<Instant> localPublishedAt = metadataCacheDao.getPackagePublishedAt(packageName, ecosystem, version);
         Instant publishedAt;
         boolean isDeprecated = false;
         String deprecationReason = null;
 
-        if (localPublishedAt.isPresent()) {
-            publishedAt = localPublishedAt.get();
-        } else {
-            // Call to public registry
-            Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem);
-            if (registryMetaOpt.isEmpty()) {
-                // Fail-open / fail-closed behavior
-                boolean failOpen = properties.quarantine().failOpen();
-                LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}", 
-                        ecosystem, packageName, version, failOpen);
-                if (failOpen) {
-                    return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
-                } else {
-                    return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
-                }
-            }
+        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem);
+        if (registryMetaOpt.isPresent()) {
             PackageMetadataResult registryMeta = registryMetaOpt.get();
             publishedAt = registryMeta.publishedAt();
             isDeprecated = registryMeta.isDeprecated();
             deprecationReason = registryMeta.deprecationReason();
 
-            // Permanent registration in package_metadata
+            // Permanent registration in package_metadata (idempotent: no-op if already cached)
             metadataCacheDao.savePackagePublishedAt(packageName, ecosystem, version, publishedAt);
+        } else if (localPublishedAt.isPresent()) {
+            // Registry temporarily unreachable but this package/version's publish date is
+            // already known: keep quarantine working off the cached date rather than failing
+            // the whole request over a transient registry hiccup for an already-vetted package.
+            // Deprecation status is unknown this round and left at its default (not deprecated).
+            publishedAt = localPublishedAt.get();
+        } else {
+            // Fail-open / fail-closed behavior
+            boolean failOpen = properties.quarantine().failOpen();
+            LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
+                    ecosystem, packageName, version, failOpen);
+            if (failOpen) {
+                return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
+            } else {
+                return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
+            }
         }
 
         // Deprecation check (only if enabled)
