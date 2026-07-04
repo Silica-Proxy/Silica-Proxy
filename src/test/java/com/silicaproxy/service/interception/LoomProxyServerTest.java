@@ -71,8 +71,13 @@ class LoomProxyServerTest extends BaseIntegrationTest {
         // Trust-all SSLContext to accept the self-signed ArtifactSentry CA
         SSLContext trustAllCtx = SSLContext.getInstance("TLS");
         trustAllCtx.init(null, new TrustManager[]{new X509TrustManager() {
+            @Override
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+
+            @Override
             public void checkClientTrusted(X509Certificate[] c, String a) {}
+
+            @Override
             public void checkServerTrusted(X509Certificate[] c, String a) {}
         }}, new SecureRandom());
 
