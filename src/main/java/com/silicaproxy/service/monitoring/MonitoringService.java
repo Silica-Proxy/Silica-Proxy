@@ -171,7 +171,8 @@ public class MonitoringService {
             }
         }
 
-        details.put("nextScheduledSync", earliestNextRun.toString());
+        Instant scheduledSync = earliestNextRun != null ? earliestNextRun : nextVulnerabilityCronExecution();
+        details.put("nextScheduledSync", scheduledSync.toString());
 
         return new ComponentHealth(status, details);
     }
