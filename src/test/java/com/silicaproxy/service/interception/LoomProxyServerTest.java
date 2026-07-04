@@ -24,16 +24,18 @@ import org.springframework.test.context.TestPropertySource;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 
@@ -68,13 +70,8 @@ class LoomProxyServerTest extends BaseIntegrationTest {
         int proxyPort = loomProxyServer.getProxyPort();
         int wiremockPort = wireMock.port();
 
-        // Trust-all SSLContext to accept the self-signed ArtifactSentry CA
-        SSLContext trustAllCtx = SSLContext.getInstance("TLS");
-        trustAllCtx.init(null, new TrustManager[]{new X509TrustManager() {
-            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-            public void checkClientTrusted(X509Certificate[] c, String a) {}
-            public void checkServerTrusted(X509Certificate[] c, String a) {}
-        }}, new SecureRandom());
+        // SSLContext that trusts only the test MITM certificate/CA from test resources
+        SSLContext trustAllCtx = buildTrustedSslContext();
 
         // 2. Open socket to the LoomProxyServer
         try (Socket socket = new Socket("127.0.0.1", proxyPort)) {
@@ -188,5 +185,26 @@ class LoomProxyServerTest extends BaseIntegrationTest {
         } catch (SocketException expected) {
             // Connection reset: also an acceptable sign the server closed the connection.
         }
+    }
+    private SSLContext buildTrustedSslContext() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null, null);
+
+        try (InputStream certStream = getClass().getResourceAsStream("/certs/artifactsentry-ca.crt")) {
+            if (certStream == null) {
+                throw new IllegalStateException("Missing test certificate resource: /certs/artifactsentry-ca.crt");
+            }
+            X509Certificate certificate = (X509Certificate) CertificateFactory.getInstance("X.509")
+                    .generateCertificate(certStream);
+            keyStore.setCertificateEntry("artifactsentry-ca", certificate);
+        }
+
+        TrustManagerFactory trustManagerFactory =
+                TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trustManagerFactory.init(keyStore);
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustManagerFactory.getTrustManagers(), new SecureRandom());
+        return sslContext;
     }
 }
