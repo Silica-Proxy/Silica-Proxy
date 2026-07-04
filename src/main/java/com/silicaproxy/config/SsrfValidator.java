@@ -61,8 +61,11 @@ public class SsrfValidator {
                 }
             }
         } catch (UnknownHostException e) {
-            // If we can't resolve it, the connection will fail anyway.
-            // But we don't throw SSRF exception.
+            // Fail closed rather than silently letting an unresolvable host through: this is a
+            // security control, and a host that can't be resolved right now (registered by an
+            // attacker to appear only during a later, separate lookup, or genuinely misconfigured)
+            // should not get the benefit of the doubt.
+            throw new SecurityException("SSRF Blocked: Unable to resolve host " + host + ".", e);
         }
     }
 }
