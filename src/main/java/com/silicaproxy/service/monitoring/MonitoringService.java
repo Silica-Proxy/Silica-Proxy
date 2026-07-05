@@ -20,6 +20,7 @@ package com.silicaproxy.service.monitoring;
 import com.zaxxer.hikari.HikariDataSource;
 import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.SslMitmService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncScheduler;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService.JobStatus;
@@ -44,9 +45,16 @@ import java.util.Map;
 @NullMarked
 public class MonitoringService {
 
+    // Below this many remaining days, checkCaCertificateHealth() reports DEGRADED instead of UP
+    // -- the CA is generated with a 10-year validity (MitmCertificateFactory.buildCACertificate),
+    // so 30 days is a wide enough window to rotate it well before every intercepted TLS
+    // connection starts failing client-side.
+    private static final long CA_CERT_EXPIRY_WARNING_DAYS = 30;
+
     private final HealthCheckDao healthCheckDao;
     private final VulnerabilitySyncStatusService statusService;
     private final SilicaProxyProperties properties;
+    private final SslMitmService sslMitmService;
     @Nullable
     private final HikariDataSource dataSource;
 
@@ -54,10 +62,12 @@ public class MonitoringService {
             HealthCheckDao healthCheckDao,
             VulnerabilitySyncStatusService statusService,
             SilicaProxyProperties properties,
+            SslMitmService sslMitmService,
             @Nullable HikariDataSource dataSource) {
         this.healthCheckDao = healthCheckDao;
         this.statusService = statusService;
         this.properties = properties;
+        this.sslMitmService = sslMitmService;
         this.dataSource = dataSource;
     }
 
@@ -81,31 +91,54 @@ public class MonitoringService {
 
     public HealthReport checkHealth() {
         Map<String, ComponentHealth> components = new HashMap<>();
+        components.put("database", checkDatabaseHealth());
+        components.put("vulnerabilitySync", checkVulnerabilitySyncHealth());
+        components.put("gitopsSync", checkGitOpsSyncHealth());
+        components.put("osvIncrementalSync", checkOsvIncrementalSyncHealth());
+        components.put("caCertificate", checkCaCertificateHealth());
+
         String overallStatus = "UP";
-
-        ComponentHealth dbHealth = checkDatabaseHealth();
-        components.put("database", dbHealth);
-        if ("DOWN".equals(dbHealth.status())) {
-            overallStatus = "DOWN";
-        }
-
-        ComponentHealth vulnHealth = checkVulnerabilitySyncHealth();
-        components.put("vulnerabilitySync", vulnHealth);
-        if ("DOWN".equals(vulnHealth.status()) && !"DOWN".equals(overallStatus)) {
-            overallStatus = "DOWN";
-        } else if ("DEGRADED".equals(vulnHealth.status()) && "UP".equals(overallStatus)) {
-            overallStatus = "DEGRADED";
-        }
-
-        ComponentHealth gitopsHealth = checkGitOpsSyncHealth();
-        components.put("gitopsSync", gitopsHealth);
-        if ("DOWN".equals(gitopsHealth.status()) && !"DOWN".equals(overallStatus)) {
-            overallStatus = "DOWN";
-        } else if ("DEGRADED".equals(gitopsHealth.status()) && "UP".equals(overallStatus)) {
-            overallStatus = "DEGRADED";
+        for (ComponentHealth component : components.values()) {
+            overallStatus = worseOf(overallStatus, component.status());
         }
 
         return new HealthReport(overallStatus, components);
+    }
+
+    // Ranks DOWN worse than DEGRADED worse than UP, so folding this over every component
+    // (in any order) yields the same aggregate the previous hand-unrolled if/else chain did,
+    // without its NPath complexity blowing up every time a component is added.
+    private static String worseOf(String currentWorst, String candidate) {
+        if ("DOWN".equals(currentWorst) || "DOWN".equals(candidate)) {
+            return "DOWN";
+        }
+        if ("DEGRADED".equals(currentWorst) || "DEGRADED".equals(candidate)) {
+            return "DEGRADED";
+        }
+        return "UP";
+    }
+
+    // Public: reused directly by the HealthIndicator beans in HealthIndicatorsConfig (a
+    // different package) so /actuator/health reports the exact same per-component data as
+    // GET /api/monitoring/health, instead of duplicating the check logic.
+    public ComponentHealth databaseHealth() {
+        return checkDatabaseHealth();
+    }
+
+    public ComponentHealth vulnerabilitySyncHealth() {
+        return checkVulnerabilitySyncHealth();
+    }
+
+    public ComponentHealth gitopsSyncHealth() {
+        return checkGitOpsSyncHealth();
+    }
+
+    public ComponentHealth osvIncrementalSyncHealth() {
+        return checkOsvIncrementalSyncHealth();
+    }
+
+    public ComponentHealth caCertificateHealth() {
+        return checkCaCertificateHealth();
     }
 
     private ComponentHealth checkDatabaseHealth() {
@@ -177,6 +210,50 @@ public class MonitoringService {
         return new ComponentHealth(status, details);
     }
 
+    // Same shape as checkVulnerabilitySyncHealth(), but for the hourly OSV incremental jobs
+    // (a much shorter staleness window than the 26h one used for the daily batch sync above --
+    // an hourly job that hasn't succeeded in 3h has already missed at least one run).
+    private ComponentHealth checkOsvIncrementalSyncHealth() {
+        Map<String, Object> details = new HashMap<>();
+        if (!properties.osvIncremental().enabled()) {
+            details.put("message", "OSV incremental sync is disabled in configuration");
+            return new ComponentHealth("UP", details);
+        }
+
+        Map<String, JobStatus> jobs = statusService.getJobs();
+        String status = "UP";
+        Instant limit = Instant.now().minus(3, ChronoUnit.HOURS);
+
+        for (String jobId : new String[]{"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            JobStatus job = jobs.get(jobId);
+            if (job == null) {
+                details.put(jobId, "MISSING");
+                status = "DOWN";
+                continue;
+            }
+
+            details.put(jobId, job.status());
+            if (job.lastStartTime() == null) {
+                details.put(jobId + "_neverRun", true);
+            }
+
+            if ("FAILED".equals(job.status())) {
+                status = "DOWN";
+                details.put(jobId + "_error", job.errorMessage());
+            } else if ("SUCCESS".equals(job.status())) {
+                Instant jobLastEndTime = job.lastEndTime();
+                if (jobLastEndTime != null && jobLastEndTime.isBefore(limit)) {
+                    if (!"DOWN".equals(status)) {
+                        status = "DEGRADED";
+                    }
+                    details.put(jobId + "_stale", true);
+                }
+            }
+        }
+
+        return new ComponentHealth(status, details);
+    }
+
     private ComponentHealth checkGitOpsSyncHealth() {
         Map<String, Object> details = new HashMap<>();
         if (!properties.gitops().enabled()) {
@@ -222,6 +299,30 @@ public class MonitoringService {
             }
         }
 
+        return new ComponentHealth("UP", details);
+    }
+
+    private ComponentHealth checkCaCertificateHealth() {
+        Map<String, Object> details = new HashMap<>();
+        Instant notAfter = sslMitmService.getCaCertNotAfter();
+        if (notAfter == null) {
+            details.put("message", "CA certificate not yet initialized");
+            return new ComponentHealth("DOWN", details);
+        }
+
+        details.put("notAfter", notAfter.toString());
+        long daysRemaining = ChronoUnit.DAYS.between(Instant.now(), notAfter);
+        details.put("daysRemaining", daysRemaining);
+
+        if (daysRemaining < 0) {
+            details.put("message", "CA certificate has expired -- TLS interception is broken for every client "
+                    + "that trusts it");
+            return new ComponentHealth("DOWN", details);
+        }
+        if (daysRemaining < CA_CERT_EXPIRY_WARNING_DAYS) {
+            details.put("message", "CA certificate expires soon, plan a rotation");
+            return new ComponentHealth("DEGRADED", details);
+        }
         return new ComponentHealth("UP", details);
     }
 

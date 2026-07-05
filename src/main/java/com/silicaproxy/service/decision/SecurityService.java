@@ -17,6 +17,7 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.dao.client.RegistryClient;
@@ -57,6 +58,7 @@ public class SecurityService {
     private final SilicaProxyProperties properties;
     private final ExternalValidationService externalValidationService;
     private final SeverityMappingsCache severityMappingsCache;
+    private final SecurityServiceMetrics metrics;
 
     public SecurityService(
             DecisionDao decisionDao,
@@ -65,7 +67,8 @@ public class SecurityService {
             MetadataCacheDao metadataCacheDao,
             SilicaProxyProperties properties,
             ExternalValidationService externalValidationService,
-            SeverityMappingsCache severityMappingsCache) {
+            SeverityMappingsCache severityMappingsCache,
+            SecurityServiceMetrics metrics) {
         this.decisionDao = decisionDao;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
@@ -73,6 +76,7 @@ public class SecurityService {
         this.properties = properties;
         this.externalValidationService = externalValidationService;
         this.severityMappingsCache = severityMappingsCache;
+        this.metrics = metrics;
     }
 
     @Timed(value = "silicaproxy.service.security.getdecision",
@@ -84,6 +88,7 @@ public class SecurityService {
 
         // 2. Priority SQL Evaluation
         Optional<DecisionResult> decisionOpt = decisionDao.evaluateDecision(packageName, version, ecosystem, minCvss);
+        metrics.recordLocalEvaluationMetric(decisionOpt.isPresent() ? Metrics.OUTCOME_HIT : Metrics.OUTCOME_MISS);
         if (decisionOpt.isPresent()) {
             return decisionOpt.get();
         }
@@ -177,14 +182,14 @@ public class SecurityService {
     private DecisionResult runFallbackChain(String packageName, String version, String ecosystem) {
         if (isApiFallbackEnabled("osv")) {
             ApiCheckResult osvResult = apiClients.osv().checkVulnerability(packageName, version, ecosystem);
-            logApiCall("OSV_LIVE", packageName, ecosystem, version, osvResult);
-            return resolveFallbackVerdict(packageName, version, ecosystem, "OSV_LIVE", "OSV",
+            logApiCall(Metrics.OSV_LIVE, packageName, ecosystem, version, osvResult);
+            return resolveFallbackVerdict(packageName, version, ecosystem, Metrics.OSV_LIVE, "OSV",
                     osvResult.vulnerable());
         }
         if (isApiFallbackEnabled("deps-dev")) {
             ApiCheckResult depsResult = apiClients.depsDev().checkVulnerability(packageName, version, ecosystem);
-            logApiCall("DEPS_DEV", packageName, ecosystem, version, depsResult);
-            return resolveFallbackVerdict(packageName, version, ecosystem, "DEPS_DEV", "deps.dev",
+            logApiCall(Metrics.DEPS_DEV, packageName, ecosystem, version, depsResult);
+            return resolveFallbackVerdict(packageName, version, ecosystem, Metrics.DEPS_DEV, "deps.dev",
                     depsResult.vulnerable());
         }
 
@@ -201,6 +206,7 @@ public class SecurityService {
         String verdict = (result.errorMessage() != null && result.httpStatus() != 200)
                 ? "ERROR"
                 : (result.vulnerable() ? "BLOCK" : "ALLOW");
+        metrics.recordExternalApiCallMetric(apiSource, verdict);
         apiClients.apiCallLogDao().logCall(apiSource, packageName, ecosystem, version, verdict, result);
     }
 

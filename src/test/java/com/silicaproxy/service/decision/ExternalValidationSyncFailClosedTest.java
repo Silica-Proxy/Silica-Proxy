@@ -17,8 +17,11 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,7 +60,18 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
     @MockitoBean
     private ProxyStreamClient proxyStreamClient;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private RestClient proxyRestClient;
+
+    private double failClosedBlockCount() {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.BLOCK_REASON_METRIC)
+                .tag(Metrics.TAG_REASON, Metrics.REASON_FAIL_CLOSED)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
 
     @DynamicPropertySource
     static void configureExternalValidation(DynamicPropertyRegistry registry) {
@@ -106,6 +120,7 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
+        double before = failClosedBlockCount();
         try {
             proxyRestClient.get()
                     .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -114,6 +129,8 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
         } catch (HttpClientErrorException e) {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
         }
+        // Blocked only because the service timed out (fail-closed), not a real malicious verdict.
+        assertThat(failClosedBlockCount() - before).isEqualTo(1.0);
     }
 
     // Test 38 — sync_networkFault_failClosed_returns403

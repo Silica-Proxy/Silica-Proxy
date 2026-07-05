@@ -17,11 +17,15 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
+import com.silicaproxy.service.decision.ExternalValidationService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +59,9 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
     @Autowired
     private JdbcClient jdbcClient;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private RestClient restClient;
 
     @BeforeEach
@@ -64,6 +71,18 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         restClient = RestClient.create("http://localhost:" + port);
     }
 
+    // Delta-based read: the registry is shared across every test in this class, so counters
+    // persist between tests -- reading a before/after delta is the only order-independent way
+    // to assert "this call incremented it by exactly one".
+    private double callbackMetricCount(String service, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.CALLBACK_METRIC)
+                .tag(Metrics.TAG_SERVICE, service)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
     // Test 11 — valid ALLOWED callback updates cache to ALLOWED
     @Test
     void callback_allowedVerdict_returns200AndUpdatesCache() {
@@ -71,6 +90,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "test-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
+        double before = callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.PROCESSED.name());
         ResponseEntity<Void> response = restClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -85,6 +105,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         assertThat(entry.get().status()).isEqualTo("ALLOWED");
         assertThat(entry.get().reason()).isEqualTo("No threats found");
         assertThat(entry.get().expiresAt()).isAfter(Instant.now().plus(59, ChronoUnit.MINUTES));
+        assertThat(callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.PROCESSED.name()) - before).isEqualTo(1.0);
     }
 
     // Test 11b — valid BLOCKED callback removes from cache and writes to verdicts
@@ -94,6 +115,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "test-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
+        double before = callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.PROCESSED.name());
         ResponseEntity<Void> response = restClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -111,11 +133,13 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Malicious dependency chain");
+        assertThat(callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.PROCESSED.name()) - before).isEqualTo(1.0);
     }
 
     // Test 12 — unknown token returns 404
     @Test
     void callback_unknownToken_returns404() {
+        double before = callbackMetricCount(Metrics.SERVICE_UNKNOWN, ExternalValidationService.CallbackResult.NOT_FOUND.name());
         try {
             restClient.post()
                     .uri("/external-validation/callback/" + UUID.randomUUID())
@@ -127,6 +151,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         } catch (HttpClientErrorException e) {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         }
+        assertThat(callbackMetricCount(Metrics.SERVICE_UNKNOWN, ExternalValidationService.CallbackResult.NOT_FOUND.name()) - before).isEqualTo(1.0);
     }
 
     // Test 13 — already resolved token returns 404
@@ -138,6 +163,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         cacheDao.updateToAllowedByToken(token, null,
                 Instant.now().plus(60, ChronoUnit.MINUTES));
 
+        double before = callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.NOT_FOUND.name());
         try {
             restClient.post()
                     .uri("/external-validation/callback/" + token)
@@ -149,6 +175,7 @@ class ExternalValidationCallbackControllerTest extends BaseIntegrationTest {
         } catch (HttpClientErrorException e) {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         }
+        assertThat(callbackMetricCount("test-scanner", ExternalValidationService.CallbackResult.NOT_FOUND.name()) - before).isEqualTo(1.0);
     }
 
     // Test 14 — invalid verdict value returns 400

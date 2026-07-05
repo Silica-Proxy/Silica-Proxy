@@ -1,0 +1,733 @@
+{
+  "title": "SilicaProxy Overview",
+  "uid": "silicaproxy-overview",
+  "schemaVersion": 39,
+  "version": 4,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    { "id": 100, "type": "row", "title": "Overview", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "panels": [] },
+
+    {
+      "id": 1,
+      "title": "Application Up",
+      "description": "Prometheus scrape status: 1 = the instance is responding, 0 = unreachable.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "up" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Uptime",
+      "description": "Time elapsed since the JVM last restarted.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "colorMode": "none", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_uptime_seconds{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "uptime" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Decision Rate",
+      "description": "Rate of security decisions (ALLOW + BLOCK), all verdicts combined.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "decisions/s" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Block Rate",
+      "description": "Share of BLOCK decisions over the last 15 minutes. Green < 5%, orange 5-15%, red >= 15%.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 5 }, { "color": "red", "value": 15 }] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum(rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\",verdict=\"BLOCK\"}[15m])) / sum(rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "block %"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Security Bypass (1h)",
+      "description": "Number of security-control bypass events in the last hour. Should stay at 0.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 14, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(increase(silicaproxy_controller_security_bypass_total{job=\"silicaproxy\", instance=~\"$instance\"}[1h]))", "legendFormat": "bypass (1h)" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "OSV Incremental Sync Freshness (hourly)",
+      "description": "Seconds since the last successful hourly OSV incremental sync (npm/pypi/maven). A high value signals a stuck or failing scheduler. Covers only sync_type=\"incremental\" -- see \"OSV Full Sync Freshness\" for the nightly cron.",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "max": 21600,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 5400 }, { "color": "red", "value": 10800 }] }
+        }
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_vulnerability_sync_seconds_since_last_success{job=\"silicaproxy\", instance=~\"$instance\", sync_type=\"incremental\"}", "legendFormat": "{{ecosystem}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "OSV Full Sync Freshness (nightly cron)",
+      "description": "Seconds since the last successful nightly full sync (OSV npm/pypi/maven zips + GHSA/OpenSSF/GitLab git advisories, 2am cron). Expected to grow to ~24h between runs, unlike the hourly incremental sync above. Covers sync_type=\"full\".",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "max": 172800,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 108000 }, { "color": "red", "value": 129600 }] }
+        }
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_vulnerability_sync_seconds_since_last_success{job=\"silicaproxy\", instance=~\"$instance\", sync_type=\"full\"}", "legendFormat": "{{ecosystem}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "MITM CA Certificate Expiry",
+      "description": "Time remaining before the MITM CA certificate expires (generated with a 10-year validity, see MitmCertificateFactory). Once it expires, TLS interception breaks for every client that trusts it. Also exposed at /actuator/health as the \"caCertificate\" component (DEGRADED under 30 days, DOWN once expired).",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "max": 7776000,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 2592000 }, { "color": "green", "value": 5184000 }] }
+        }
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_ssl_mitm_ca_seconds_until_expiry{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "CA expiry" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "GitOps Sync Freshness",
+      "description": "Seconds since the last successful GitOps sync (enterprise governance rules).",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "max": 3600,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 900 }, { "color": "red", "value": 1800 }] }
+        }
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_gitops_sync_seconds_since_last_success{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "GitOps" }
+      ]
+    },
+
+    { "id": 101, "type": "row", "title": "Latency & Infra Health", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }, "panels": [] },
+
+    {
+      "id": 10,
+      "title": "Security Overhead (avg / p50 / p95) by Decision",
+      "description": "Time spent in security checks only (excluding binary relay), by allow/block verdict: average, median and 95th percentile.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (decision) (rate(silicaproxy_controller_security_overhead_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum by (decision) (rate(silicaproxy_controller_security_overhead_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{decision}} avg"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "silicaproxy_controller_security_overhead_seconds{job=\"silicaproxy\", instance=~\"$instance\",quantile=\"0.5\"}",
+          "legendFormat": "{{decision}} p50"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "silicaproxy_controller_security_overhead_seconds{job=\"silicaproxy\", instance=~\"$instance\",quantile=\"0.95\"}",
+          "legendFormat": "{{decision}} p95"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "TLS MITM Handshake (avg / p50 / p95)",
+      "description": "Duration of the TLS handshake during MITM interception: average, median and 95th percentile.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(silicaproxy_loom_ssl_handshake_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m]) / rate(silicaproxy_loom_ssl_handshake_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m])",
+          "legendFormat": "handshake avg"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "silicaproxy_loom_ssl_handshake_seconds{job=\"silicaproxy\", instance=~\"$instance\",quantile=\"0.5\"}",
+          "legendFormat": "handshake p50"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "silicaproxy_loom_ssl_handshake_seconds{job=\"silicaproxy\", instance=~\"$instance\",quantile=\"0.95\"}",
+          "legendFormat": "handshake p95"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "HikariCP Connection Pool",
+      "description": "PostgreSQL connection pool occupancy. 'pending' > 0 signals pool saturation.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "hikaricp_connections_active{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "active" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "hikaricp_connections_idle{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "idle" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "hikaricp_connections_pending{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "pending" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "hikaricp_connections_max{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "max" }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "JVM Threads (by state)",
+      "description": "Number of JVM threads by state (runnable, waiting, blocked...). Virtual threads are not counted individually.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_threads_states_threads{job=\"silicaproxy\", instance=~\"$instance\"}",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+
+    { "id": 102, "type": "row", "title": "Decisions & Cache", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }, "panels": [] },
+
+    {
+      "id": 20,
+      "title": "Decisions by Verdict",
+      "description": "Rate of ALLOW vs BLOCK decisions over time.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (verdict) (rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{verdict}}"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Local Decision Evaluation (HIT/MISS)",
+      "description": "DecisionDao.evaluateDecision() checks 3 local sources in a single SQL query: company policy, the locally-synced public vulnerability data (OSV, kept up to date by OsvIncrementalSyncService, not a live call), and api_cache (a still-valid verdict from a previous external call). A HIT means one of the three matched and the verdict is returned with no network call. A MISS means the package/version is unknown to all three, so SecurityService falls through to a registry metadata lookup and then a live OSV/deps.dev fallback check.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 20 } } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (rate(silicaproxy_decision_local_evaluation_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Decision Rate by Instance (HAProxy Load-Balancing Check)",
+      "description": "Compares decision throughput across instances to verify HAProxy load balancing.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (instance) (rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Block Evolution by Type",
+      "description": "Rate of BLOCK decisions over time, broken down by source: COMPANY_POLICY, PUBLIC_VULN / PUBLIC_VULN_MALWARE / PUBLIC_VULN_ANOMALY (locally-synced OSV data), API_CACHE, REGISTRY_QUARANTINE / REGISTRY_DEPRECATION / REGISTRY_ERROR, EXTERNAL_VALIDATION, or OSV_LIVE / DEPS_DEV (live fallback).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (source) (rate(silicaproxy_controller_decisions_total{job=\"silicaproxy\", instance=~\"$instance\", verdict=\"BLOCK\"}[5m]))",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+
+    { "id": 103, "type": "row", "title": "External Dependencies", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 }, "panels": [] },
+
+    {
+      "id": 30,
+      "title": "External Security API Calls (OSV live / deps.dev)",
+      "description": "Outbound calls to OSV live and deps.dev when evaluating packages unknown to the local cache, by result.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (source, result) (rate(silicaproxy_external_api_calls_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{source}} - {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "External Validation Calls (sync/async)",
+      "description": "Calls to configured external validation scanners, in synchronous (blocking) or asynchronous (fire-and-forget) mode.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (type, result) (rate(silicaproxy_external_validation_calls_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{type}} - {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Async Validation Callbacks (by service)",
+      "description": "Callbacks received from asynchronous validation services, by service and outcome (triggered / error).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (service, outcome) (rate(silicaproxy_external_validation_callback_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{service}} - {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "title": "Block Reasons (external validation, 1h)",
+      "description": "Volume of blocks decided by external validation over the last hour, by reason (scanner verdict or fail-closed).",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (reason) (increase(silicaproxy_external_validation_block_reason_total{job=\"silicaproxy\", instance=~\"$instance\"}[1h]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+
+    { "id": 104, "type": "row", "title": "Synchronization (OSV / GitOps)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 }, "panels": [] },
+
+    {
+      "id": 40,
+      "title": "Incremental OSV Sync (advisories / records, 15m)",
+      "description": "Volume of advisories and records processed by the hourly incremental OSV sync, by outcome.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 61 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (increase(silicaproxy_vulnerability_sync_advisories_total{job=\"silicaproxy\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "advisories - {{outcome}}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (increase(silicaproxy_vulnerability_sync_records_total{job=\"silicaproxy\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "records - {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "GitOps Sync (policies / runs, 15m)",
+      "description": "Volume of synced policies and GitOps runs, by outcome (success/failure).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 61 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(silicaproxy_gitops_sync_policies_total{job=\"silicaproxy\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "policies synced"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (increase(silicaproxy_gitops_sync_runs_total{job=\"silicaproxy\", instance=~\"$instance\"}[15m]))",
+          "legendFormat": "runs - {{outcome}}"
+        }
+      ]
+    },
+
+    { "id": 105, "type": "row", "title": "JVM & HTTP", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 69 }, "panels": [] },
+
+    {
+      "id": 50,
+      "title": "JVM Heap (used / max)",
+      "description": "JVM heap memory used vs. maximum allocated.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 70 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(jvm_memory_used_bytes{job=\"silicaproxy\", instance=~\"$instance\",area=\"heap\"})", "legendFormat": "used" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(jvm_memory_max_bytes{job=\"silicaproxy\", instance=~\"$instance\",area=\"heap\"})", "legendFormat": "max" }
+      ]
+    },
+    {
+      "id": 51,
+      "title": "Process CPU",
+      "description": "JVM process CPU usage compared to the host/container system.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 70 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "process_cpu_usage{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "process" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "system_cpu_usage{job=\"silicaproxy\", instance=~\"$instance\"}", "legendFormat": "system" }
+      ]
+    },
+    {
+      "id": 52,
+      "title": "HTTP Latency (p50 / p95)",
+      "description": "Incoming HTTP request latency percentiles (requires histogram buckets enabled in application.yaml).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 70 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"silicaproxy\", instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job=\"silicaproxy\", instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 53,
+      "title": "HTTP Error Rate (5xx)",
+      "description": "Rate of HTTP 5xx responses, by status code. Should stay at 0 -- unlike a BLOCK verdict (expected traffic), a 5xx means the proxy itself is failing requests.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 78 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{job=\"silicaproxy\", instance=~\"$instance\", status=~\"5..\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+
+    {
+      "id": 106,
+      "type": "row",
+      "title": "JVM Garbage Collection",
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 86 },
+      "panels": [
+        {
+          "id": 60,
+          "title": "GC Pause Duration (avg / max)",
+          "description": "Average and worst-case JVM garbage collection pause duration. A rising avg or a high max explains latency spikes that \"Security Overhead\" alone wouldn't show.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(jvm_gc_pause_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(jvm_gc_pause_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+              "legendFormat": "avg pause"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "max(jvm_gc_pause_seconds_max{job=\"silicaproxy\", instance=~\"$instance\"})",
+              "legendFormat": "max pause"
+            }
+          ]
+        },
+        {
+          "id": 61,
+          "title": "GC Pause Rate (collections/s)",
+          "description": "Rate of garbage collection pauses, by GC action/cause. A sudden increase usually precedes the duration panel degrading.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" } },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (action) (rate(jvm_gc_pause_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+              "legendFormat": "{{action}}"
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": 107,
+      "type": "row",
+      "title": "DAO & Client Latencies (avg / p50 / p95)",
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 87 },
+      "panels": [
+        {
+          "id": 62,
+          "title": "Core Decision Path Latency (avg / p50 / p95)",
+          "description": "Average, median and 95th percentile duration of each step on the synchronous per-request decision path: SecurityService, the DecisionDao SQL query, the registry/OSV clients, the proxy stream relay, and URL parsing. All already instrumented via @Timed, just not graphed until now.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_service_security_getdecision_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_service_security_getdecision_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "SecurityService.getDecision avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_security_getdecision_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "SecurityService.getDecision p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_security_getdecision_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "SecurityService.getDecision p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_decision_evaluatedecision_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_decision_evaluatedecision_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "DecisionDao.evaluateDecision avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_decision_evaluatedecision_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "DecisionDao.evaluateDecision p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_decision_evaluatedecision_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "DecisionDao.evaluateDecision p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_registry_fetchmetadata_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_registry_fetchmetadata_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "RegistryClient.fetchMetadata avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_registry_fetchmetadata_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "RegistryClient.fetchMetadata p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_registry_fetchmetadata_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "RegistryClient.fetchMetadata p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_osv_checkvulnerability_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_osv_checkvulnerability_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "OsvClient.checkVulnerability avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_osv_checkvulnerability_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "OsvClient.checkVulnerability p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_osv_checkvulnerability_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "OsvClient.checkVulnerability p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_proxystream_streamcontent_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_proxystream_streamcontent_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "ProxyStreamClient.streamContent avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_proxystream_streamcontent_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "ProxyStreamClient.streamContent p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_proxystream_streamcontent_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "ProxyStreamClient.streamContent p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_service_urlparser_parseurl_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_service_urlparser_parseurl_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "UrlParserService.parseUrl avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_urlparser_parseurl_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "UrlParserService.parseUrl p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_urlparser_parseurl_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "UrlParserService.parseUrl p95" }
+          ]
+        },
+        {
+          "id": 63,
+          "title": "Metadata & External Validation Verdicts DAO Latency (avg / p50 / p95)",
+          "description": "Average, median and 95th percentile duration of package_metadata/api_cache reads-writes and the external validation verdicts table (find/findAllByPackage/save), plus the overall ExternalValidationService.check() call.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_metadatacache_getpackagepublishedat_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_metadatacache_getpackagepublishedat_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "MetadataCache.getPackagePublishedAt avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_getpackagepublishedat_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "MetadataCache.getPackagePublishedAt p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_getpackagepublishedat_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "MetadataCache.getPackagePublishedAt p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_metadatacache_saveapicache_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_metadatacache_saveapicache_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "MetadataCache.saveApiCache avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_saveapicache_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "MetadataCache.saveApiCache p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_saveapicache_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "MetadataCache.saveApiCache p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_metadatacache_savepackagepublishedat_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_metadatacache_savepackagepublishedat_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "MetadataCache.savePackagePublishedAt avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_savepackagepublishedat_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "MetadataCache.savePackagePublishedAt p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_metadatacache_savepackagepublishedat_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "MetadataCache.savePackagePublishedAt p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_verdicts_find_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_verdicts_find_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "Verdicts.find avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_find_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "Verdicts.find p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_find_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "Verdicts.find p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_verdicts_findAllByPackage_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_verdicts_findAllByPackage_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "Verdicts.findAllByPackage avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_findAllByPackage_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "Verdicts.findAllByPackage p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_findAllByPackage_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "Verdicts.findAllByPackage p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_verdicts_save_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_verdicts_save_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "Verdicts.save avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_save_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "Verdicts.save p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_verdicts_save_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "Verdicts.save p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_service_extvalidation_check_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_service_extvalidation_check_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "ExternalValidationService.check avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_extvalidation_check_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "ExternalValidationService.check p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_service_extvalidation_check_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "ExternalValidationService.check p95" }
+          ]
+        },
+        {
+          "id": 64,
+          "title": "External Validation Cache DAO Latency -- hot path (avg / p50 / p95)",
+          "description": "Average, median and 95th percentile duration of the ExternalValidationCacheDao methods called on the per-request path (find/upsert/update).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_find_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_find_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.find avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_find_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.find p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_find_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.find p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_find_token_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_find_token_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.find.token avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_find_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.find.token p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_find_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.find.token p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_upsert_sync_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_upsert_sync_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.upsert.sync avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_upsert_sync_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.upsert.sync p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_upsert_sync_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.upsert.sync p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_upsert_async_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_upsert_async_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.upsert.async avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_upsert_async_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.upsert.async p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_upsert_async_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.upsert.async p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_update_allowed_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_update_allowed_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.update.allowed avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_allowed_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.update.allowed p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_allowed_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.update.allowed p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_update_allowed_token_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_update_allowed_token_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.update.allowed.token avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_allowed_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.update.allowed.token p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_allowed_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.update.allowed.token p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_update_timeout_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_update_timeout_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.update.timeout avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_timeout_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.update.timeout p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_update_timeout_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.update.timeout p95" }
+          ]
+        },
+        {
+          "id": 67,
+          "title": "External Validation Cache DAO Latency -- cleanup (avg / p50 / p95)",
+          "description": "Average, median and 95th percentile duration of the background cleanup methods (expired/token deletion, pending expiry sweep) on the external scanner cache.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_delete_expired_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_delete_expired_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.delete.expired avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_delete_expired_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.delete.expired p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_delete_expired_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.delete.expired p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_delete_token_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_delete_token_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.delete.token avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_delete_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.delete.token p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_delete_token_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.delete.token p95" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(silicaproxy_dao_extvalidation_cache_expire_pending_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_dao_extvalidation_cache_expire_pending_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))", "legendFormat": "cache.expire.pending avg" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_expire_pending_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.5\"}", "legendFormat": "cache.expire.pending p50" },
+            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "silicaproxy_dao_extvalidation_cache_expire_pending_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}", "legendFormat": "cache.expire.pending p95" }
+          ]
+        }
+      ]
+    },
+
+    { "id": 108, "type": "row", "title": "Audit Log", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 88 }, "panels": [] },
+
+    {
+      "id": 65,
+      "title": "Audit Log Write Outcome (rate)",
+      "description": "Rate of audit log write attempts, by outcome. FAILURE means AuditLogDao.save() threw (disk full, constraint violation...) and that decision's audit trail was lost -- should stay at 0.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 89 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (rate(silicaproxy_service_auditlog_writes_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 66,
+      "title": "Audit Log Latency (avg / p95)",
+      "description": "Duration of the async audit log write path (AuditLogService.logAudit, including the AuditLogDao.save SQL insert).",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 89 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(silicaproxy_service_auditlog_logaudit_seconds_sum{job=\"silicaproxy\", instance=~\"$instance\"}[5m])) / sum(rate(silicaproxy_service_auditlog_logaudit_seconds_count{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "avg (service, async)"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "silicaproxy_dao_auditlog_save_seconds{job=\"silicaproxy\", instance=~\"$instance\", quantile=\"0.95\"}",
+          "legendFormat": "p95 (DAO insert)"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "label": "Instance",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(up{job=\"silicaproxy\"}, instance)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  }
+}

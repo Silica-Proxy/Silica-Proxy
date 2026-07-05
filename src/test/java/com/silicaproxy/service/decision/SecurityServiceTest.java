@@ -17,9 +17,12 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.model.dto.DecisionResult;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,17 +45,41 @@ class SecurityServiceTest extends BaseIntegrationTest {
     private final SeverityMappingsCache severityMappingsCache;
     private final JdbcClient jdbcClient;
     private final MetadataCacheDao metadataCacheDao;
+    private final MeterRegistry meterRegistry;
 
     @Autowired
     SecurityServiceTest(
             SecurityService securityService,
             SeverityMappingsCache severityMappingsCache,
             JdbcClient jdbcClient,
-            MetadataCacheDao metadataCacheDao) {
+            MetadataCacheDao metadataCacheDao,
+            MeterRegistry meterRegistry) {
         this.securityService = securityService;
         this.severityMappingsCache = severityMappingsCache;
         this.jdbcClient = jdbcClient;
         this.metadataCacheDao = metadataCacheDao;
+        this.meterRegistry = meterRegistry;
+    }
+
+    // The MeterRegistry bean is shared across every test in this class (and reused across the
+    // whole Spring test context), so counters persist between tests -- reading a before/after
+    // delta around the call under test is the only way to assert "this call incremented it by
+    // exactly one" without depending on test execution order.
+    private double apiCallCount(String source, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.EXTERNAL_API_CALLS_METRIC)
+                .tag(Metrics.TAG_SOURCE, source)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
+    private double localEvaluationCount(String outcome) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.LOCAL_EVALUATION_METRIC)
+                .tag(Metrics.TAG_OUTCOME, outcome)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
     }
 
     @BeforeEach
@@ -77,10 +104,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
             VALUES ('whitelisted-pkg', 'npm', '*', 'WHITELIST', 'Allowed package', 'security')
             """).update();
 
+        double before = localEvaluationCount(Metrics.OUTCOME_HIT);
         DecisionResult decision = securityService.getDecision("whitelisted-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("WHITELIST");
         assertThat(decision.sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(localEvaluationCount(Metrics.OUTCOME_HIT) - before).isEqualTo(1.0);
     }
 
     @Test
@@ -90,10 +119,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
             VALUES ('CVE-123', 'OSV', 'vuln-pkg', 'npm', 'Critical bug', '["1.0.0"]'::jsonb, 9.8)
             """).update();
 
+        double before = localEvaluationCount(Metrics.OUTCOME_HIT);
         DecisionResult decision = securityService.getDecision("vuln-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(localEvaluationCount(Metrics.OUTCOME_HIT) - before).isEqualTo(1.0);
     }
 
     @Test
@@ -247,9 +278,15 @@ class SecurityServiceTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
+        double before = apiCallCount(Metrics.OSV_LIVE, "ALLOW");
+        double missBefore = localEvaluationCount(Metrics.OUTCOME_MISS);
         DecisionResult decision = securityService.getDecision("safe-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(apiCallCount(Metrics.OSV_LIVE, "ALLOW") - before).isEqualTo(1.0);
+        // Nothing in company_policies/public_vulnerabilities/api_cache for this package,
+        // so the local SQL evaluation missed and OSV_LIVE had to be called (asserted above).
+        assertThat(localEvaluationCount(Metrics.OUTCOME_MISS) - missBefore).isEqualTo(1.0);
 
         Map<String, Object> cache = jdbcClient.sql(
                 "SELECT * FROM api_cache WHERE package_name = 'safe-pkg'").query().singleRow();
@@ -287,11 +324,13 @@ class SecurityServiceTest extends BaseIntegrationTest {
                             }
                             """)));
 
+        double before = apiCallCount(Metrics.OSV_LIVE, "BLOCK");
         DecisionResult decision = securityService.getDecision("vuln-osv-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
         assertThat(decision.reason()).contains("vulnerability");
+        assertThat(apiCallCount(Metrics.OSV_LIVE, "BLOCK") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -311,10 +350,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
                 .willReturn(aResponse()
                         .withStatus(500)));
 
+        double before = apiCallCount(Metrics.OSV_LIVE, "ERROR");
         DecisionResult decision = securityService.getDecision("osv-fail-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("ALLOW"); // Fail-open pour l'API de secours
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
+        assertThat(apiCallCount(Metrics.OSV_LIVE, "ERROR") - before).isEqualTo(1.0);
     }
 
     @Test

@@ -17,12 +17,15 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +64,8 @@ import static org.mockito.Mockito.when;
 // Pending requests apply fail-open while waiting.
 class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
+    private static final String SERVICE_NAME = "test-scanner";
+
     @LocalServerPort
     private int port;
 
@@ -76,8 +81,24 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
     @MockitoBean
     private ProxyStreamClient proxyStreamClient;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private RestClient proxyRestClient;
     private RestClient localRestClient;
+
+    // Delta-based read: the registry is shared across every test in this class, so counters
+    // persist between tests -- reading a before/after delta is the only order-independent way
+    // to assert "this call incremented it by exactly one".
+    private double validationCallCount(String service, String type, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.VALIDATION_CALLS_METRIC)
+                .tag(Metrics.TAG_SERVICE, service)
+                .tag(Metrics.TAG_TYPE, type)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
 
     @DynamicPropertySource
     static void configureExternalValidation(DynamicPropertyRegistry registry) {
@@ -85,13 +106,14 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         registry.add("silicaproxy.external-validation.callback-base-url",
                 () -> "http://localhost:0");  // overridden per-test when callbackUrl verification needed
         registry.add("silicaproxy.external-validation.trigger-async-on-sync-block", () -> "false");
-        registry.add("silicaproxy.external-validation.services.test-scanner.enabled", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.url", () -> extUrl);
-        registry.add("silicaproxy.external-validation.services.test-scanner.mode", () -> "async");
-        registry.add("silicaproxy.external-validation.services.test-scanner.fail-open", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.blocking", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.cache-ttl-minutes", () -> "60");
-        registry.add("silicaproxy.external-validation.services.test-scanner.pending-ttl-minutes", () -> "30");
+        String servicePrefix = "silicaproxy.external-validation.services." + SERVICE_NAME + ".";
+        registry.add(servicePrefix + "enabled", () -> "true");
+        registry.add(servicePrefix + "url", () -> extUrl);
+        registry.add(servicePrefix + "mode", () -> Metrics.TYPE_ASYNC);
+        registry.add(servicePrefix + "fail-open", () -> "true");
+        registry.add(servicePrefix + "blocking", () -> "true");
+        registry.add(servicePrefix + "cache-ttl-minutes", () -> "60");
+        registry.add(servicePrefix + "pending-ttl-minutes", () -> "30");
         registry.add("silicaproxy.quarantine.enabled", () -> "false");
         registry.add("silicaproxy.deprecation.enabled", () -> "false");
         registry.add("silicaproxy.api-fallback.osv.enabled", () -> "false");
@@ -130,6 +152,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
     // Test 23 — async_firstRequest_storesPendingAndAllows (fail-open)
     @Test
     void async_firstRequest_storesPendingInDbAndAllowsFailOpen() throws InterruptedException {
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.RESULT_TRIGGERED);
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
@@ -139,8 +162,10 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         Thread.sleep(500); // Fire-and-forget async task writes DB and calls WireMock after the response
 
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.RESULT_TRIGGERED) - before)
+                .isEqualTo(1.0);
 
-        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
         assertThat(entry.get().mode()).isEqualTo("ASYNC");
@@ -159,15 +184,18 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         Thread.sleep(500); // Fire-and-forget async task writes token to DB after the response
 
         // Read token from DB
-        UUID token = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21")
+        UUID token = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21")
                 .orElseThrow().callbackToken();
 
         // Simulate external service callback with BLOCKED verdict
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.BLOCKED);
         localRestClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"verdict\":\"BLOCKED\",\"reason\":\"Malicious supply chain\"}")
                 .retrieve().toBodilessEntity();
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.BLOCKED) - before)
+                .isEqualTo(1.0);
 
         // Next request hits the permanent verdict
         try {
@@ -193,14 +221,17 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
         Thread.sleep(500); // Fire-and-forget async task writes token to DB after the response
 
-        UUID token = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21")
+        UUID token = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21")
                 .orElseThrow().callbackToken();
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.ALLOWED);
         localRestClient.post()
                 .uri("/external-validation/callback/" + token)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body("{\"verdict\":\"ALLOWED\",\"reason\":\"No threats found\"}")
                 .retrieve().toBodilessEntity();
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.ALLOWED) - before)
+                .isEqualTo(1.0);
 
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -218,6 +249,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withStatus(500)));
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.RESULT_TRIGGER_ERROR);
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
@@ -226,8 +258,11 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
         Thread.sleep(500); // Wait for async task to complete and update DB
 
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_ASYNC, Metrics.RESULT_TRIGGER_ERROR) - before)
+                .isEqualTo(1.0);
+
         // Failed POST → no orphan PENDING; entry is TIMEOUT (not left as PENDING)
-        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("TIMEOUT");
     }
@@ -239,8 +274,8 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         jdbcClient.sql("""
                 INSERT INTO external_validation_cache
                     (service_name, package_name, ecosystem, package_version, mode, status, expires_at)
-                VALUES ('test-scanner', 'lodash', 'npm', '4.17.21', 'ASYNC', 'TIMEOUT', ?)
-                """).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
+                VALUES ('%s', 'lodash', 'npm', '4.17.21', 'ASYNC', 'TIMEOUT', ?)
+                """.formatted(SERVICE_NAME)).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
 
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -254,7 +289,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         // New async call was made
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
         // Cache is now PENDING again
-        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(entry.get().status()).isEqualTo("PENDING");
     }
 
@@ -309,7 +344,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
         Thread.sleep(500); // Fire-and-forget async task writes token to DB after the response
 
-        UUID token = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21")
+        UUID token = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21")
                 .orElseThrow().callbackToken();
 
         localRestClient.post()
@@ -319,11 +354,11 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
                 .retrieve().toBodilessEntity();
 
         // Removed from cache (BLOCKED is permanent)
-        assertThat(cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21"))
+        assertThat(cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21"))
                 .isEmpty();
 
         // Stored permanently in verdicts
-        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Permanent block");
     }

@@ -270,7 +270,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
             assertThat(body)
                     .contains("\"error\":\"SecurityBlocked\"")
-                    .contains("\"step\":\"PUBLIC_VULN\"")
+                    .contains("\"step\":\"PUBLIC_VULN_MALWARE\"")
                     .contains("\"package\":\"org.mvnpm:posthog-node\"")
                     .contains("\"version\":\"4.18.1\"")
                     .contains("\"ecosystem\":\"maven\"")
@@ -324,7 +324,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
             assertThat(body)
                     .contains("\"error\":\"SecurityBlocked\"")
-                    .contains("\"step\":\"PUBLIC_VULN\"")
+                    .contains("\"step\":\"PUBLIC_VULN_MALWARE\"")
                     .contains("\"package\":\"standardwebappwebweb\"")
                     .contains("\"version\":\"1.0.0\"")
                     .contains("\"ecosystem\":\"npm\"")

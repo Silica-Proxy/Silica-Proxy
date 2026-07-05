@@ -17,6 +17,7 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import io.micrometer.core.annotation.Timed;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import tools.jackson.databind.ObjectMapper;
@@ -70,6 +72,7 @@ public class ProxyController {
     // lookup under a lock each time, which is unnecessary work on the hot request path.
     private final Timer blockDecisionTimer;
     private final Timer allowDecisionTimer;
+    private final MeterRegistry meterRegistry;
 
     public ProxyController(
             SecurityService securityService,
@@ -83,6 +86,7 @@ public class ProxyController {
         this.proxyStreamClient = proxyStreamClient;
         this.urlParserService = urlParserService;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
     }
@@ -93,6 +97,29 @@ public class ProxyController {
                 .tag("decision", decisionTag)
                 .publishPercentiles(0.5, 0.9, 0.95, 0.99)
                 .register(meterRegistry);
+    }
+
+    // sourceType/result/ecosystem are all bounded enum-like values (never raw package names or
+    // free-text reasons), so tagging by them stays low-cardinality and safe for Prometheus.
+    private void recordDecisionMetric(DecisionResult decision, String ecosystem) {
+        Counter.builder(Metrics.DECISIONS_METRIC)
+                .description("Total number of proxy security decisions, by verdict/source/ecosystem")
+                .tag(Metrics.TAG_VERDICT, decision.result())
+                .tag(Metrics.TAG_SOURCE, decision.sourceType())
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .register(meterRegistry)
+                .increment();
+    }
+
+    // Tracks how much traffic skips SecurityService entirely (unparseable/direct-resource
+    // requests never reach getDecision), i.e. the proxy's security blind spot by ecosystem.
+    private void recordBypassMetric(String ecosystem) {
+        Counter.builder(Metrics.BYPASS_METRIC)
+                .description("Total number of requests that bypassed the security check "
+                        + "(unknown ecosystem/package/version), by ecosystem")
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .register(meterRegistry)
+                .increment();
     }
 
     @GetMapping("/**")
@@ -126,6 +153,7 @@ public class ProxyController {
         String ecosystem = parsed.ecosystem();
 
         if (ecosystem.equals("unknown") || packageName.equals("unknown") || version.equals("unknown")) {
+            recordBypassMetric(ecosystem);
             String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
             LOG.warn("Unknown ecosystem or direct resource. Bypassing security control for : {}", forwardUrl);
             forwardRequest(forwardUrl, request, response);
@@ -140,6 +168,7 @@ public class ProxyController {
         long executionTimeMs = System.currentTimeMillis() - startTime;
         boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
         (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));
+        recordDecisionMetric(decision, ecosystem);
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Final decision for {}/{} (ecosystem={}) : RESULT={} (Source={}, Reason: {}) [Calculated in {}ms]",

@@ -17,9 +17,12 @@
 
 package com.silicaproxy.service.policy;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +50,7 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
     private final GitOpsSyncService gitOpsSyncService;
     private final JdbcClient jdbcClient;
     private final VulnerabilitySyncStatusService syncStatusService;
+    private final MeterRegistry meterRegistry;
 
     @MockitoBean
     private VulnerabilityGitClient gitClient;
@@ -55,10 +59,12 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
     GitOpsSyncServiceTest(
             GitOpsSyncService gitOpsSyncService,
             JdbcClient jdbcClient,
-            VulnerabilitySyncStatusService syncStatusService) {
+            VulnerabilitySyncStatusService syncStatusService,
+            MeterRegistry meterRegistry) {
         this.gitOpsSyncService = gitOpsSyncService;
         this.jdbcClient = jdbcClient;
         this.syncStatusService = syncStatusService;
+        this.meterRegistry = meterRegistry;
     }
 
     @DynamicPropertySource
@@ -102,11 +108,21 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
                 .when(gitClient).syncRepository(any(), any(), any());
 
         // Execute sync
+        double before = meterRegistry.find(Metrics.GITOPS_POLICIES_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter() == null ? 0.0
+                : meterRegistry.get(Metrics.GITOPS_POLICIES_METRIC)
+                        .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count();
         gitOpsSyncService.syncCompanyPolicies();
 
         // Verify database
         List<Map<String, Object>> policies = jdbcClient.sql("SELECT * FROM company_policies ORDER BY id").query().listOfRows();
         assertThat(policies).hasSize(3);
+
+        assertThat(meterRegistry.get(Metrics.GITOPS_POLICIES_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count() - before).isEqualTo(3.0);
+        assertThat(meterRegistry.get(Metrics.GITOPS_RUNS_METRIC)
+                .tag(Metrics.TAG_OUTCOME, Metrics.OUTCOME_SUCCESS).counter().count())
+                .isGreaterThanOrEqualTo(1.0);
 
         Map<String, Object> p1 = policies.get(0);
         assertThat(p1.get("package_name")).isEqualTo("lodash");

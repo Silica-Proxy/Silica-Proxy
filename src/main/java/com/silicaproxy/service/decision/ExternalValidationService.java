@@ -17,8 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ExternalValidationClient;
-import com.silicaproxy.dao.client.ExternalValidationClient.ExternalValidationResult;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -54,26 +54,26 @@ public class ExternalValidationService {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalValidationService.class);
 
-    private static final String BLOCKED = "BLOCKED";
-    private static final String ALLOWED = "ALLOWED";
-
     private final SilicaProxyProperties properties;
     private final ExternalValidationCacheDao cacheDao;
     private final ExternalValidationVerdictsDao verdictsDao;
     private final ExternalValidationClient client;
     private final Executor asyncExecutor;
+    private final ExternalValidationMetrics metrics;
 
     public ExternalValidationService(
             SilicaProxyProperties properties,
             ExternalValidationCacheDao cacheDao,
             ExternalValidationVerdictsDao verdictsDao,
             ExternalValidationClient client,
-            @Qualifier("externalValidationExecutor") Executor asyncExecutor) {
+            @Qualifier("externalValidationExecutor") Executor asyncExecutor,
+            ExternalValidationMetrics metrics) {
         this.properties = properties;
         this.cacheDao = cacheDao;
         this.verdictsDao = verdictsDao;
         this.client = client;
         this.asyncExecutor = asyncExecutor;
+        this.metrics = metrics;
     }
 
     @PostConstruct
@@ -108,7 +108,7 @@ public class ExternalValidationService {
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> asyncServices = enabled.stream()
-                .filter(e -> "async".equalsIgnoreCase(e.getValue().mode()))
+                .filter(e -> Metrics.TYPE_ASYNC.equalsIgnoreCase(e.getValue().mode()))
                 .toList();
 
         // Short-circuit: a permanent BLOCK verdict from any blocking service already
@@ -120,6 +120,7 @@ public class ExternalValidationService {
         Optional<DecisionResult> permanentBlock =
                 checkPermanentBlock(enabled, packageName, version, ecosystem);
         if (permanentBlock.isPresent()) {
+            metrics.recordBlockReasonMetric(Metrics.REASON_VERDICT);
             if (properties.externalValidation().triggerAsyncOnSyncBlock()) {
                 asyncServices.forEach(e -> asyncExecutor.execute(() ->
                         triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem)));
@@ -128,7 +129,7 @@ public class ExternalValidationService {
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> syncServices = enabled.stream()
-                .filter(e -> "sync".equalsIgnoreCase(e.getValue().mode()))
+                .filter(e -> Metrics.TYPE_SYNC.equalsIgnoreCase(e.getValue().mode()))
                 .toList();
 
         // 1. Run all SYNC services in parallel, wait for all results
@@ -160,6 +161,8 @@ public class ExternalValidationService {
                 .anyMatch(o -> o == ServiceOutcome.BLOCK || o == ServiceOutcome.PENDING_CLOSED);
 
         if (anyBlock) {
+            boolean realVerdict = allOutcomes.stream().anyMatch(o -> o == ServiceOutcome.BLOCK);
+            metrics.recordBlockReasonMetric(realVerdict ? Metrics.REASON_VERDICT : Metrics.REASON_FAIL_CLOSED);
             String reason = buildBlockReason(enabled, packageName, version, ecosystem);
             return Optional.of(new DecisionResult("EXTERNAL_VALIDATION", "BLOCK", reason));
         }
@@ -175,10 +178,13 @@ public class ExternalValidationService {
             UUID callbackToken, String verdict, @Nullable String reason, @Nullable String providedApiKey) {
         Optional<ExternalValidationCacheEntry> entry = cacheDao.findByCallbackToken(callbackToken);
         if (entry.isEmpty()) {
+            // Token doesn't exist at all -- serviceName is unknowable at this point.
+            metrics.recordCallbackMetric(Metrics.SERVICE_UNKNOWN, CallbackResult.NOT_FOUND.name());
             return CallbackResult.NOT_FOUND;
         }
         ExternalValidationCacheEntry e = entry.get();
         if (!"PENDING".equals(e.status())) {
+            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
             return CallbackResult.NOT_FOUND;
         }
 
@@ -189,28 +195,38 @@ public class ExternalValidationService {
                 && !constantTimeEquals(expectedApiKey, providedApiKey)) {
             LOG.warn("External validation callback for service {} rejected: missing or invalid API key",
                     e.serviceName());
+            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.UNAUTHORIZED.name());
             return CallbackResult.UNAUTHORIZED;
         }
 
         LOG.info("External validation callback received from {} for {}/{}@{}: verdict={}, reason={}",
                 e.serviceName(), e.ecosystem(), e.packageName(), e.packageVersion(), verdict, reason);
 
-        if (BLOCKED.equalsIgnoreCase(verdict)) {
+        if (Metrics.BLOCKED.equalsIgnoreCase(verdict)) {
             // Permanent verdict — remove from cache (atomically, guarded by status='PENDING'
             // so a duplicate/racing callback delivery for the same token can't double-process
             // it), then write to verdicts table.
             if (!cacheDao.deleteByToken(callbackToken)) {
+                metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
                 return CallbackResult.NOT_FOUND;
             }
             verdictsDao.save(e.serviceName(), e.packageName(), e.ecosystem(), e.packageVersion(), reason);
+            metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.BLOCKED);
+            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.PROCESSED.name());
             return CallbackResult.PROCESSED;
         }
-        if (ALLOWED.equalsIgnoreCase(verdict)) {
+        if (Metrics.ALLOWED.equalsIgnoreCase(verdict)) {
             int cacheTtlMinutes = props != null ? props.cacheTtlMinutes() : 60;
             Instant cacheExpiry = Instant.now().plus(cacheTtlMinutes, ChronoUnit.MINUTES);
-            return cacheDao.updateToAllowedByToken(callbackToken, reason, cacheExpiry)
-                    ? CallbackResult.PROCESSED : CallbackResult.NOT_FOUND;
+            if (!cacheDao.updateToAllowedByToken(callbackToken, reason, cacheExpiry)) {
+                metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
+                return CallbackResult.NOT_FOUND;
+            }
+            metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.ALLOWED);
+            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.PROCESSED.name());
+            return CallbackResult.PROCESSED;
         }
+        metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
         return CallbackResult.NOT_FOUND;
     }
 
@@ -278,7 +294,7 @@ public class ExternalValidationService {
                 cacheDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version);
         if (cached.isPresent()) {
             ExternalValidationCacheEntry entry = cached.get();
-            if (ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
+            if (Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
                 return ServiceOutcome.ALLOW;
             }
             if ("PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
@@ -292,7 +308,7 @@ public class ExternalValidationService {
         Instant pendingExpiry = Instant.now().plus(Math.max(props.timeoutSeconds() * 2L, 30), ChronoUnit.SECONDS);
         cacheDao.upsertPendingSync(serviceName, packageName, ecosystem, version, pendingExpiry);
 
-        ExternalValidationResult result = client.callSync(
+        ExternalValidationClient.ExternalValidationResult result = client.callSync(
                 props.url(), props.apiKey(), packageName, version, ecosystem);
 
         return resolveSyncResult(serviceName, props, packageName, version, ecosystem, result);
@@ -301,26 +317,29 @@ public class ExternalValidationService {
     private ServiceOutcome resolveSyncResult(
             String serviceName, ExternalValidationServiceProperties props,
             String packageName, String version, String ecosystem,
-            @Nullable ExternalValidationResult result) {
+            ExternalValidationClient.@Nullable ExternalValidationResult result) {
         if (result == null) {
             // Error or timeout
+            metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_SYNC, Metrics.RESULT_ERROR);
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
             LOG.debug("External validation sync call to {} failed for {}/{} ({})",
                     serviceName, ecosystem, packageName, version);
             return props.failOpen() ? ServiceOutcome.PENDING_OPEN : ServiceOutcome.PENDING_CLOSED;
         }
 
-        if (BLOCKED.equalsIgnoreCase(result.verdict())) {
+        if (Metrics.BLOCKED.equalsIgnoreCase(result.verdict())) {
+            metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_SYNC, Metrics.BLOCKED);
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
             // Recorded either way — blocking=false only changes whether it's enforced
             verdictsDao.save(serviceName, packageName, ecosystem, version, result.reason());
             return props.blocking() ? ServiceOutcome.BLOCK : ServiceOutcome.ALLOW;
         }
 
-        if (!ALLOWED.equalsIgnoreCase(result.verdict())) {
+        if (!Metrics.ALLOWED.equalsIgnoreCase(result.verdict())) {
             // Malformed/unexpected verdict (missing field, typo, unknown value) — treat
             // like a transport error rather than silently allowing, so fail-open/fail-closed
             // is honored instead of being bypassed by a non-conformant response body.
+            metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_SYNC, Metrics.RESULT_UNKNOWN_VERDICT);
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
             LOG.warn("External validation service {} returned unexpected verdict '{}' for {}/{} ({}) "
                             + "— applying failOpen={} policy",
@@ -329,6 +348,7 @@ public class ExternalValidationService {
         }
 
         // ALLOWED
+        metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_SYNC, Metrics.ALLOWED);
         Instant cacheExpiry = Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES);
         cacheDao.updateToAllowed(serviceName, packageName, ecosystem, version, result.reason(), cacheExpiry);
         return ServiceOutcome.ALLOW;
@@ -346,7 +366,7 @@ public class ExternalValidationService {
         if (cached.isPresent()) {
             ExternalValidationCacheEntry entry = cached.get();
             boolean validPending = "PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now());
-            boolean validAllowed = "ALLOWED".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now());
+            boolean validAllowed = Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now());
             if (validPending || validAllowed) {
                 return;
             }
@@ -358,6 +378,7 @@ public class ExternalValidationService {
 
         String callbackUrl = buildCallbackUrl(token);
         boolean sent = client.callAsync(props.url(), props.apiKey(), packageName, version, ecosystem, callbackUrl);
+        metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, sent ? Metrics.RESULT_TRIGGERED : Metrics.RESULT_TRIGGER_ERROR);
         if (!sent) {
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
         }
@@ -375,7 +396,7 @@ public class ExternalValidationService {
                 cacheDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version);
         if (cached.isPresent()) {
             ExternalValidationCacheEntry entry = cached.get();
-            if (ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
+            if (Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
                 return ServiceOutcome.ALLOW;
             }
             if ("PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {

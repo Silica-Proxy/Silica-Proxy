@@ -23,6 +23,7 @@ import net.javacrumbs.shedlock.core.LockConfiguration;
 import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.core.SimpleLock;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -160,6 +161,13 @@ public class SslMitmService {
 
     public String getCaCertPem() {
         return caCertPem;
+    }
+
+    // Null only in the narrow window before init() has run (or if it failed and threw, in
+    // which case the application never finishes starting) -- callers (SslMitmMetrics,
+    // MonitoringService) treat null as "not yet known" rather than assuming it is always set.
+    public @Nullable Instant getCaCertNotAfter() {
+        return caCert != null ? caCert.getNotAfter().toInstant() : null;
     }
 
     public SSLContext getContextForHost(String host) {

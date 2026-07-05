@@ -16,11 +16,15 @@
 
 package com.silicaproxy.service.policy;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.dao.policy.GitOpsDao;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -51,12 +55,14 @@ class GitOpsSyncServiceExtensionTest {
     private GitOpsSyncService service;
     private GitOpsDao gitOpsDao;
     private VulnerabilityGitClient gitClient;
+    private MeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
         gitClient = mock(VulnerabilityGitClient.class);
         gitOpsDao = mock(GitOpsDao.class);
         VulnerabilitySyncStatusService syncStatusService = mock(VulnerabilitySyncStatusService.class);
+        meterRegistry = new SimpleMeterRegistry();
 
         SilicaProxyProperties.GitOpsProperties gitopsProps = new SilicaProxyProperties.GitOpsProperties(
                 true,
@@ -71,7 +77,7 @@ class GitOpsSyncServiceExtensionTest {
 
         doNothing().when(gitClient).syncRepository(any(), any(), any());
 
-        service = new GitOpsSyncService(properties, gitClient, gitOpsDao, syncStatusService);
+        service = new GitOpsSyncService(properties, gitClient, gitOpsDao, syncStatusService, meterRegistry);
     }
 
     @Test
@@ -90,6 +96,12 @@ class GitOpsSyncServiceExtensionTest {
         verify(gitOpsDao).replaceCompanyPolicies(eq("npm"), captor.capture());
         assertThat(captor.getValue()).hasSize(1);
         assertThat(captor.getValue().get(0).packageName()).isEqualTo("lodash");
+
+        assertThat(meterRegistry.get(Metrics.GITOPS_POLICIES_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get(Metrics.GITOPS_RUNS_METRIC)
+                .tag(Metrics.TAG_OUTCOME, Metrics.OUTCOME_SUCCESS).counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.find(Metrics.GITOPS_FRESHNESS_METRIC).gauge()).isNotNull();
     }
 
     @Test

@@ -184,12 +184,12 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // Evaluate with a threshold of 7.0 : both must be blocked despite the CVSS score of 0.0
         Optional<DecisionResult> decision1 = decisionDao.evaluateDecision("malware-package-1", "1.0.0", "npm", 7.0);
         assertThat(decision1).isPresent();
-        assertThat(decision1.get().sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision1.get().sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision1.get().result()).isEqualTo("BLOCK");
 
         Optional<DecisionResult> decision2 = decisionDao.evaluateDecision("malware-package-2", "1.0.0", "npm", 7.0);
         assertThat(decision2).isPresent();
-        assertThat(decision2.get().sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision2.get().sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision2.get().result()).isEqualTo("BLOCK");
     }
 
