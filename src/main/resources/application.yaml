@@ -177,11 +177,19 @@ silicaproxy:
     # Example: SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH=/shared-certs/silicaproxy-ca.crt
     ca-cert-export-path: "/tmp/silicaproxy-ca.crt"
 
-  # 9. Application security (anti-SSRF protection on outgoing HTTP calls)
+  # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
+  # shared API key protection on internal admin/API endpoints)
   security:
     ssrf-protection:
       # Blocks outgoing calls to loopback, link-local and private IPs (RFC 1918)
       enabled: true
+    api-auth:
+      # Set to false only for local dev / tests: all @RequiresApiKey endpoints become open.
+      enabled: true
+      # Bearer key for READ-scoped endpoints (consultation, no side effect).
+      key-read: "${SILICAPROXY_API_KEY_READ:}"
+      # Bearer key for ACTION-scoped endpoints (triggers a side effect, e.g. forced sync).
+      key-action: "${SILICAPROXY_API_KEY_ACTION:}"
 
   # External validation services — configurable HTTP calls to custom deep-scanners.
   # Inserted in the decision chain before OSV. Services run SYNC first (all in parallel),

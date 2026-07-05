@@ -66,7 +66,9 @@ class SslMitmServiceTest {
                 new SilicaProxyProperties.CorporateProxyScopeProperties(false, false, false, false, false)),
             new SilicaProxyProperties.RegistriesProperties("http://npm.example.com", "http://pypi.example.com", "http://maven.example.com"),
             new SilicaProxyProperties.ProxyProperties(0, 30, 60),
-            new SilicaProxyProperties.SecurityProperties(new SilicaProxyProperties.SsrfProtectionProperties(false)),
+            new SilicaProxyProperties.SecurityProperties(
+                new SilicaProxyProperties.SsrfProtectionProperties(false),
+                new SilicaProxyProperties.ApiAuthProperties(false, null, null)),
             new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
             new SilicaProxyProperties.SslMitmProperties(keystorePath, password, null),
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),

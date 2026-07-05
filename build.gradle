@@ -140,6 +140,9 @@ tasks.named('test') {
 	// The volume tests (DecisionDaoTest: 500k vulnerabilities + 10k policies) exceed the limits.
 	// the default heap of the Gradle test runner when running with the rest of the suite.
 	maxHeapSize = '2g'
+	// Activates application-test.yaml (src/test/resources) as the effective config for every
+	// test, overriding application.yaml on the keys it defines instead of leaving it dead code.
+	systemProperty 'spring.profiles.active', 'test'
 	testLogging {
 		events 'started', 'passed', 'skipped', 'failed'
 		exceptionFormat 'full'
@@ -156,6 +159,7 @@ tasks.register('artifactRepositoryTest', Test) {
 		includeTags 'artifact-repository'
 	}
 	maxHeapSize = '2g'
+	systemProperty 'spring.profiles.active', 'test'
 }
 
 jacocoTestReport {

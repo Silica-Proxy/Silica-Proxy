@@ -64,6 +64,9 @@ public abstract class BaseIntegrationTest {
         registry.add("silicaproxy.registries.maven-url", () -> wiremockUrl);
         registry.add("silicaproxy.api-fallback.osv.url", () -> wiremockUrl + "/v1/query");
         registry.add("silicaproxy.security.ssrf-protection.enabled", () -> "false");
+        registry.add("silicaproxy.security.api-auth.enabled", () -> "false");
+        registry.add("silicaproxy.security.api-auth.key-read", () -> "test-read-key");
+        registry.add("silicaproxy.security.api-auth.key-action", () -> "test-action-key");
         registry.add("silicaproxy.ssl-mitm.ca-keystore-path", () -> "");
         registry.add("silicaproxy.ssl-mitm.ca-keystore-password", () -> "");
         registry.add("silicaproxy.proxy.port", () -> 0);
