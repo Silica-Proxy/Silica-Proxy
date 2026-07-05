@@ -178,6 +178,18 @@ class LoomProxyServerTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldParseConnectHostForIpv6Literal() {
+        assertThat(LoomProxyServer.parseConnectHost("[::1]:443")).isEqualTo("::1");
+        assertThat(LoomProxyServer.parseConnectHost("[2001:db8::1]:8443")).isEqualTo("2001:db8::1");
+    }
+
+    @Test
+    void shouldParseConnectHostForRegularHostAndPort() {
+        assertThat(LoomProxyServer.parseConnectHost("example.com:443")).isEqualTo("example.com");
+        assertThat(LoomProxyServer.parseConnectHost("127.0.0.1:443")).isEqualTo("127.0.0.1");
+    }
+
+    @Test
     void shouldCloseIdleConnectionAfterHeaderReadTimeout() throws Exception {
         int proxyPort = loomProxyServer.getProxyPort();
 

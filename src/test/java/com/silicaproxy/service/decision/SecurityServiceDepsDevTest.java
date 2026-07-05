@@ -26,8 +26,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
@@ -42,11 +40,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class SecurityServiceDepsDevTest extends BaseIntegrationTest {
 
-    @DynamicPropertySource
-    static void configureDepsDevUrl(DynamicPropertyRegistry registry) {
-        registry.add("silicaproxy.api-fallback.deps-dev.url",
-                () -> "http://localhost:" + wireMock.port());
-    }
+    // deps-dev.url is already wired to WireMock at "<wiremock>/depsdev/v3/" by
+    // BaseIntegrationTest -- registering it again here with a different value would silently
+    // clobber that one (both @DynamicPropertySource methods target the same property key), so
+    // stub paths below use the "/depsdev/v3" prefix instead of overriding the URL.
 
     private final SecurityService securityService;
     private final JdbcClient jdbcClient;
@@ -93,7 +90,7 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
     @Test
     void shouldBlockWhenDepsDevDetectsAdvisory() {
         stubRegistry("depsdev-vuln-pkg");
-        wireMock.stubFor(get(urlEqualTo("/systems/NPM/packages/depsdev-vuln-pkg/versions/1.0.0"))
+        wireMock.stubFor(get(urlEqualTo("/depsdev/v3/systems/NPM/packages/depsdev-vuln-pkg/versions/1.0.0"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": [\"GHSA-xxxx-yyyy\"]}")));
@@ -109,7 +106,7 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
     @Test
     void shouldAllowWhenDepsDevFindsNoAdvisory() {
         stubRegistry("depsdev-safe-pkg");
-        wireMock.stubFor(get(urlEqualTo("/systems/NPM/packages/depsdev-safe-pkg/versions/1.0.0"))
+        wireMock.stubFor(get(urlEqualTo("/depsdev/v3/systems/NPM/packages/depsdev-safe-pkg/versions/1.0.0"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": []}")));
@@ -125,14 +122,17 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
     @Test
     void shouldAllowWhenDepsDevApiReturnsError() {
         stubRegistry("depsdev-err-pkg");
-        wireMock.stubFor(get(urlPathMatching("/systems/NPM/packages/depsdev-err-pkg/versions/.*"))
+        wireMock.stubFor(get(urlPathMatching("/depsdev/v3/systems/NPM/packages/depsdev-err-pkg/versions/.*"))
                 .willReturn(aResponse().withStatus(500)));
 
         double before = apiCallCount(Metrics.DEPS_DEV, "ERROR");
         DecisionResult decision = securityService.getDecision("depsdev-err-pkg", "1.0.0", "npm");
 
+        // deps.dev is the only enabled source here (osv disabled) ; when it errors, the chain
+        // has nothing left to hand over to, so the fail-open policy decides -- sourceType is
+        // API_FALLBACK_ERROR, not DEPS_DEV (see SecurityService.runFallbackChain).
         assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
         assertThat(apiCallCount(Metrics.DEPS_DEV, "ERROR") - before).isEqualTo(1.0);
     }
 }

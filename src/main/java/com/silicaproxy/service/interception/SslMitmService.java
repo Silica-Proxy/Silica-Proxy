@@ -194,6 +194,12 @@ public class SslMitmService {
             ks.load(in, password);
         }
         PrivateKey privateKey = (PrivateKey) ks.getKey(CA_ALIAS, password);
+        if (privateKey == null) {
+            // getKey returns null silently (wrong password, wrong alias, or a cert-only entry)
+            // rather than throwing -- left unchecked, caKeyPair would end up with a null
+            // private key and only fail much later, deep in a host cert signing call.
+            throw new IllegalStateException("CA private key not found in keystore " + path.toAbsolutePath());
+        }
         caCert = (X509Certificate) ks.getCertificate(CA_ALIAS);
         caKeyPair = new KeyPair(caCert.getPublicKey(), privateKey);
     }

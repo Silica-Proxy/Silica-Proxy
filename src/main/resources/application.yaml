@@ -126,16 +126,24 @@ silicaproxy:
     # TTL in minutes for ALLOW verdicts (no vulnerability detected)
     allow-verdict-ttl-minutes: 1440
 
-  # 5. Fallback chain configuration for external APIs
+  # 5. Fallback chain configuration for external APIs.
+  # Sources are queried in order (OSV then deps.dev) ; the first one that answers
+  # successfully concludes. A source in error (HTTP/network failure) hands over to the next
+  # enabled one. If ALL enabled sources fail, fail-open decides (true = allow the package,
+  # false = block) ; that error verdict is never written to api_cache, so a real verdict is
+  # re-fetched as soon as an API recovers.
   api-fallback:
     # Google OSV advisories public service
     osv:
       enabled: true
       url: "https://api.osv.dev/v1/query"
+      # Behavior when this source errors and no later source could conclude either
+      fail-open: true
     # Google Open Source Insights deps.dev API
     deps-dev:
       enabled: true
       url: "https://api.deps.dev/v3/"
+      fail-open: true
 
   # 6. GitOps synchronization of enterprise governance rules
   gitops:
@@ -190,6 +198,9 @@ silicaproxy:
     # Allows placing it on a shared volume with the artifact repository.
     # Example: SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH=/shared-certs/silicaproxy-ca.crt
     ca-cert-export-path: "/tmp/silicaproxy-ca.crt"
+    # Hard cap on the per-host SSLContext cache size, on top of its 24h inactivity TTL : bounds
+    # the CPU/memory cost of a client sending CONNECT to many distinct hostnames in a short window.
+    context-cache-max-entries: 2000
 
   # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
   # shared API key protection on internal admin/API endpoints)

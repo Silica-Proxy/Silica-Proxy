@@ -31,4 +31,12 @@ public record ApiCheckResult(
         int httpStatus,
         long responseTimeMs,
         @Nullable String errorMessage) {
+
+    // The clients (OsvClient, DepsDevClient) set errorMessage on exactly their two failure
+    // paths (HTTP non-2xx and transport exception), and on those paths vulnerable() is a
+    // meaningless default false -- callers must check this before trusting vulnerable(),
+    // otherwise an API outage silently reads as "not vulnerable".
+    public boolean isError() {
+        return errorMessage != null;
+    }
 }

@@ -83,6 +83,21 @@ public class ExternalValidationService {
             LOG.info("External validation: no service configured.");
             return;
         }
+
+        // A blank callback-base-url only matters for ASYNC services (buildCallbackUrl is never
+        // called for SYNC ones) : fail fast at startup rather than silently sending an
+        // unreachable relative URL to the external service the first time an ASYNC callback
+        // would be built.
+        boolean anyAsync = services.values().stream()
+                .anyMatch(p -> Metrics.TYPE_ASYNC.equalsIgnoreCase(p.mode()));
+        String callbackBaseUrl = properties.externalValidation().callbackBaseUrl();
+        if (anyAsync && (callbackBaseUrl == null || callbackBaseUrl.isBlank())) {
+            throw new IllegalStateException(
+                    "At least one external validation service is configured with mode=ASYNC but "
+                    + "silicaproxy.external-validation.callback-base-url is blank; the callback URL "
+                    + "sent to the external service would be relative and unreachable.");
+        }
+
         services.forEach((name, props) -> LOG.info(
                 "External validation service '{}' loaded: enabled={}, mode={}, url={}, blocking={}, "
                         + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}",

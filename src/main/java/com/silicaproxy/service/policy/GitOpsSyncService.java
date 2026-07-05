@@ -45,6 +45,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Synchronizes governance rules ({@code company_policies}) from the internal GitOps repository.
@@ -58,6 +59,11 @@ public class GitOpsSyncService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GitOpsSyncService.class);
     private static final String GITOPS_JOB_ID = "gitops-sync";
+
+    // npm-style convention : 'x'/'X' is only a wildcard as a full trailing version *segment*
+    // (e.g. "1.2.x", "4.X"), never as a literal character occurring elsewhere (e.g. "1.0.0-xyz"
+    // must stay literal). '*' remains an unambiguous wildcard token anywhere in the string.
+    private static final Pattern TRAILING_X_SEGMENT = Pattern.compile("(?i)\\.x$");
 
     private final SilicaProxyProperties properties;
     private final VulnerabilityGitClient gitClient;
@@ -254,10 +260,7 @@ public class GitOpsSyncService {
                 String ruleAction = rule.action();
                 String ruleReason = rule.reason();
                 if (rulePackage != null && ruleVersion != null && ruleAction != null && ruleReason != null) {
-                    String sqlPattern = ruleVersion
-                            .replace("x", "%")
-                            .replace("X", "%")
-                            .replace("*", "%");
+                    String sqlPattern = toSqlWildcardPattern(ruleVersion);
 
                     policies.add(new CompanyPolicy(
                             rulePackage,
@@ -284,6 +287,15 @@ public class GitOpsSyncService {
             LOGGER.info("GitOps sync progress: {}% ({}/{})", percent, processedNow, totalRules);
         }
         return policies.size();
+    }
+
+    // Only translates a trailing '.x'/'.X' *segment* into the SQL wildcard '%' ; a literal
+    // 'x'/'X' occurring anywhere else in the version string is left untouched. '*' is always
+    // translated, since it's an unambiguous wildcard token with no legitimate literal use in a
+    // version string.
+    private String toSqlWildcardPattern(String ruleVersion) {
+        String withXTranslated = TRAILING_X_SEGMENT.matcher(ruleVersion).replaceAll(".%");
+        return withXTranslated.replace("*", "%");
     }
 
 }

@@ -55,9 +55,11 @@ class PolicyControllerTest extends BaseIntegrationTest {
 
     @Test
     void evaluateShouldReturnAllowedWhenWhitelistPolicyMatches() {
+        // version_pattern is always pre-translated by GitOpsSyncService at write time ('*' is
+        // stored as '%') -- this test inserts that translated form directly.
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '%', 'WHITELIST', 'Approved', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -73,7 +75,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldReturnBlockedWhenBlacklistPolicyMatches() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'BLACKLIST', 'Forbidden', 'admin')
+                VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'Forbidden', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -98,7 +100,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldShowConflictResolutionExactVersionBeatsWildcard() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'BLACKLIST', 'Forbidden by default', 'admin')
+                VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'Forbidden by default', 'admin')
                 """).update();
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
@@ -117,9 +119,12 @@ class PolicyControllerTest extends BaseIntegrationTest {
 
     @Test
     void evaluateShouldMatchPrefixWildcardPattern() {
+        // version_pattern is always pre-translated by GitOpsSyncService at write time (a GitOps
+        // rule version of '4.x' is stored here already as '4.%') -- this test inserts that
+        // translated form directly to simulate the real write path.
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '4.x', 'WHITELIST', 'Series 4 approved', 'admin')
+                VALUES ('lodash', 'npm', '4.%', 'WHITELIST', 'Series 4 approved', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -133,7 +138,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldNotMatchOtherEcosystem() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'maven', '*', 'BLACKLIST', 'Other ecosystem', 'admin')
+                VALUES ('lodash', 'maven', '%', 'BLACKLIST', 'Other ecosystem', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(

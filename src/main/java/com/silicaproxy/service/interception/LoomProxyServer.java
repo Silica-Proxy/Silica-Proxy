@@ -153,7 +153,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         }
 
         String target = parts[1];
-        String host = target.contains(":") ? target.split(":")[0] : target;
+        String host = parseConnectHost(target);
 
         skipHeaders(clientIn);
 
@@ -191,6 +191,20 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         } catch (Exception e) {
             LOG.warn("SSL MITM failed for {} : {} — is the CA imported in the artifacts repository ?", host, e.getMessage());
         }
+    }
+
+    // A bracketed IPv6 literal target (RFC 7230, e.g. "[::1]:443") must be unbracketed rather
+    // than split on the first ':' -- target.split(":")[0] on "[::1]:443" would otherwise yield
+    // "[" instead of "::1". A bare "host:port" target never starts with '[', so checking for
+    // the bracket first is unambiguous ; splitting on the LAST ':' (not the first) is what
+    // correctly separates a plain "host:port" target.
+    static String parseConnectHost(String target) {
+        if (target.startsWith("[")) {
+            int closeBracket = target.indexOf(']');
+            return closeBracket > 0 ? target.substring(1, closeBracket) : target;
+        }
+        int lastColon = target.lastIndexOf(':');
+        return lastColon > 0 ? target.substring(0, lastColon) : target;
     }
 
     private void forwardToTomcat(String firstLine, Socket clientSideSocket, InputStream clientIn, OutputStream clientOut) {

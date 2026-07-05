@@ -63,6 +63,10 @@ public abstract class BaseIntegrationTest {
         registry.add("silicaproxy.registries.pypi-url", () -> wiremockUrl);
         registry.add("silicaproxy.registries.maven-url", () -> wiremockUrl);
         registry.add("silicaproxy.api-fallback.osv.url", () -> wiremockUrl + "/v1/query");
+        // Since the fallback chain hands over to deps.dev when OSV errors, this URL must
+        // point at WireMock too -- otherwise any test simulating an OSV outage would hit
+        // the real https://api.deps.dev from the build machine.
+        registry.add("silicaproxy.api-fallback.deps-dev.url", () -> wiremockUrl + "/depsdev/v3/");
         registry.add("silicaproxy.security.ssrf-protection.enabled", () -> "false");
         registry.add("silicaproxy.security.api-auth.enabled", () -> "false");
         registry.add("silicaproxy.security.api-auth.key-read", () -> "test-read-key");

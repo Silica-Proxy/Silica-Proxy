@@ -137,10 +137,15 @@ public record SilicaProxyProperties(
         double maxAllowedCvss
     ) {}
 
+    // failOpen governs what happens when this source's call fails (HTTP non-2xx or transport
+    // error) AND no later source in the fallback chain could conclude either: true lets the
+    // package through, false blocks it. An error verdict is never written to api_cache either
+    // way. Default true mirrors quarantine.fail-open.
     public record ApiFallbackProperties(
         boolean enabled,
         @Nullable String apiKey,
-        @NotBlank String url
+        @NotBlank String url,
+        @DefaultValue("true") boolean failOpen
     ) {}
 
     public record GitOpsProperties(
@@ -179,7 +184,11 @@ public record SilicaProxyProperties(
     public record SslMitmProperties(
         @Nullable String caKeystorePath,
         @Nullable String caKeystorePassword,
-        @Nullable String caCertExportPath
+        @Nullable String caCertExportPath,
+        // Hard cap on HostSslContextCache size, on top of its inactivity TTL : without it, a
+        // client sending CONNECT to many distinct hostnames within the TTL window can force
+        // unbounded RSA-2048 generations/cache entries (CPU/memory DoS).
+        @DefaultValue("2000") int contextCacheMaxEntries
     ) {}
 
     public record OsvIncrementalProperties(

@@ -100,6 +100,24 @@ com.silicaproxy
 
 SilicaProxy evaluates security decisions in order of priority, pulling from multiple data sources:
 
+### What "fail-open" / "fail-closed" means
+
+Several of the checks below depend on a remote call that can fail (a registry being
+unreachable, an external validation service timing out, the OSV/deps.dev live APIs returning
+an error). Each of these checks has a configurable policy for that failure case:
+
+- **`fail-open: true`** (the default almost everywhere) — if the check can't get an answer,
+  **allow** the package rather than block a build over an infrastructure hiccup.
+- **`fail-open: false`** (i.e. fail-closed) — if the check can't get an answer, **block** the
+  package instead, favoring security over availability.
+
+This choice is configured independently for quarantine (`silicaproxy.quarantine.fail-open`,
+[§3](#3-public-registry-metadata--on-demand-cached-permanently)), each external validation
+service (`...services.<name>.fail-open`, [§4](#4-external-validation-services--on-demand-sync-or-async)),
+and each live API fallback source (`silicaproxy.api-fallback.<osv|deps-dev>.fail-open`,
+[§5](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) — a hardened
+environment can flip any of them to fail-closed without affecting the others.
+
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
 Internal allow/block rules are read from a Git repository containing one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`). The scheduler pulls changes every 10 minutes and synchronises the `company_policies` table. These rules have the **highest priority** in the decision pipeline and always override external vulnerability data.
@@ -118,6 +136,8 @@ These are downloaded once a day and stored locally in PostgreSQL, so every proxy
 | **OpenSSF Malicious Packages** | Known malware, typosquatting campaigns, sabotage incidents | Git clone |
 
 All six sources (3 OSV ZIPs + 3 Git repositories) are synchronized **in parallel** on virtual threads. A failure in one source (e.g. a Git repository temporarily unreachable) does not block or delay the others. Progress is tracked per-job and visible at `/api/vulnerabilities/sync/status`.
+
+Within a single OSV ZIP, one malformed advisory (unexpected JSON shape) does not abort the whole ~500k-entry run either: it's logged, counted in `sync_run_history.items_failed`, and skipped — the rest of the archive is still ingested, matching the per-advisory resilience of the hourly incremental sync below.
 
 SemVer version ranges from the advisories are flattened into a concrete list of affected versions at ingestion time, enabling a fast JSONB containment check (`@>`) at query time.
 
@@ -240,17 +260,21 @@ silicaproxy:
 
 ### 5. Live security API fallback — on-demand, configurable cache (Priority 3)
 
-If a package passes the quarantine and deprecation checks but has no result in the local vulnerability tables, SilicaProxy queries external security APIs in order. The **first conclusive answer wins**; subsequent sources are skipped.
+If a package passes the quarantine and deprecation checks but has no result in the local vulnerability tables, SilicaProxy queries external security APIs in order.
 
 | Source | Notes |
 |---|---|
-| **OSV Live** (`api.osv.dev`) | Free, broad coverage — enabled by default |
-| **deps.dev** (Google Open Source Insights) | Dependency graph and licence data |
+| **OSV Live** (`api.osv.dev`) | Free, broad coverage — enabled by default, tried first |
+| **deps.dev** (Google Open Source Insights) | Dependency graph and licence data — tried if OSV is disabled, or hands over to it on error |
 
-Each source can be enabled or disabled independently (see [Configuration Reference](#configuration-reference)). Results are cached in `api_cache` table with configurable TTLs:
+Each source can be enabled or disabled independently (see [Configuration Reference](#configuration-reference)). The **first enabled source that answers successfully concludes the chain** — its verdict is cached in `api_cache` with configurable TTLs:
 - **BLOCK verdicts** (vulnerability found): 10,080 minutes (7 days) — safe to cache longer
 - **ALLOW verdicts** (no vulnerability): 1,440 minutes (24 hours) — shorter TTL for safety
 - Can be independently disabled via `cache-allow-verdict: false`
+
+**On error, the chain hands over instead of stopping:** a source that fails (HTTP error, timeout, network issue) does not conclude the chain — the next enabled source is tried instead. Only if *every* enabled source fails does the per-source [`fail-open`](#what-fail-open--fail-closed-means) policy decide the verdict (`silicaproxy.api-fallback.<source>.fail-open`, default `true`): ALLOW if every failed source is fail-open, BLOCK if at least one is fail-closed (the most restrictive result wins). This verdict is reported with `step: API_FALLBACK_ERROR` (see [API Endpoints](#api-endpoints)).
+
+This error verdict is **deliberately never cached** — caching it would keep allowing (or blocking) the package for the whole TTL window even after the failing API recovers, turning a transient outage into a security hole (fail-open) or a needless block (fail-closed) that outlives the actual incident. The next request after recovery gets a fresh, real verdict.
 
 **Next:** Configure your company-level policies in [GitOps policy files](#gitops-policy-files).
 
@@ -426,6 +450,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **SSL MITM** | `silicaproxy.ssl-mitm.ca-keystore-path` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH` | `./certs/ca.p12` | PKCS12 path — empty = ephemeral CA |
 | | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD` | _(empty)_ | Keystore password for encryption |
 | | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH` | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
+| | `silicaproxy.ssl-mitm.context-cache-max-entries` | `SILICAPROXY_SSL_MITM_CONTEXT_CACHE_MAX_ENTRIES` | `2000` | Hard cap on the per-host SSLContext cache, on top of its 24h inactivity TTL — bounds the CPU/memory cost of CONNECT requests to many distinct hostnames |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED` | `false` | Route outbound traffic through a corporate proxy |
 | | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST` | — | |
 | | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT` | — | |
@@ -434,7 +459,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.corporate-proxy.scope.security-apis` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_SECURITY_APIS` | `true` | Route security API traffic through proxy |
 | | `silicaproxy.corporate-proxy.scope.external-git-repositories` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_GIT_REPOSITORIES` | `true` | Route vulnerability DB git clones through proxy |
 | | `silicaproxy.corporate-proxy.scope.internal-git-repository` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_INTERNAL_GIT_REPOSITORY` | `false` | Route GitOps repo through proxy |
-| **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL` | _(empty)_ | Base URL of this proxy instance — required if any service uses `mode: async` |
+| **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL` | _(empty)_ | Base URL of this proxy instance — **required if any service uses `mode: async`**, and checked at startup: the proxy refuses to start rather than send a broken relative callback URL |
 | | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK` | `false` | If true, async services are triggered even when a sync service already blocks |
 | | `silicaproxy.external-validation.services.<name>.enabled` | — | `false` | Enable this external validation service |
 | | `silicaproxy.external-validation.services.<name>.url` | — | — | HTTP endpoint to POST validation requests to |
@@ -455,8 +480,10 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS` | `25` | Window fetched on first run (before any watermark) |
 | **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED` | `true` | Enable Google OSV Live API (free) |
 | | `silicaproxy.api-fallback.osv.url` | — | `https://api.osv.dev/v1/query` | OSV API endpoint |
+| | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN` | `true` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
 | | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED` | `true` | Enable Google deps.dev API (free) |
 | | `silicaproxy.api-fallback.deps-dev.url` | — | `https://api.deps.dev/v3/` | deps.dev API endpoint |
+| | `silicaproxy.api-fallback.deps-dev.fail-open` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_FAIL_OPEN` | `true` | Verdict when deps.dev fails **and** no later source in the chain concludes either |
 | **HTTP timeouts** | `silicaproxy.http-client.connect-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_CONNECT_TIMEOUT_SECONDS` | `5` | |
 | | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS` | `60` | For binary downloads |
 | | `silicaproxy.http-client.security-apis-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_SECURITY_APIS_READ_TIMEOUT_SECONDS` | `10` | For JSON security API calls |
@@ -504,7 +531,13 @@ rules:
 |---|---|---|
 | `1.0.0` | `1.0.0` | exact version only |
 | `1.*` | `1.%` | any version starting with `1.` |
+| `1.x` | `1.%` | same as `1.*` — npm-style trailing `.x`/`.X` segment |
 | `*` | `%` | all versions |
+
+`*` is always a wildcard, anywhere in the string. `x`/`X` is only treated as a wildcard as a
+full **trailing** version segment (`1.2.x`, `4.X`) — a literal `x` elsewhere in the string
+(e.g. a pre-release suffix like `1.0.0-xyz`) is left untouched, since real versions can
+legitimately contain the letter.
 
 #### Package name patterns
 
@@ -532,7 +565,7 @@ When several rules match the same package/version, **the most specific pattern w
 | `1.* → block` + `1.0.0 → allow` | `1.1.0` | `1.*` | 🚫 blocked |
 | `@scope/* → block` + `@scope/pkg → allow` (any version) | `@scope/pkg` | `@scope/pkg` (exact package) | ✅ allowed |
 
-This makes it possible to open a precise exception on a single version inside a globally blocked package (or a single package inside a globally blocked scope), and vice versa. If two wildcard patterns of different breadth (`*` and `1.*`, or `*` and `@scope/*`) conflict without a more specific rule, the result is undefined — add a more specific rule to resolve it.
+This makes it possible to open a precise exception on a single version inside a globally blocked package (or a single package inside a globally blocked scope), and vice versa. If two rules end up with the **same specificity** (e.g. two different wildcard patterns that both match, neither more specific than the other by the rules above), the **most restrictive action wins deterministically**: `block` beats `allow` — the tie is never resolved by arbitrary row order.
 
 #### Severity and CVSS thresholds
 
@@ -628,7 +661,8 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
 | `EXTERNAL_VALIDATION` | External validation service (sync or async) |
 | `OSV_LIVE` | Google OSV live API — first fallback |
-| `DEPS_DEV` | Google deps.dev live API — last fallback, checked only if OSV is disabled |
+| `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
+| `API_FALLBACK_ERROR` | Every enabled live API fallback source failed — verdict decided by [`fail-open`](#what-fail-open--fail-closed-means), never cached |
 
 ---
 

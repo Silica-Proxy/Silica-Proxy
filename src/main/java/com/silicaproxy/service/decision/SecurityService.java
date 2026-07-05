@@ -19,7 +19,6 @@ package com.silicaproxy.service.decision;
 
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.policy.DecisionDao;
-import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -36,6 +35,7 @@ import io.micrometer.core.annotation.Timed;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -54,28 +54,25 @@ public class SecurityService {
     private final DecisionDao decisionDao;
     private final RegistryClient registryClient;
     private final VulnerabilityApiClients apiClients;
-    private final MetadataCacheDao metadataCacheDao;
+    private final SecurityServiceCaches caches;
     private final SilicaProxyProperties properties;
     private final ExternalValidationService externalValidationService;
-    private final SeverityMappingsCache severityMappingsCache;
     private final SecurityServiceMetrics metrics;
 
     public SecurityService(
             DecisionDao decisionDao,
             RegistryClient registryClient,
             VulnerabilityApiClients apiClients,
-            MetadataCacheDao metadataCacheDao,
+            SecurityServiceCaches caches,
             SilicaProxyProperties properties,
             ExternalValidationService externalValidationService,
-            SeverityMappingsCache severityMappingsCache,
             SecurityServiceMetrics metrics) {
         this.decisionDao = decisionDao;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
-        this.metadataCacheDao = metadataCacheDao;
+        this.caches = caches;
         this.properties = properties;
         this.externalValidationService = externalValidationService;
-        this.severityMappingsCache = severityMappingsCache;
         this.metrics = metrics;
     }
 
@@ -128,7 +125,7 @@ public class SecurityService {
         if (registryMetaOpt.isPresent()) {
             PackageMetadataResult registryMeta = registryMetaOpt.get();
             // Permanent registration in package_metadata (idempotent: no-op if already cached)
-            metadataCacheDao.savePackagePublishedAt(packageName, ecosystem, version, registryMeta.publishedAt());
+            caches.metadataCacheDao().savePackagePublishedAt(packageName, ecosystem, version, registryMeta.publishedAt());
             return registryMetaOpt;
         }
 
@@ -136,7 +133,7 @@ public class SecurityService {
         // known: keep quarantine working off the cached date rather than failing the whole
         // request over a transient registry hiccup for an already-vetted package. Deprecation
         // status is unknown this round and left at its default (not deprecated).
-        return metadataCacheDao.getPackagePublishedAt(packageName, ecosystem, version)
+        return caches.metadataCacheDao().getPackagePublishedAt(packageName, ecosystem, version)
                 .map(publishedAt -> new PackageMetadataResult(publishedAt, false, null));
     }
 
@@ -157,7 +154,7 @@ public class SecurityService {
                     ? metadata.deprecationReason() : "The package is deprecated or removed (yanked).";
             // Verdict in persistent cache with infinite TTL (ex: 9999-12-31)
             Instant infiniteExpiry = Instant.parse("9999-12-31T23:59:59Z");
-            metadataCacheDao.saveApiCache(packageName, ecosystem, version, false, "REGISTRY_DEPRECATION", infiniteExpiry);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, false, "REGISTRY_DEPRECATION", infiniteExpiry);
             return Optional.of(new DecisionResult("REGISTRY_DEPRECATION", "BLOCK", reason));
         }
 
@@ -176,43 +173,73 @@ public class SecurityService {
         return Optional.empty();
     }
 
-    // External API scan (Fallback Chain) : OSV, deps.dev, queried sequentially. Only enabled
-    // sources are called ; the first enabled source concludes the chain (each call returns a
-    // definitive verdict, including in case of network error).
+    @FunctionalInterface
+    private interface VulnerabilityCheck {
+        ApiCheckResult check(String packageName, String version, String ecosystem);
+    }
+
+    private record FallbackSource(String configKey, String apiSource, String providerLabel, VulnerabilityCheck check) {}
+
+    private List<FallbackSource> fallbackSources() {
+        return List.of(
+                new FallbackSource("osv", Metrics.OSV_LIVE, "OSV", apiClients.osv()::checkVulnerability),
+                new FallbackSource("deps-dev", Metrics.DEPS_DEV, "deps.dev", apiClients.depsDev()::checkVulnerability));
+    }
+
+    // External API scan (Fallback Chain) : OSV then deps.dev. The first enabled source that
+    // answers successfully concludes the chain ; a source that errors (HTTP failure, network,
+    // timeout) hands over to the next enabled one instead of concluding. If every enabled
+    // source errored, the per-source fail-open/fail-closed policy decides -- and that error
+    // verdict is deliberately NEVER written to api_cache : caching it would keep allowing (or
+    // blocking) for the whole TTL after the API recovers, turning a transient outage into a
+    // 24h security hole.
     private DecisionResult runFallbackChain(String packageName, String version, String ecosystem) {
-        if (isApiFallbackEnabled("osv")) {
-            ApiCheckResult osvResult = apiClients.osv().checkVulnerability(packageName, version, ecosystem);
-            logApiCall(Metrics.OSV_LIVE, packageName, ecosystem, version, osvResult);
-            return resolveFallbackVerdict(packageName, version, ecosystem, Metrics.OSV_LIVE, "OSV",
-                    osvResult.vulnerable());
+        boolean anyAttempted = false;
+        boolean anyFailClosed = false;
+
+        for (FallbackSource source : fallbackSources()) {
+            SilicaProxyProperties.ApiFallbackProperties sourceProps = properties.apiFallback().get(source.configKey());
+            if (sourceProps == null || !sourceProps.enabled()) {
+                continue;
+            }
+            ApiCheckResult result = source.check().check(packageName, version, ecosystem);
+            logApiCall(source.apiSource(), packageName, ecosystem, version, result);
+            if (!result.isError()) {
+                return resolveFallbackVerdict(packageName, version, ecosystem, source.apiSource(),
+                        source.providerLabel(), result.vulnerable());
+            }
+            anyAttempted = true;
+            anyFailClosed |= !sourceProps.failOpen();
+            LOG.warn("Fallback API {} failed for {}/{} ({}) : {} — trying next enabled source",
+                    source.providerLabel(), ecosystem, packageName, version, result.errorMessage());
         }
-        if (isApiFallbackEnabled("deps-dev")) {
-            ApiCheckResult depsResult = apiClients.depsDev().checkVulnerability(packageName, version, ecosystem);
-            logApiCall(Metrics.DEPS_DEV, packageName, ecosystem, version, depsResult);
-            return resolveFallbackVerdict(packageName, version, ecosystem, Metrics.DEPS_DEV, "deps.dev",
-                    depsResult.vulnerable());
+
+        if (anyAttempted) {
+            // Most restrictive wins across the attempted sources (same aggregation philosophy
+            // as ExternalValidationService) : one fail-closed source is enough to block.
+            if (anyFailClosed) {
+                return new DecisionResult("API_FALLBACK_ERROR", "BLOCK",
+                        "External vulnerability APIs are unreachable and fail-closed is configured.");
+            }
+            return new DecisionResult("API_FALLBACK_ERROR", "ALLOW",
+                    "External vulnerability APIs are unreachable; allowed by fail-open policy (verdict not cached).");
         }
 
         // If no fallback enabled, authorize by default
         if (properties.apiCache().cacheAllowVerdict()) {
             Instant expiresAt = Instant.now().plus(properties.apiCache().allowVerdictTtlMinutes(), ChronoUnit.MINUTES);
-            metadataCacheDao.saveApiCache(packageName, ecosystem, version, true, "DEFAULT", expiresAt);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true, "DEFAULT", expiresAt);
         }
         return new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
     }
 
     private void logApiCall(String apiSource, String packageName, String ecosystem, String version,
             ApiCheckResult result) {
-        String verdict = (result.errorMessage() != null && result.httpStatus() != 200)
+        String verdict = result.isError()
                 ? "ERROR"
                 : (result.vulnerable() ? "BLOCK" : "ALLOW");
         metrics.recordExternalApiCallMetric(apiSource, verdict);
         apiClients.apiCallLogDao().logCall(apiSource, packageName, ecosystem, version, verdict, result);
-    }
-
-    private boolean isApiFallbackEnabled(String sourceKey) {
-        SilicaProxyProperties.ApiFallbackProperties sourceProps = properties.apiFallback().get(sourceKey);
-        return sourceProps != null && sourceProps.enabled();
     }
 
     private DecisionResult resolveFallbackVerdict(
@@ -227,7 +254,7 @@ public class SecurityService {
         // Cache the verdict if TTL > 0 (BLOCK always, ALLOW only if configured and TTL > 0)
         if (ttlMinutes > 0 && (!isSecure || properties.apiCache().cacheAllowVerdict())) {
             Instant expiresAt = Instant.now().plus(ttlMinutes, ChronoUnit.MINUTES);
-            metadataCacheDao.saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt);
         }
 
         if (isSecure) {
@@ -266,7 +293,7 @@ public class SecurityService {
             return 11.0;
         }
 
-        @Nullable SeverityMapping mapping = severityMappingsCache.get(nextSeverity);
+        @Nullable SeverityMapping mapping = caches.severityMappingsCache().get(nextSeverity);
         if (mapping != null) {
             return mapping.minCvss();
         }

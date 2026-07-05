@@ -41,7 +41,7 @@ class ApiKeyValidatorTest {
                 new SilicaProxyProperties.SsrfProtectionProperties(false),
                 new SilicaProxyProperties.ApiAuthProperties(enabled, keyRead, keyAction)),
             new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
-            new SilicaProxyProperties.SslMitmProperties(null, null, null),
+            new SilicaProxyProperties.SslMitmProperties(null, null, null, 2000),
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),
             new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25),
             new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100),
