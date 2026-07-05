@@ -19,12 +19,16 @@ package com.silicaproxy.service.policy;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.dataformat.yaml.YAMLFactory;
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.policy.GitOpsDao;
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.model.dto.GitOpsPolicyDto;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -36,6 +40,7 @@ import org.springframework.stereotype.Service;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -52,23 +57,62 @@ import java.util.List;
 public class GitOpsSyncService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GitOpsSyncService.class);
+    private static final String GITOPS_JOB_ID = "gitops-sync";
 
     private final SilicaProxyProperties properties;
     private final VulnerabilityGitClient gitClient;
     private final GitOpsDao gitOpsDao;
     private final ObjectMapper yamlMapper;
     private final VulnerabilitySyncStatusService syncStatusService;
+    private final MeterRegistry meterRegistry;
 
     public GitOpsSyncService(
             SilicaProxyProperties properties,
             VulnerabilityGitClient gitClient,
             GitOpsDao gitOpsDao,
-            VulnerabilitySyncStatusService syncStatusService) {
+            VulnerabilitySyncStatusService syncStatusService,
+            MeterRegistry meterRegistry) {
         this.properties = properties;
         this.gitClient = gitClient;
         this.gitOpsDao = gitOpsDao;
         this.syncStatusService = syncStatusService;
+        this.meterRegistry = meterRegistry;
         this.yamlMapper = new ObjectMapper(new YAMLFactory());
+        registerFreshnessGauge();
+    }
+
+    // Reads live from sync_status (shared across all instances via the DB) instead of an
+    // in-process holder: the sync runs under a distributed ShedLock, so only one instance
+    // executes it at a time, and leadership can move to a different instance on the next run.
+    // A locally-held "last success" timestamp would freeze forever on any instance that stops
+    // winning the lock, showing a false staleness alarm when that instance happens to be the
+    // one scraped by Prometheus behind the load balancer.
+    private void registerFreshnessGauge() {
+        Gauge.builder(Metrics.GITOPS_FRESHNESS_METRIC, this, GitOpsSyncService::secondsSinceLastSuccess)
+                .description("Seconds since the last successful GitOps synchronization run (NaN if it has never succeeded)")
+                .register(meterRegistry);
+    }
+
+    private double secondsSinceLastSuccess() {
+        return syncStatusService.getLastEndTime(GITOPS_JOB_ID)
+                .map(lastEndTime -> (double) Duration.between(lastEndTime, Instant.now()).getSeconds())
+                .orElse(Double.NaN);
+    }
+
+    private void recordPoliciesMetric(String ecosystem, long count) {
+        Counter.builder(Metrics.GITOPS_POLICIES_METRIC)
+                .description("Total number of company_policies rows synchronized from GitOps, by ecosystem")
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .register(meterRegistry)
+                .increment(count);
+    }
+
+    private void recordRunMetric(String outcome) {
+        Counter.builder(Metrics.GITOPS_RUNS_METRIC)
+                .description("Total number of GitOps synchronization runs, by outcome")
+                .tag(Metrics.TAG_OUTCOME, outcome)
+                .register(meterRegistry)
+                .increment();
     }
 
     // Run every syncIntervalMinutes minutes (expressed in milliseconds in properties, wait, it's just int minutes, we use SpEL)
@@ -82,7 +126,7 @@ public class GitOpsSyncService {
             return;
         }
 
-        syncStatusService.startTask("gitops-sync");
+        syncStatusService.startTask(GITOPS_JOB_ID);
         Instant nextRun = Instant.now().plus(properties.gitops().syncIntervalMinutes(), ChronoUnit.MINUTES);
         LOGGER.info("Starting GitOps synchronization from {}...", properties.gitops().repositoryUrl());
         try {
@@ -97,15 +141,15 @@ public class GitOpsSyncService {
                     properties.gitops().cloneToken()
             );
 
-            // Each YAML file is read and parsed only once (instead of one read for 
-            // counting and a second for processing), the resulting DTO being reused 
+            // Each YAML file is read and parsed only once (instead of one read for
+            // counting and a second for processing), the resulting DTO being reused
             // for both steps.
             @Nullable GitOpsPolicyDto npmDto = readPolicyFile(destinationDir, "npm.yaml");
             @Nullable GitOpsPolicyDto pypiDto = readPolicyFile(destinationDir, "pypi.yaml");
             @Nullable GitOpsPolicyDto mavenDto = readPolicyFile(destinationDir, "maven.yaml");
 
             long totalRules = countRules(npmDto) + countRules(pypiDto) + countRules(mavenDto);
-            syncStatusService.setItemsTotal("gitops-sync", totalRules);
+            syncStatusService.setItemsTotal(GITOPS_JOB_ID, totalRules);
             LOGGER.info("GitOps sync: {} policy rules to process across all ecosystems", totalRules);
 
             long processed = 0;
@@ -114,10 +158,12 @@ public class GitOpsSyncService {
             syncEcosystem("maven", "maven.yaml", mavenDto, processed, totalRules);
 
             LOGGER.info("GitOps synchronization completed successfully.");
-            syncStatusService.completeTask("gitops-sync", nextRun);
+            syncStatusService.completeTask(GITOPS_JOB_ID, nextRun);
+            recordRunMetric(Metrics.OUTCOME_SUCCESS);
         } catch (Exception e) {
             LOGGER.error("Failed to synchronize GitOps policies", e);
-            syncStatusService.failTask("gitops-sync", e.getMessage(), nextRun);
+            syncStatusService.failTask(GITOPS_JOB_ID, e.getMessage(), nextRun);
+            recordRunMetric(Metrics.OUTCOME_FAILURE);
         }
     }
 
@@ -229,7 +275,8 @@ public class GitOpsSyncService {
 
         gitOpsDao.replaceCompanyPolicies(ecosystem, policies);
         LOGGER.info("Synchronized {} policies for ecosystem {}", policies.size(), ecosystem);
-        syncStatusService.incrementItemsProcessed("gitops-sync", policies.size());
+        syncStatusService.incrementItemsProcessed(GITOPS_JOB_ID, policies.size());
+        recordPoliciesMetric(ecosystem, policies.size());
 
         long processedNow = processedBefore + policies.size();
         if (totalRules > 0) {

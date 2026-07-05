@@ -91,8 +91,13 @@ public class DecisionDao {
                 UNION ALL
 
                 -- PRIORITY 2 : Known public security vulnerability (public_vulnerabilities)
+                -- source_type distinguishes a malware verdict (always blocked regardless of CVSS)
+                -- from a plain CVSS-threshold block, so downstream metrics/dashboards can tell a
+                -- genuine malware detection apart from a severity-policy call.
                 SELECT 2 AS priority, 0 AS specificity,
-                       'PUBLIC_VULN' AS source_type, 'BLOCK' AS result, summary AS reason
+                       CASE WHEN id LIKE 'MAL-%' OR source = 'OPENSSF' THEN 'PUBLIC_VULN_MALWARE'
+                            ELSE 'PUBLIC_VULN' END AS source_type,
+                       'BLOCK' AS result, summary AS reason
                 FROM public_vulnerabilities, checked_package
                 WHERE package_name = p_name
                   AND ecosystem = p_ecosystem

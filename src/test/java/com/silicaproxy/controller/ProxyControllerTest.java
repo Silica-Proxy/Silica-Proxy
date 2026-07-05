@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -235,7 +237,27 @@ class ProxyControllerTest {
                 .andExpect(content().bytes(fakeContent));
 
         verifyNoInteractions(securityService);
+        assertThat(meterRegistry.get(Metrics.BYPASS_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "maven")
+                .counter().count()).isEqualTo(1.0);
         verify(proxyStreamClient).streamContent(eq("https://repo1.maven.org/api/system/version"), any(HttpHeaders.class));
+    }
+
+    @Test
+    void shouldIncrementBypassMetricForFullyUnrecognizedUrl() throws Exception {
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        stubStreaming("some-content".getBytes());
+
+        double before = meterRegistry.find(Metrics.BYPASS_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "unknown").counter() == null ? 0.0
+                : meterRegistry.get(Metrics.BYPASS_METRIC).tag(Metrics.TAG_ECOSYSTEM, "unknown").counter().count();
+
+        mockMvc.perform(get("http://unknown-host.example/some/random/path"))
+                .andExpect(status().isOk());
+
+        verifyNoInteractions(securityService);
+        assertThat(meterRegistry.get(Metrics.BYPASS_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "unknown").counter().count() - before).isEqualTo(1.0);
     }
 
     private void stubStreaming(byte[] content) throws Exception {
@@ -379,6 +401,82 @@ class ProxyControllerTest {
         HttpHeaders forwarded = headersCaptor.getValue();
         assertThat(forwarded.getFirst("Authorization")).isEqualTo("Bearer secret-token");
         assertThat(forwarded.getFirst("X-NPM-Auth")).isEqualTo("npm-token-value");
+    }
+
+    @Test
+    void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnAllow() throws Exception {
+        DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
+        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        stubStreaming("ok".getBytes());
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isOk());
+
+        assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
+                .tag(Metrics.TAG_VERDICT, "ALLOW")
+                .tag(Metrics.TAG_SOURCE, "COMPANY_POLICY")
+                .tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnBlock() throws Exception {
+        DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
+        when(securityService.getDecision("lodash", "4.17.20", "npm")).thenReturn(blocked);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.20", "npm"));
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"))
+                .andExpect(status().isForbidden());
+
+        assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
+                .tag(Metrics.TAG_VERDICT, "BLOCK")
+                .tag(Metrics.TAG_SOURCE, "PUBLIC_VULN")
+                .tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldIncrementDecisionCounterForWhitelistAndBlacklistVerdicts() throws Exception {
+        DecisionResult whitelisted = new DecisionResult("COMPANY_POLICY", "WHITELIST", "Approved by security team");
+        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(whitelisted);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        stubStreaming("whitelisted-content".getBytes());
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isOk());
+
+        DecisionResult blacklisted = new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Banned by security team");
+        when(securityService.getDecision("shelljs", "0.8.5", "npm")).thenReturn(blacklisted);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("shelljs", "0.8.5", "npm"));
+
+        mockMvc.perform(get("http://registry.npmjs.org/shelljs/-/shelljs-0.8.5.tgz"))
+                .andExpect(status().isForbidden());
+
+        assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
+                .tag(Metrics.TAG_VERDICT, "WHITELIST").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .counter().count()).isEqualTo(1.0);
+        assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
+                .tag(Metrics.TAG_VERDICT, "BLACKLIST").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldAccumulateDecisionCounterAcrossRepeatedRequestsForSameTags() throws Exception {
+        DecisionResult allowed = new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
+        when(securityService.getDecision("unrated-pkg", "1.0.0", "npm")).thenReturn(allowed);
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unrated-pkg", "1.0.0", "npm"));
+        stubStreaming("ok".getBytes());
+
+        mockMvc.perform(get("http://registry.npmjs.org/unrated-pkg/-/unrated-pkg-1.0.0.tgz")).andExpect(status().isOk());
+        mockMvc.perform(get("http://registry.npmjs.org/unrated-pkg/-/unrated-pkg-1.0.0.tgz")).andExpect(status().isOk());
+        mockMvc.perform(get("http://registry.npmjs.org/unrated-pkg/-/unrated-pkg-1.0.0.tgz")).andExpect(status().isOk());
+
+        assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
+                .tag(Metrics.TAG_VERDICT, "ALLOW")
+                .tag(Metrics.TAG_SOURCE, "DEFAULT")
+                .tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .counter().count()).isEqualTo(3.0);
     }
 
     @Test

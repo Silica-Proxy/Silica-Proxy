@@ -17,9 +17,13 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import com.silicaproxy.service.decision.ExternalValidationService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,7 +59,19 @@ class ExternalValidationCallbackAuthTest extends BaseIntegrationTest {
     @Autowired
     private JdbcClient jdbcClient;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private RestClient restClient;
+
+    private double callbackMetricCount(String service, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.CALLBACK_METRIC)
+                .tag(Metrics.TAG_SERVICE, service)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
 
     @DynamicPropertySource
     static void configureExternalValidation(DynamicPropertyRegistry registry) {
@@ -103,6 +119,7 @@ class ExternalValidationCallbackAuthTest extends BaseIntegrationTest {
         cacheDao.upsertPendingAsync(token, "keyed-scanner", "lodash", "npm", "4.17.21",
                 Instant.now().plus(30, ChronoUnit.MINUTES));
 
+        double before = callbackMetricCount("keyed-scanner", ExternalValidationService.CallbackResult.UNAUTHORIZED.name());
         try {
             restClient.post()
                     .uri("/external-validation/callback/" + token)
@@ -119,6 +136,7 @@ class ExternalValidationCallbackAuthTest extends BaseIntegrationTest {
         Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("keyed-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
+        assertThat(callbackMetricCount("keyed-scanner", ExternalValidationService.CallbackResult.UNAUTHORIZED.name()) - before).isEqualTo(1.0);
     }
 
     @Test

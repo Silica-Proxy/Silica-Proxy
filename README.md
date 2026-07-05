@@ -607,22 +607,22 @@ The `step` field indicates which pipeline stage made the blocking decision:
 
 | `step` value | Source |
 |---|---|
-| `COMPANY_POLICY` | GitOps YAML rule (blacklist) |
-| `PUBLIC_VULN` | Local vulnerability database (OSV, GHSA, …) |
+| `COMPANY_POLICY` | GitOps YAML rule (blacklist) — checked first |
+| `PUBLIC_VULN` | Local vulnerability database (OSV, GHSA, …) — CVSS-threshold block |
+| `PUBLIC_VULN_MALWARE` | Local vulnerability database, `MAL-*` id or `source = OPENSSF` — always blocked regardless of CVSS |
 | `API_CACHE` | Cached result from a previous live API call |
+| `REGISTRY_ERROR` | Public registry unreachable and proxy configured fail-closed |
+| `REGISTRY_DEPRECATION` | Package deprecated or yanked from its registry — checked before quarantine |
 | `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
-| `REGISTRY_DEPRECATION` | Package deprecated or yanked from its registry |
 | `EXTERNAL_VALIDATION` | External validation service (sync or async) |
-| `OSV_LIVE` | Google OSV live API |
-| `DEPS_DEV` | Google deps.dev live API |
+| `OSV_LIVE` | Google OSV live API — first fallback |
+| `DEPS_DEV` | Google deps.dev live API — last fallback, checked only if OSV is disabled |
 
 ---
 
 ## Observability
 
-- **Prometheus metrics** at `/actuator/prometheus` (SQL latency, package verdict counters, HikariCP pool stats).
-- **Structured JSON logs** for every `403` event.
-- **Webhook alerts** (Slack / Teams) for critical detections (manual blacklist or known malware).
+- **Prometheus metrics** at `/actuator/prometheus` (SQL latency, package verdict counters, HikariCP pool stats) — see [Metrics](#metrics) for the full list.
 - **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
 - **External validation callback log** (`INFO`): every async callback received at `POST /external-validation/callback/{token}` logs the originating service, package, and verdict before it's applied.
 - **Sync progress** visible in `/api/vulnerabilities/sync/status` with per-job `progressPercent`.
@@ -669,6 +669,54 @@ log_min_duration_statement = 1000         -- Log queries slower than 1s
 
 The `api_cache` table already has tuned autovacuum (5% scale factor, 100-row threshold) for aggressive cache cleanup.
 
+## Metrics
+
+All custom metrics are exposed via Micrometer at `GET /actuator/prometheus`, alongside the standard JVM/HikariCP/Tomcat metrics. Tag values are always bounded, config-driven enum-like strings (never raw package names, versions, or free-text reasons), so cardinality stays safe for Prometheus.
+
+Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.config.Metrics` — the single source of truth referenced by every producer and every test assertion below.
+
+**Proxy decisions**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
+| `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
+| `silicaproxy.controller.security.overhead` | Timer | `decision` (`block`/`allow`) | Duration of the security check only, excluding binary streaming. |
+| `silicaproxy.decision.local_evaluation` | Counter | `outcome` (`HIT`/`MISS`) | Whether `DecisionDao`'s single SQL query (company policy / public vulnerability / `api_cache`) resolved the verdict without an external call (`HIT`), or a registry/OSV/deps.dev round trip was required (`MISS`). |
+
+**External vulnerability APIs (OSV live fallback, deps.dev)**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.external.api.calls` | Counter | `source` (`OSV_LIVE`/`DEPS_DEV`), `result` (`ALLOW`/`BLOCK`/`ERROR`) | Calls to the live fallback vulnerability APIs, by outcome. |
+
+**External validation services**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.external.validation.calls` | Counter | `service`, `type` (`sync`/`async`), `result` (`ALLOWED`/`BLOCKED`/`ERROR`/`UNKNOWN_VERDICT`/`TRIGGERED`/`TRIGGER_ERROR`) | Every sync call result and every async trigger/callback verdict, per configured service. |
+| `silicaproxy.external.validation.block_reason` | Counter | `reason` (`VERDICT`/`FAIL_CLOSED`) | Distinguishes a genuine malicious verdict from a package merely blocked because a blocking service was unavailable/slow (fail-closed) — an infra incident, not a real threat. |
+| `silicaproxy.external.validation.callback` | Counter | `service`, `result` (`PROCESSED`/`NOT_FOUND`/`UNAUTHORIZED`) | Every request to `POST /external-validation/callback/{token}`. `NOT_FOUND`/`UNAUTHORIZED` surface replay attempts, stale/duplicate deliveries, or a misconfigured API key. |
+
+**Vulnerability sync (OSV incremental)**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.vulnerability.sync.advisories` | Counter | `ecosystem`, `outcome` (`PROCESSED`/`FAILED`) | Advisory IDs handled per incremental sync run. |
+| `silicaproxy.vulnerability.sync.records` | Counter | `ecosystem`, `outcome` (`INSERTED`/`UPDATED`) | Rows written to `public_vulnerabilities`. |
+| `silicaproxy.vulnerability.sync.seconds_since_last_success` | Gauge | `ecosystem` | Time since the last successful incremental sync run — detects a silently stalled job. |
+
+**GitOps policy sync**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.gitops.sync.policies` | Counter | `ecosystem` | `company_policies` rows synchronized from the GitOps repository. |
+| `silicaproxy.gitops.sync.runs` | Counter | `outcome` (`SUCCESS`/`FAILURE`) | Sync run outcomes. |
+| `silicaproxy.gitops.sync.seconds_since_last_success` | Gauge | — | Time since the last successful GitOps sync run. |
+
+---
+
+
 ---
 
 ## Attribution Requirement
@@ -682,7 +730,6 @@ This is a **binding requirement** of the [Apache 2.0 License](LICENSE).
 SilicaProxy is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
 In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software, its use, or any collateral damage (including but not limited to server downtime, data loss, or system bugs) resulting from the use of this software.
 By using SilicaProxy, you agree to these terms and use this tool entirely at your own risk.
-
 
 
 ## License

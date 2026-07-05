@@ -17,12 +17,15 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -59,6 +62,8 @@ import static org.mockito.Mockito.when;
 // Quarantine, deprecation, and OSV are disabled so tests isolate external validation behaviour.
 class ExternalValidationSyncTest extends BaseIntegrationTest {
 
+    private static final String SERVICE_NAME = "test-scanner";
+
     @LocalServerPort
     private int port;
 
@@ -74,20 +79,37 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
     @MockitoBean
     private ProxyStreamClient proxyStreamClient;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private RestClient proxyRestClient;
+
+    // Delta-based read: the registry is shared across every test in this class, so counters
+    // persist between tests -- reading a before/after delta is the only order-independent way
+    // to assert "this call incremented it by exactly one".
+    private double validationCallCount(String service, String type, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.VALIDATION_CALLS_METRIC)
+                .tag(Metrics.TAG_SERVICE, service)
+                .tag(Metrics.TAG_TYPE, type)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
 
     @DynamicPropertySource
     static void configureExternalValidation(DynamicPropertyRegistry registry) {
         String extUrl = "http://localhost:" + wireMock.port() + "/external-validate";
         registry.add("silicaproxy.external-validation.callback-base-url", () -> "http://localhost:0");
         registry.add("silicaproxy.external-validation.trigger-async-on-sync-block", () -> "false");
-        registry.add("silicaproxy.external-validation.services.test-scanner.enabled", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.url", () -> extUrl);
-        registry.add("silicaproxy.external-validation.services.test-scanner.mode", () -> "sync");
-        registry.add("silicaproxy.external-validation.services.test-scanner.timeout-seconds", () -> "1");
-        registry.add("silicaproxy.external-validation.services.test-scanner.fail-open", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.blocking", () -> "true");
-        registry.add("silicaproxy.external-validation.services.test-scanner.cache-ttl-minutes", () -> "60");
+        String servicePrefix = "silicaproxy.external-validation.services." + SERVICE_NAME + ".";
+        registry.add(servicePrefix + "enabled", () -> "true");
+        registry.add(servicePrefix + "url", () -> extUrl);
+        registry.add(servicePrefix + "mode", () -> Metrics.TYPE_SYNC);
+        registry.add(servicePrefix + "timeout-seconds", () -> "1");
+        registry.add(servicePrefix + "fail-open", () -> "true");
+        registry.add(servicePrefix + "blocking", () -> "true");
+        registry.add(servicePrefix + "cache-ttl-minutes", () -> "60");
         registry.add("silicaproxy.http-client.external-validation-read-timeout-seconds", () -> "1");
         registry.add("silicaproxy.quarantine.enabled", () -> "false");
         registry.add("silicaproxy.deprecation.enabled", () -> "false");
@@ -125,6 +147,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"No issues found\"}")));
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.ALLOWED);
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
@@ -132,6 +155,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.ALLOWED) - before).isEqualTo(1.0);
     }
 
     // Test 16 — sync_blocked_returns403WithReason
@@ -140,6 +164,11 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"BLOCKED\",\"reason\":\"Malicious package\"}")));
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.BLOCKED);
+        double verdictBefore = meterRegistry.find(Metrics.BLOCK_REASON_METRIC)
+                .tag(Metrics.TAG_REASON, Metrics.REASON_VERDICT).counter() == null ? 0.0
+                : meterRegistry.get(Metrics.BLOCK_REASON_METRIC)
+                        .tag(Metrics.TAG_REASON, Metrics.REASON_VERDICT).counter().count();
         try {
             proxyRestClient.get()
                     .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -150,6 +179,11 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
             assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
             assertThat(e.getResponseBodyAsString()).contains("Malicious package");
         }
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.BLOCKED) - before).isEqualTo(1.0);
+        // Blocked by a genuine BLOCKED verdict from the service, not a fail-closed timeout.
+        assertThat(meterRegistry.get(Metrics.BLOCK_REASON_METRIC)
+                .tag(Metrics.TAG_REASON, Metrics.REASON_VERDICT).counter().count() - verdictBefore)
+                .isEqualTo(1.0);
     }
 
     // Test 18 — sync_timeout_failOpen_requestForwarded
@@ -158,12 +192,14 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.RESULT_ERROR);
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.RESULT_ERROR) - before).isEqualTo(1.0);
     }
 
     // Test 20 — sync_networkFault_failOpen_requestForwarded
@@ -190,15 +226,17 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"UNKNOWN\"}")));
 
+        double before = validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.RESULT_UNKNOWN_VERDICT);
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve()
                 .toEntity(byte[].class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(validationCallCount(SERVICE_NAME, Metrics.TYPE_SYNC, Metrics.RESULT_UNKNOWN_VERDICT) - before).isEqualTo(1.0);
 
         // Recorded as TIMEOUT, not cached as a real ALLOWED verdict
-        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(cached).isPresent();
         assertThat(cached.get().status()).isEqualTo("TIMEOUT");
     }
@@ -244,8 +282,8 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         jdbcClient.sql("""
                 INSERT INTO external_validation_cache
                     (service_name, package_name, ecosystem, package_version, mode, status, expires_at)
-                VALUES ('test-scanner', 'lodash', 'npm', '4.17.21', 'SYNC', 'ALLOWED', ?)
-                """).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
+                VALUES ('%s', 'lodash', 'npm', '4.17.21', 'SYNC', 'ALLOWED', ?)
+                """.formatted(SERVICE_NAME)).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
 
         proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -267,7 +305,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                     .retrieve().toBodilessEntity();
         } catch (HttpClientErrorException ignored) {}
 
-        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationVerdictEntry> verdict = verdictsDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(verdict).isPresent();
         assertThat(verdict.get().reason()).isEqualTo("Malware found");
     }
@@ -282,7 +320,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toBodilessEntity();
 
-        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
+        Optional<ExternalValidationCacheEntry> cached = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21");
         assertThat(cached).isPresent();
         assertThat(cached.get().status()).isEqualTo("ALLOWED");
         assertThat(cached.get().mode()).isEqualTo("SYNC");
@@ -294,7 +332,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
     @Test
     void sync_blockedFromVerdictsCache_returns403WithoutCallingService() {
         // Pre-populate verdicts table (permanent BLOCK)
-        verdictsDao.save("test-scanner", "lodash", "npm", "4.17.21", "Previously blocked");
+        verdictsDao.save(SERVICE_NAME, "lodash", "npm", "4.17.21", "Previously blocked");
 
         try {
             proxyRestClient.get()

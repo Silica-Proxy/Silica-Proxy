@@ -97,7 +97,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("malware-pkg-1", "1.0.0", "npm");
 
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision.result()).isEqualTo("BLOCK");
     }
 
@@ -111,7 +111,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("malware-pkg-2", "1.0.0", "npm");
 
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision.result()).isEqualTo("BLOCK");
     }
 }

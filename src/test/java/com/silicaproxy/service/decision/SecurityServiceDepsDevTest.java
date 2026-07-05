@@ -17,8 +17,11 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.config.Metrics;
+
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,11 +50,24 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
 
     private final SecurityService securityService;
     private final JdbcClient jdbcClient;
+    private final MeterRegistry meterRegistry;
 
     @Autowired
-    SecurityServiceDepsDevTest(SecurityService securityService, JdbcClient jdbcClient) {
+    SecurityServiceDepsDevTest(SecurityService securityService, JdbcClient jdbcClient, MeterRegistry meterRegistry) {
         this.securityService = securityService;
         this.jdbcClient = jdbcClient;
+        this.meterRegistry = meterRegistry;
+    }
+
+    // Delta-based read: the registry is shared across every test in this class, so counters
+    // persist between tests -- see identical helper/comment in SecurityServiceTest.
+    private double apiCallCount(String source, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.EXTERNAL_API_CALLS_METRIC)
+                .tag(Metrics.TAG_SOURCE, source)
+                .tag(Metrics.TAG_RESULT, result)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
     }
 
     @BeforeEach
@@ -82,10 +98,12 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": [\"GHSA-xxxx-yyyy\"]}")));
 
+        double before = apiCallCount(Metrics.DEPS_DEV, "BLOCK");
         DecisionResult decision = securityService.getDecision("depsdev-vuln-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(apiCallCount(Metrics.DEPS_DEV, "BLOCK") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -96,10 +114,12 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": []}")));
 
+        double before = apiCallCount(Metrics.DEPS_DEV, "ALLOW");
         DecisionResult decision = securityService.getDecision("depsdev-safe-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(apiCallCount(Metrics.DEPS_DEV, "ALLOW") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -108,9 +128,11 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
         wireMock.stubFor(get(urlPathMatching("/systems/NPM/packages/depsdev-err-pkg/versions/.*"))
                 .willReturn(aResponse().withStatus(500)));
 
+        double before = apiCallCount(Metrics.DEPS_DEV, "ERROR");
         DecisionResult decision = securityService.getDecision("depsdev-err-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(apiCallCount(Metrics.DEPS_DEV, "ERROR") - before).isEqualTo(1.0);
     }
 }

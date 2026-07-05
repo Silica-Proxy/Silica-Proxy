@@ -22,6 +22,7 @@ import com.zaxxer.hikari.HikariPoolMXBean;
 import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.GitOpsProperties;
+import com.silicaproxy.properties.SilicaProxyProperties.OsvIncrementalProperties;
 import com.silicaproxy.service.monitoring.MonitoringService.HealthReport;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService.JobStatus;
@@ -65,6 +66,11 @@ class MonitoringServiceTest {
         when(gitopsProps.enabled()).thenReturn(true);
         when(gitopsProps.syncIntervalMinutes()).thenReturn(10);
         when(properties.gitops()).thenReturn(gitopsProps);
+
+        // Default mock for OSV incremental sync (enabled)
+        OsvIncrementalProperties osvIncrementalProps = mock(OsvIncrementalProperties.class);
+        when(osvIncrementalProps.enabled()).thenReturn(true);
+        when(properties.osvIncremental()).thenReturn(osvIncrementalProps);
     }
 
     private void mockDatabaseOk() {
@@ -85,6 +91,9 @@ class MonitoringServiceTest {
             jobs.put(jobId, new JobStatus("SUCCESS", now.minus(2, ChronoUnit.HOURS), now.minus(2, ChronoUnit.HOURS), 5000L, null, 100L, now.plus(22, ChronoUnit.HOURS), null));
         }
         jobs.put("gitops-sync", new JobStatus("SUCCESS", now.minus(5, ChronoUnit.MINUTES), now.minus(5, ChronoUnit.MINUTES), 1000L, null, 10L, now.plus(5, ChronoUnit.MINUTES), null));
+        for (String jobId : new String[]{"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("SUCCESS", now.minus(30, ChronoUnit.MINUTES), now.minus(30, ChronoUnit.MINUTES), 500L, null, 5L, now.plus(30, ChronoUnit.MINUTES), null));
+        }
         return jobs;
     }
 
@@ -102,6 +111,7 @@ class MonitoringServiceTest {
         assertThat(report.components().get("vulnerabilitySync").details()).containsKey("osv-npm_nextRunTime");
         assertThat(report.components().get("gitopsSync").status()).isEqualTo("UP");
         assertThat(report.components().get("gitopsSync").details()).containsKey("nextRunTime");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("UP");
     }
 
     @Test
@@ -261,6 +271,52 @@ class MonitoringServiceTest {
         assertThat(report.status()).isEqualTo("DOWN");
         assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DOWN");
         assertThat(report.components().get("vulnerabilitySync").details()).containsEntry("osv-npm", "MISSING");
+    }
+
+    @Test
+    void shouldReturnDegradedWhenOsvIncrementalSyncIsStale() {
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        // Hourly job stale threshold is 3 hours (much shorter than the 26h daily-batch one).
+        Instant longAgo = Instant.now().minus(4, ChronoUnit.HOURS);
+        jobs.put("osv-npm-incremental", new JobStatus("SUCCESS", longAgo, longAgo, 500L, null, 5L, null, null));
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("osvIncrementalSync").details().get("osv-npm-incremental_stale")).isEqualTo(true);
+    }
+
+    @Test
+    void shouldReturnDownWhenOsvIncrementalJobIsMissing() {
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        jobs.remove("osv-pypi-incremental");
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DOWN");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DOWN");
+        assertThat(report.components().get("osvIncrementalSync").details()).containsEntry("osv-pypi-incremental", "MISSING");
+    }
+
+    @Test
+    void shouldHandleDisabledOsvIncrementalSync() {
+        mockDatabaseOk();
+        OsvIncrementalProperties disabledProps = mock(OsvIncrementalProperties.class);
+        when(disabledProps.enabled()).thenReturn(false);
+        when(properties.osvIncremental()).thenReturn(disabledProps);
+        when(statusService.getJobs()).thenReturn(createDefaultOkJobs());
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("UP");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("UP");
+        assertThat(report.components().get("osvIncrementalSync").details().get("message"))
+                .isEqualTo("OSV incremental sync is disabled in configuration");
     }
 
     @Test

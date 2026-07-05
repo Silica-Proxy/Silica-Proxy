@@ -118,6 +118,52 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
         assertThat(body).contains("\"nextScheduledSync\"");
         assertThat(body).contains("\"gitopsSync\":{\"status\":\"UP\"");
         assertThat(body).contains("\"nextRunTime\"");
+        assertThat(body).contains("\"osvIncrementalSync\":{\"status\":\"UP\"");
+    }
+
+    // The same per-component checks are also wired into the standard Spring Boot Actuator
+    // endpoint (HealthIndicatorsConfig), not just the custom /api/monitoring/health above.
+    @Test
+    void shouldExposeSameComponentsUnderActuatorHealth() {
+        setAllJobsSuccess();
+
+        ResponseEntity<String> response = restClient.get()
+                .uri("http://localhost:" + port + "/actuator/health")
+                .retrieve()
+                .toEntity(String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body).contains("\"status\":\"UP\"");
+        assertThat(body).contains("\"database\"");
+        assertThat(body).contains("\"vulnerabilitySync\"");
+        assertThat(body).contains("\"gitopsSync\"");
+        assertThat(body).contains("\"osvIncrementalSync\"");
+    }
+
+    @Test
+    void shouldReturnDegradedInActuatorHealthWhenOsvIncrementalSyncIsStale() {
+        setAllJobsSuccess();
+        jdbcClient.sql("""
+            UPDATE sync_status
+            SET last_end_time = ?
+            WHERE job_id = 'osv-npm-incremental'
+            """)
+            .params(Timestamp.from(Instant.now().minus(4, ChronoUnit.HOURS)))
+            .update();
+
+        ResponseEntity<String> response = restClient.get()
+                .uri("http://localhost:" + port + "/actuator/health")
+                .retrieve()
+                .toEntity(String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body).contains("\"status\":\"DEGRADED\"");
+        assertThat(body).contains("\"osv-npm-incremental_stale\":true");
+        assertThat(body).contains("\"osvIncrementalSync\":{\"details\":{");
     }
 
     @Test
