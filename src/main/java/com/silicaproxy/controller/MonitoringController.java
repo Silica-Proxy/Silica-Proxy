@@ -44,7 +44,6 @@ public class MonitoringController {
         this.sslMitmService = sslMitmService;
     }
 
-    @RequiresApiKey(ApiKeyScope.READ)
     @GetMapping("/health")
     public MonitoringService.HealthReport getHealth() {
         if (LOG.isDebugEnabled()) {
