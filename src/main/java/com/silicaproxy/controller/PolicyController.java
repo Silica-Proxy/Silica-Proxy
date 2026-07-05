@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.ApiKeyScope;
+import com.silicaproxy.config.RequiresApiKey;
 import com.silicaproxy.model.dto.PolicyEvaluationResponse;
 import com.silicaproxy.model.dto.PolicySimulationRequest;
 import com.silicaproxy.service.policy.PolicySimulationService;
@@ -60,6 +62,7 @@ public class PolicyController {
         return s == null ? null : s.replace('\n', ' ').replace('\r', ' ');
     }
 
+    @RequiresApiKey(ApiKeyScope.READ)
     @GetMapping("/evaluate")
     public ResponseEntity<?> evaluate(
             @RequestParam String ecosystem,
@@ -76,6 +79,7 @@ public class PolicyController {
         return ResponseEntity.ok(response);
     }
 
+    @RequiresApiKey(ApiKeyScope.READ)
     @PostMapping("/simulate")
     public ResponseEntity<?> simulate(@RequestBody PolicySimulationRequest request) {
         if (request.ecosystem() == null || request.ecosystem().isBlank()) {

@@ -74,11 +74,20 @@ public record SilicaProxyProperties(
     ) {}
 
     public record SecurityProperties(
-        @NotNull SsrfProtectionProperties ssrfProtection
+        @NotNull SsrfProtectionProperties ssrfProtection,
+        @NotNull ApiAuthProperties apiAuth
     ) {}
 
     public record SsrfProtectionProperties(
         boolean enabled
+    ) {}
+
+    // Shared API keys protecting internal admin/API endpoints (see @RequiresApiKey). Two keys,
+    // one per ApiKeyScope, so a leaked READ key cannot be used to trigger ACTION side effects.
+    public record ApiAuthProperties(
+        boolean enabled,
+        @Nullable String keyRead,
+        @Nullable String keyAction
     ) {}
 
     public record RegistriesProperties(

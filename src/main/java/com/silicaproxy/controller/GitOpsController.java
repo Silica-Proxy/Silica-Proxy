@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.ApiKeyScope;
+import com.silicaproxy.config.RequiresApiKey;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.policy.GitOpsSyncService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
@@ -58,6 +60,7 @@ public class GitOpsController {
         this.properties = properties;
     }
 
+    @RequiresApiKey(ApiKeyScope.ACTION)
     @PostMapping("/force")
     public ResponseEntity<Map<String, String>> forceSync() {
         if (LOG.isDebugEnabled()) {

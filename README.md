@@ -461,6 +461,9 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS` | `60` | For binary downloads |
 | | `silicaproxy.http-client.security-apis-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_SECURITY_APIS_READ_TIMEOUT_SECONDS` | `10` | For JSON security API calls |
 | **SSRF protection** | `silicaproxy.security.ssrf-protection.enabled` | `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED` | `true` | Block outbound calls to loopback/private IPs |
+| **API key auth** | `silicaproxy.security.api-auth.enabled` | `SILICAPROXY_SECURITY_API_AUTH_ENABLED` | `true` | Require a Bearer API key on internal admin/API endpoints (see [API Endpoints](#api-endpoints)) — set `false` only for local dev/tests |
+| | `silicaproxy.security.api-auth.key-read` | `SILICAPROXY_API_KEY_READ` | _(empty)_ | Bearer key for read-only endpoints (consultation, no side effect) |
+| | `silicaproxy.security.api-auth.key-action` | `SILICAPROXY_API_KEY_ACTION` | _(empty)_ | Bearer key for action endpoints (triggers a side effect, e.g. forced sync) — also grants access to `READ` endpoints |
 
 > **Warning — API call log performance impact:** enabling `silicaproxy.api-call-log.enabled` generates one database row per package that reaches the live API fallback (OSV Live / deps.dev). In a busy CI/CD environment where many unknown packages are requested simultaneously, this can produce hundreds of writes per minute. Calls are buffered in memory and flushed in batches (configurable via `flush-interval-seconds`), so the write never blocks the security decision path. However, the underlying PostgreSQL table (`api_call_log`) will grow at the rate of live API calls, and partition maintenance (creating monthly partitions) must be planned. Only enable in production if you have a monitoring setup to track table growth.
 
@@ -575,17 +578,26 @@ A row matches this bypass if its advisory `id` starts with `MAL-` (the OSV malwa
 
 ## API Endpoints
 
-| Method | Path | Description |
+Endpoints marked `READ` or `ACTION` in the **Auth** column require `Authorization: Bearer {key}`,
+using `silicaproxy.security.api-auth.key-read` or `-key-action` respectively (see
+[Configuration Reference](#full-variable-table)); a missing or wrong key returns `401`. `ACTION`
+is a superset of `READ`: the action key also unlocks `READ` endpoints, but the read key never
+unlocks `ACTION` ones. Set `silicaproxy.security.api-auth.enabled=false` to disable this check
+entirely (local dev/tests only). The main proxy endpoint (`GET /**`), the external validation
+callback (which has its own independent, per-service key — see below), and `/actuator/*` are
+intentionally out of scope.
+
+| Method | Auth | Description |
 |---|---|---|
 | `GET /**` | — | Proxy endpoint: streams the package or returns `403` |
-| `GET /api/monitoring/health` | — | Global health check (`UP` / `DEGRADED` / `DOWN`) |
-| `GET /api/monitoring/ca-cert` | — | CA certificate in PEM format — import into your artifact repository's trust store |
-| `GET /api/vulnerabilities/sync/status` | — | Sync job status + data inventory |
-| `POST /api/vulnerabilities/sync/force` | — | Trigger a manual vulnerability sync |
-| `POST /api/gitops/sync/force` | — | Trigger a manual GitOps policy sync |
-| `GET /api/packages/search?packageName=&ecosystem=&version=` | — | Diagnostic: look up a package in all local sources |
-| `GET /api/policies/evaluate?ecosystem=&packageName=&version=` | — | Evaluate which company policy rule applies to a given package |
-| `POST /api/policies/simulate` | — | Simulate a policy set against a package without persisting rules |
+| `GET /api/monitoring/health` | READ | Global health check (`UP` / `DEGRADED` / `DOWN`) |
+| `GET /api/monitoring/ca-cert` | READ | CA certificate in PEM format — import into your artifact repository's trust store |
+| `GET /api/vulnerabilities/sync/status` | READ | Sync job status + data inventory |
+| `POST /api/vulnerabilities/sync/force` | ACTION | Trigger a manual vulnerability sync |
+| `POST /api/gitops/sync/force` | ACTION | Trigger a manual GitOps policy sync |
+| `GET /api/packages/search?packageName=&ecosystem=&version=` | READ | Diagnostic: look up a package in all local sources |
+| `GET /api/policies/evaluate?ecosystem=&packageName=&version=` | READ | Evaluate which company policy rule applies to a given package |
+| `POST /api/policies/simulate` | READ | Simulate a policy set against a package without persisting rules |
 | `POST /external-validation/callback/{token}` | — | Async validation callback — called by external services to deliver a verdict |
 | `GET /actuator/prometheus` | — | Prometheus metrics |
 

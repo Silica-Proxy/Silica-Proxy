@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.ApiKeyScope;
+import com.silicaproxy.config.RequiresApiKey;
 import com.silicaproxy.service.search.PackageSearchService;
 import com.silicaproxy.service.search.PackageSearchService.SearchResult;
 import org.jspecify.annotations.NullMarked;
@@ -46,6 +48,7 @@ public class PackageSearchController {
         this.packageSearchService = packageSearchService;
     }
 
+    @RequiresApiKey(ApiKeyScope.READ)
     @GetMapping("/search")
     public ResponseEntity<?> search(
             @RequestParam String packageName,

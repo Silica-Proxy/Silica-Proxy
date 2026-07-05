@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.config.ApiKeyScope;
+import com.silicaproxy.config.RequiresApiKey;
 import com.silicaproxy.service.monitoring.MonitoringService;
 import com.silicaproxy.service.interception.SslMitmService;
 import org.jspecify.annotations.NullMarked;
@@ -42,6 +44,7 @@ public class MonitoringController {
         this.sslMitmService = sslMitmService;
     }
 
+    @RequiresApiKey(ApiKeyScope.READ)
     @GetMapping("/health")
     public MonitoringService.HealthReport getHealth() {
         if (LOG.isDebugEnabled()) {
@@ -50,6 +53,7 @@ public class MonitoringController {
         return monitoringService.checkHealth();
     }
 
+    @RequiresApiKey(ApiKeyScope.READ)
     @GetMapping(value = "/ca-cert", produces = MediaType.TEXT_PLAIN_VALUE)
     public String getCaCert() {
         return sslMitmService.getCaCertPem();

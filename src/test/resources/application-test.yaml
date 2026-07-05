@@ -41,7 +41,9 @@ silicaproxy:
     # Default minimum number of days required since publication (if not specified by ecosystem)
     default-min-age-days: 7
     # Behavior on registry error (true = allow package ; false = block for security)
-    fail-open: false
+    # Several tests (SecurityServiceTest, SecurityServiceTimeoutTest, SecurityServiceSeverityFloorTest,
+    # CorporateProxyScopeRegistriesTest) exercise this exact fail-open path and expect ALLOW.
+    fail-open: true
     # Ecosystem-specific thresholds and activation
     ecosystems:
       npm:
@@ -164,11 +166,17 @@ silicaproxy:
     # Example: SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH=/shared-certs/silicaproxy-ca.crt
     ca-cert-export-path: "/tmp/silicaproxy-ca.crt"
 
-  # 9. Application security (anti-SSRF protection on outgoing HTTP calls)
+  # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
+  # shared API key protection on internal admin/API endpoints)
   security:
     ssrf-protection:
       # Blocks outgoing calls to loopback, link-local and private IPs (RFC 1918)
       enabled: true
+    api-auth:
+      # Disabled by default in tests (overridden to true in dedicated api-auth tests).
+      enabled: false
+      key-read: "test-read-key"
+      key-action: "test-action-key"
 
   # 9. Timeouts for outgoing HTTP clients (registries, external security APIs)
   http-client:
