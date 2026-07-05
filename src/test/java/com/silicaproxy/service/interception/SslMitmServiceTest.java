@@ -26,7 +26,11 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -70,7 +74,7 @@ class SslMitmServiceTest {
                 new SilicaProxyProperties.SsrfProtectionProperties(false),
                 new SilicaProxyProperties.ApiAuthProperties(false, null, null)),
             new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
-            new SilicaProxyProperties.SslMitmProperties(keystorePath, password, null),
+            new SilicaProxyProperties.SslMitmProperties(keystorePath, password, null, 2000),
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),
             new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25),
             new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100),
@@ -134,6 +138,33 @@ class SslMitmServiceTest {
 
         assertThat(keystorePath).exists();
         assertThat(service.getCaCertPem()).startsWith("-----BEGIN CERTIFICATE-----");
+    }
+
+    @Test
+    void shouldRegenerateCaWhenKeystoreHasCertButNoPrivateKey() throws Exception {
+        Path keystorePath = tempDir.resolve("cert-only.p12");
+        MitmCertificateFactory factory = new MitmCertificateFactory();
+        KeyPair orphanKeyPair = factory.generateKeyPair();
+        X509Certificate orphanCert = factory.buildCACertificate(orphanKeyPair);
+
+        // A keystore containing only a certificate entry (no key) : ks.getKey(alias, pwd)
+        // returns null in this case rather than throwing.
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        ks.load(null, null);
+        ks.setCertificateEntry("silicaproxy-ca", orphanCert);
+        try (java.io.OutputStream out = Files.newOutputStream(keystorePath)) {
+            ks.store(out, new char[0]);
+        }
+
+        SslMitmService service = new SslMitmService(
+            makeProperties(keystorePath.toString(), null), factory, new AlwaysAvailableLockProvider(), new HostSslContextCache());
+        service.init();
+
+        // Falls back to generating (and persisting) a brand new CA instead of surfacing a
+        // broken caKeyPair (null private key) later at host-cert signing time.
+        assertThat(service.getCaCertPem()).startsWith("-----BEGIN CERTIFICATE-----");
+        SSLContext context = service.getContextForHost("example.com");
+        assertThat(context).isNotNull();
     }
 
     @Test

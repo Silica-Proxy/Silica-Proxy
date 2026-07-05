@@ -110,7 +110,7 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
     void companyBlacklist_blocksBeforeExternalValidation() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'BLACKLIST', 'Forbidden', 'security')
+                VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'Forbidden', 'security')
                 """).update();
 
         try {
@@ -131,7 +131,7 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
     void companyWhitelist_allowsBeforeExternalValidation() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'WHITELIST', 'Approved', 'security')
+                VALUES ('lodash', 'npm', '%', 'WHITELIST', 'Approved', 'security')
                 """).update();
 
         ResponseEntity<byte[]> response = proxyRestClient.get()

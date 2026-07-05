@@ -121,8 +121,14 @@ public class GitOpsDao {
                 WHERE :packageName LIKE
                       REPLACE(REPLACE(REPLACE(package_name, '_', '\\_'), '%', '\\%'), '*', '%') ESCAPE '\\'
                   AND ecosystem = :ecosystem
-                  AND :version LIKE REPLACE(REPLACE(version_pattern, '*', '%'), 'x', '%')
-                ORDER BY specificity ASC
+                  -- version_pattern is already stored '%'-translated by GitOpsSyncService at
+                  -- write time (see toSqlWildcardPattern) : re-translating '*'/'x' here again
+                  -- would be redundant.
+                  AND :version LIKE version_pattern
+                -- Tie-break at equal specificity : the most restrictive action wins, rather than
+                -- an arbitrary row order, when two rules match with identical specificity.
+                ORDER BY specificity ASC,
+                         CASE WHEN policy_action = 'BLACKLIST' THEN 0 ELSE 1 END ASC
                 """)
                 .param("packageName", packageName)
                 .param("version", version)

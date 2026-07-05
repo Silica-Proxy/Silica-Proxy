@@ -80,7 +80,11 @@ public class PolicySimulationService {
                     packageSpecificity + versionSpecificity,
                     false));
         }
-        matches.sort(Comparator.comparingInt(MatchedPolicyDto::specificity));
+        // Tie-break at equal specificity : BLACKLIST wins over WHITELIST, rather than relying
+        // on the input list's order (same rule as GitOpsDao.findMatchingPolicies / DecisionDao).
+        matches.sort(Comparator
+                .comparingInt(MatchedPolicyDto::specificity)
+                .thenComparing(m -> "BLACKLIST".equals(m.policyAction()) ? 0 : 1));
         return matches;
     }
 
@@ -124,13 +128,19 @@ public class PolicySimulationService {
         return new PolicyEvaluationResponse(decision, withWins);
     }
 
-    // Reproduces SQL logic : REPLACE(REPLACE(version_pattern, '*', '%'), 'x', '%')
-    // then checks if the version matches the SQL LIKE pattern.
+    // Reproduces GitOpsSyncService.toSqlWildcardPattern's semantics for a raw, untranslated
+    // pattern supplied directly in a simulation request (simulate() patterns are not pre-
+    // translated the way company_policies.version_pattern is at GitOps write time) : 'x'/'X' is
+    // only a wildcard as a full trailing version *segment* (e.g. "1.2.x"), never as a literal
+    // character occurring elsewhere (e.g. "1.0.0-xyz" must stay literal). '*' is always a
+    // wildcard.
     private boolean versionMatchesPattern(String version, String pattern) {
         StringBuilder regex = new StringBuilder("^");
-        for (int i = 0; i < pattern.length(); i++) {
+        int length = pattern.length();
+        for (int i = 0; i < length; i++) {
             char c = pattern.charAt(i);
-            if (c == '*' || c == 'x') {
+            boolean isTrailingWildcardSegment = (c == 'x' || c == 'X') && i == length - 1 && i > 0 && pattern.charAt(i - 1) == '.';
+            if (c == '*' || isTrailingWildcardSegment) {
                 regex.append(".*");
             } else if (c == '.') {
                 regex.append("\\.");

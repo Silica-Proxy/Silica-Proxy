@@ -23,8 +23,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
@@ -39,11 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
-    @DynamicPropertySource
-    static void configureUrls(DynamicPropertyRegistry registry) {
-        registry.add("silicaproxy.api-fallback.deps-dev.url",
-                () -> "http://localhost:" + wireMock.port());
-    }
+    // deps-dev.url is already wired to WireMock at "<wiremock>/depsdev/v3/" by
+    // BaseIntegrationTest -- registering it again here with a different value would silently
+    // clobber that one (both @DynamicPropertySource methods target the same property key), so
+    // stub paths below use the "/depsdev/v3" prefix instead of overriding the URL.
 
     private final SecurityService securityService;
     private final JdbcClient jdbcClient;
@@ -86,7 +83,7 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
-        wireMock.verify(0, getRequestedFor(urlPathMatching("/systems/.*")));
+        wireMock.verify(0, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 
     @Test
@@ -101,21 +98,26 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
-        wireMock.verify(0, getRequestedFor(urlPathMatching("/systems/.*")));
+        wireMock.verify(0, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 
     @Test
-    void shouldNotCallDepsDevWhenOsvReturnsError() {
-        // OSV enabled + deps.dev enabled : if OSV returns 500 (fail-open -> ALLOW),
-        // the chain stops at OSV. deps.dev must not be called.
+    void shouldCallDepsDevWhenOsvReturnsError() {
+        // OSV enabled + deps.dev enabled : if OSV returns 500, the chain hands over to the next
+        // enabled source (deps.dev) instead of concluding at OSV -- see
+        // SecurityService.runFallbackChain.
         stubRegistry("osv-500-chain-pkg");
         wireMock.stubFor(post(urlEqualTo("/v1/query"))
                 .willReturn(aResponse().withStatus(500)));
+        wireMock.stubFor(get(urlEqualTo("/depsdev/v3/systems/NPM/packages/osv-500-chain-pkg/versions/1.0.0"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{}")));
 
         DecisionResult decision = securityService.getDecision("osv-500-chain-pkg", "1.0.0", "npm");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
-        wireMock.verify(0, getRequestedFor(urlPathMatching("/systems/.*")));
+        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        wireMock.verify(1, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 }

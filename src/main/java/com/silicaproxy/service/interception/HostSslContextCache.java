@@ -17,6 +17,7 @@
 
 package com.silicaproxy.service.interception;
 
+import com.silicaproxy.properties.SilicaProxyProperties;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.stereotype.Component;
 
@@ -30,21 +31,31 @@ import java.util.function.Function;
 
 /**
  * Per-host SSLContext cache (generated cert + keypair) used by {@link SslMitmService} for MITM
- * TLS interception. Bounded by inactivity rather than by size: entries carry a sliding
- * last-access timestamp, refreshed on every {@link #getOrCompute}, so a host hit repeatedly by
- * ongoing build traffic (npm/PyPI/Maven registries) never gets evicted, while a host seen once
- * (a temporary mirror, a typo) is reclaimed once {@link #evictStaleEntries} runs past it.
- * Without this, every distinct CONNECT target ever seen over a long-running instance's lifetime
- * would stay referenced forever. Eviction is driven externally (see
- * {@code SslContextCacheCleanupService}) so this class only holds the cache mechanics.
+ * TLS interception. Bounded by inactivity (sliding last-access timestamp, refreshed on every
+ * {@link #getOrCompute}, reclaimed by {@link #evictStaleEntries}) AND by a hard size cap: a
+ * client sending CONNECT to many thousands of distinct hostnames within the TTL window would
+ * otherwise force that many RSA-2048 key generations and cache entries before any of them goes
+ * stale -- a CPU/memory DoS vector. Same size-cap approach as
+ * {@link com.silicaproxy.config.SsrfSafeInetAddressResolverProvider}, which guards against the
+ * analogous risk for DNS resolutions.
  */
 @Component
 @NullMarked
 public class HostSslContextCache {
 
     private final Map<String, CachedContext> cache = new ConcurrentHashMap<>();
+    private final int maxEntries;
 
     private record CachedContext(SSLContext sslContext, AtomicReference<Instant> lastAccessedAt) {}
+
+    public HostSslContextCache(SilicaProxyProperties properties) {
+        this.maxEntries = properties.sslMitm().contextCacheMaxEntries();
+    }
+
+    /** Test-only : no size cap enforced (defaults to Integer.MAX_VALUE). */
+    HostSslContextCache() {
+        this.maxEntries = Integer.MAX_VALUE;
+    }
 
     /**
      * Returns the cached SSLContext for {@code host}, computing and storing it via
@@ -55,6 +66,7 @@ public class HostSslContextCache {
         CachedContext cached = cache.computeIfAbsent(host,
                 h -> new CachedContext(computeFunction.apply(h), new AtomicReference<>(Instant.now())));
         cached.lastAccessedAt().set(Instant.now());
+        evictIfOversized();
         return cached.sslContext();
     }
 
@@ -64,6 +76,16 @@ public class HostSslContextCache {
         int sizeBefore = cache.size();
         cache.entrySet().removeIf(entry -> entry.getValue().lastAccessedAt().get().isBefore(cutoff));
         return sizeBefore - cache.size();
+    }
+
+    private void evictIfOversized() {
+        if (cache.size() <= maxEntries) {
+            return;
+        }
+        int excess = cache.size() - maxEntries;
+        if (excess > 0) {
+            cache.keySet().stream().limit(excess).forEach(cache::remove);
+        }
     }
 
     public int size() {

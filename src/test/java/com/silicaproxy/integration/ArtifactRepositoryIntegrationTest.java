@@ -191,7 +191,7 @@ class ArtifactRepositoryIntegrationTest extends BaseIntegrationTest {
     void shouldBlockMavenPackageViaArtifactRepository() throws Exception {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('org.slf4j:slf4j-api', 'maven', '*', 'BLACKLIST', 'Forbidden by security', 'admin', NOW())
+            VALUES ('org.slf4j:slf4j-api', 'maven', '%', 'BLACKLIST', 'Forbidden by security', 'admin', NOW())
         """).update();
 
         int repositoryPort = repositoryContainer.getMappedPort(8082);
@@ -246,7 +246,7 @@ class ArtifactRepositoryIntegrationTest extends BaseIntegrationTest {
     void shouldBlockNpmPackageViaArtifactRepository() throws Exception {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('lodash', 'npm', '*', 'BLACKLIST', 'NPM Package banned', 'admin', NOW())
+            VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'NPM Package banned', 'admin', NOW())
         """).update();
 
         int repositoryPort = repositoryContainer.getMappedPort(8082);

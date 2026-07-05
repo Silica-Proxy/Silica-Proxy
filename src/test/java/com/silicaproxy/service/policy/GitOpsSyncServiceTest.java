@@ -99,6 +99,10 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
                     version: "*"
                     action: "BLOCK"
                     reason: "Globally forbidden"
+                  - package: "weird-pkg"
+                    version: "1.0.0-xyz"
+                    action: "BLOCK"
+                    reason: "Literal 'x' in a pre-release suffix must not be treated as a wildcard"
                 """;
         
         Files.writeString(tempDir.resolve("npm.yaml"), npmYaml);
@@ -116,10 +120,10 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
 
         // Verify database
         List<Map<String, Object>> policies = jdbcClient.sql("SELECT * FROM company_policies ORDER BY id").query().listOfRows();
-        assertThat(policies).hasSize(3);
+        assertThat(policies).hasSize(4);
 
         assertThat(meterRegistry.get(Metrics.GITOPS_POLICIES_METRIC)
-                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count() - before).isEqualTo(3.0);
+                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count() - before).isEqualTo(4.0);
         assertThat(meterRegistry.get(Metrics.GITOPS_RUNS_METRIC)
                 .tag(Metrics.TAG_OUTCOME, Metrics.OUTCOME_SUCCESS).counter().count())
                 .isGreaterThanOrEqualTo(1.0);
@@ -139,6 +143,13 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
         assertThat(p3.get("version_pattern")).isEqualTo("%"); // * translated
         assertThat(p3.get("policy_action")).isEqualTo("BLOCK");
 
+        Map<String, Object> p4 = policies.get(3);
+        assertThat(p4.get("package_name")).isEqualTo("weird-pkg");
+        // A literal 'x' not in a trailing ".x" wildcard segment must be left untouched, not
+        // corrupted into "1.0.0-%yz".
+        assertThat(p4.get("version_pattern")).isEqualTo("1.0.0-xyz");
+        assertThat(p4.get("policy_action")).isEqualTo("BLOCK");
+
         // Verify ShedLock table via a separate test or check manually if we can trigger scheduler, 
         // but testing ShedLock directly is easier by just verifying the lock is created if called via scheduler,
         // but here we call the method directly. Let's just trust ShedLock config, or we can check its presence if executed.
@@ -146,11 +157,11 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
         List<Map<String, Object>> locks = jdbcClient.sql("SELECT * FROM shedlock WHERE name = 'gitops_sync_lock'").query().listOfRows();
         assertThat(locks).hasSize(1);
 
-        // The 3 rules from npm.yaml (only file present) must constitute 100% of the total volume.
+        // The 4 rules from npm.yaml (only file present) must constitute 100% of the total volume.
         VulnerabilitySyncStatusService.JobStatus job = syncStatusService.getJobs().get("gitops-sync");
         assertThat(job).isNotNull();
-        assertThat(job.itemsTotal()).isEqualTo(3L);
-        assertThat(job.itemsProcessed()).isEqualTo(3L);
+        assertThat(job.itemsTotal()).isEqualTo(4L);
+        assertThat(job.itemsProcessed()).isEqualTo(4L);
         assertThat(job.progressPercent()).isEqualTo(100.0);
     }
 

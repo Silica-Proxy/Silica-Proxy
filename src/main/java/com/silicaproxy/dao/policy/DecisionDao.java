@@ -86,7 +86,10 @@ public class DecisionDao {
                 WHERE p_name LIKE
                       REPLACE(REPLACE(REPLACE(package_name, '_', '\\_'), '%', '\\%'), '*', '%') ESCAPE '\\'
                   AND ecosystem = p_ecosystem
-                  AND p_version LIKE REPLACE(REPLACE(version_pattern, '*', '%'), 'x', '%')
+                  -- version_pattern is already stored '%'-translated by GitOpsSyncService at
+                  -- write time (see toSqlWildcardPattern) : re-translating '*'/'x' here again
+                  -- would be redundant.
+                  AND p_version LIKE version_pattern
 
                 UNION ALL
 
@@ -133,7 +136,12 @@ public class DecisionDao {
                 WHERE package_name = p_name AND ecosystem = p_ecosystem
                   AND package_version = p_version AND expires_at > CURRENT_TIMESTAMP
             ) AS combined_results
-            ORDER BY priority ASC, specificity ASC
+            -- Tie-break when two rows share the same priority and specificity (e.g. two
+            -- company_policies rows for the same package/version/ecosystem, one WHITELIST and
+            -- one BLACKLIST) : the most restrictive result wins, rather than an arbitrary row
+            -- order.
+            ORDER BY priority ASC, specificity ASC,
+                     CASE WHEN result IN ('BLOCK', 'BLACKLIST') THEN 0 ELSE 1 END ASC
             LIMIT 1;
             """;
 

@@ -38,7 +38,15 @@ import java.util.Optional;
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@TestPropertySource(properties = "silicaproxy.quarantine.ecosystems.npm.enabled=true")
+// deps-dev.enabled is set explicitly (even though application.yaml already defaults it to
+// true) : having any @TestPropertySource on the class, combined with BaseIntegrationTest's
+// @DynamicPropertySource separately setting deps-dev.url, causes Spring's relaxed Map binding
+// for apiFallback to not reliably merge deps-dev's other fields from application.yaml, and
+// deps-dev.enabled silently resolves to its Java default (false) instead of true.
+@TestPropertySource(properties = {
+        "silicaproxy.quarantine.ecosystems.npm.enabled=true",
+        "silicaproxy.api-fallback.deps-dev.enabled=true"
+})
 class SecurityServiceTest extends BaseIntegrationTest {
 
     private final SecurityService securityService;
@@ -101,7 +109,7 @@ class SecurityServiceTest extends BaseIntegrationTest {
     void shouldAllowWhenPolicyWhitelists() {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('whitelisted-pkg', 'npm', '*', 'WHITELIST', 'Allowed package', 'security')
+            VALUES ('whitelisted-pkg', 'npm', '%', 'WHITELIST', 'Allowed package', 'security')
             """).update();
 
         double before = localEvaluationCount(Metrics.OUTCOME_HIT);
@@ -334,7 +342,7 @@ class SecurityServiceTest extends BaseIntegrationTest {
     }
 
     @Test
-    void shouldAllowWhenOsvFails() {
+    void shouldFailOpenWithoutCachingWhenAllFallbackApisFail() {
         Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
 
         wireMock.stubFor(get(urlEqualTo("/osv-fail-pkg"))
@@ -345,7 +353,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
                                 "  \"versions\": {\"1.0.0\": {\"name\": \"osv-fail-pkg\", \"version\": \"1.0.0\"}}" +
                                 "}")));
 
-        // The fallback OSV API is down
+        // The fallback OSV API is down ; deps.dev has no stub, so WireMock answers 404
+        // (an HTTP error too) -- every enabled source in the chain fails.
         wireMock.stubFor(post(urlEqualTo("/v1/query"))
                 .willReturn(aResponse()
                         .withStatus(500)));
@@ -353,9 +362,86 @@ class SecurityServiceTest extends BaseIntegrationTest {
         double before = apiCallCount(Metrics.OSV_LIVE, "ERROR");
         DecisionResult decision = securityService.getDecision("osv-fail-pkg", "1.0.0", "npm");
 
-        assertThat(decision.result()).isEqualTo("ALLOW"); // Fail-open pour l'API de secours
-        assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
+        assertThat(decision.result()).isEqualTo("ALLOW"); // fail-open: true by default on both sources
+        assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
+        assertThat(decision.reason()).contains("fail-open");
         assertThat(apiCallCount(Metrics.OSV_LIVE, "ERROR") - before).isEqualTo(1.0);
+
+        // The heart of the fix: an error verdict must NEVER be cached, otherwise the
+        // fail-open ALLOW would stick for the whole TTL after OSV recovers.
+        Integer cachedRows = jdbcClient.sql(
+                "SELECT COUNT(*) FROM api_cache WHERE package_name = 'osv-fail-pkg'")
+                .query(Integer.class).single();
+        assertThat(cachedRows).isZero();
+    }
+
+    @Test
+    void shouldFallBackToDepsDevWhenOsvFails() {
+        Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
+
+        wireMock.stubFor(get(urlEqualTo("/chain-pkg"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{" +
+                                "  \"time\": {\"1.0.0\": \"" + publishedAt.toString() + "\"}," +
+                                "  \"versions\": {\"1.0.0\": {\"name\": \"chain-pkg\", \"version\": \"1.0.0\"}}" +
+                                "}")));
+
+        // OSV down, deps.dev healthy and clean (no advisoryKeys)
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(aResponse().withStatus(500)));
+        wireMock.stubFor(get(urlEqualTo("/depsdev/v3/systems/NPM/packages/chain-pkg/versions/1.0.0"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{}")));
+
+        double osvErrorBefore = apiCallCount(Metrics.OSV_LIVE, "ERROR");
+        double depsAllowBefore = apiCallCount(Metrics.DEPS_DEV, "ALLOW");
+        DecisionResult decision = securityService.getDecision("chain-pkg", "1.0.0", "npm");
+
+        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isEqualTo(Metrics.DEPS_DEV);
+        assertThat(apiCallCount(Metrics.OSV_LIVE, "ERROR") - osvErrorBefore).isEqualTo(1.0);
+        assertThat(apiCallCount(Metrics.DEPS_DEV, "ALLOW") - depsAllowBefore).isEqualTo(1.0);
+
+        // A successful verdict from the next source in the chain IS cached, as usual.
+        Map<String, Object> cache = jdbcClient.sql(
+                "SELECT * FROM api_cache WHERE package_name = 'chain-pkg'").query().singleRow();
+        assertThat(cache.get("is_secure")).isEqualTo(true);
+        assertThat(cache.get("api_source")).isEqualTo(Metrics.DEPS_DEV);
+    }
+
+    @Test
+    void shouldBlockAndCacheWhenOsvFailsAndDepsDevReportsAdvisories() {
+        Instant publishedAt = Instant.now().minus(10, ChronoUnit.DAYS);
+
+        wireMock.stubFor(get(urlEqualTo("/chain-vuln-pkg"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{" +
+                                "  \"time\": {\"1.0.0\": \"" + publishedAt.toString() + "\"}," +
+                                "  \"versions\": {\"1.0.0\": {\"name\": \"chain-vuln-pkg\", \"version\": \"1.0.0\"}}" +
+                                "}")));
+
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(aResponse().withStatus(500)));
+        wireMock.stubFor(get(urlEqualTo("/depsdev/v3/systems/NPM/packages/chain-vuln-pkg/versions/1.0.0"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"advisoryKeys\": [{\"id\": \"GHSA-xxxx-yyyy\"}]}")));
+
+        DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm");
+
+        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo(Metrics.DEPS_DEV);
+
+        // Cached with the BLOCK TTL (block-verdict-ttl-minutes: 10080 = 7 days)
+        Map<String, Object> cache = jdbcClient.sql(
+                "SELECT * FROM api_cache WHERE package_name = 'chain-vuln-pkg'").query().singleRow();
+        assertThat(cache.get("is_secure")).isEqualTo(false);
+        Instant expiresAt = ((Timestamp) cache.get("expires_at")).toInstant();
+        assertThat(expiresAt).isAfter(Instant.now().plus(6, ChronoUnit.DAYS));
+        assertThat(expiresAt).isBefore(Instant.now().plus(8, ChronoUnit.DAYS));
     }
 
     @Test

@@ -245,11 +245,11 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
     @Test
     void shouldPreferExactVersionBlacklistOverWildcardWhitelist() {
-        // Two company_policy rules coexist : * → WHITELIST and 1.0.0 → BLACKLIST
-        // The most specific rule (exact version) must always win.
+        // Two company_policy rules coexist : * (stored pre-translated as %) → WHITELIST and
+        // 1.0.0 → BLACKLIST. The most specific rule (exact version) must always win.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('exact-beats-wildcard-pkg', 'npm', '*', 'WHITELIST', 'Global authorization', 'team')
+            VALUES ('exact-beats-wildcard-pkg', 'npm', '%', 'WHITELIST', 'Global authorization', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
@@ -264,11 +264,35 @@ class DecisionDaoTest extends BaseIntegrationTest {
     }
 
     @Test
-    void shouldApplyWildcardWhitelistForOtherVersionsWhenExactMatchAbsent() {
-        // The rule * → WHITELIST applies for versions without corresponding exact rule.
+    void shouldPreferBlacklistOverWhitelistAtEqualSpecificity() {
+        // Two DIFFERENT wildcard version_pattern values (so the unique index on
+        // (package_name, ecosystem, version_pattern) is not violated), both non-exact matches
+        // for the requested version -- so both get the same specificity (exact package + non-
+        // exact version = 1) even though one pattern is narrower than the other. The most
+        // restrictive result must win deterministically, not whichever row the DB returns first.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('wildcard-win-pkg', 'npm', '*', 'WHITELIST', 'Global authorization', 'team')
+            VALUES ('tie-break-pkg', 'npm', '4.%', 'WHITELIST', 'Approved', 'team')
+            """).update();
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('tie-break-pkg', 'npm', '%', 'BLACKLIST', 'Actually compromised', 'security-team')
+            """).update();
+
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("tie-break-pkg", "4.17.21", "npm", 7.0);
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(decision.get().result()).isEqualTo("BLACKLIST");
+    }
+
+    @Test
+    void shouldApplyWildcardWhitelistForOtherVersionsWhenExactMatchAbsent() {
+        // The rule * (stored pre-translated as %) → WHITELIST applies for versions without a
+        // corresponding exact rule.
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('wildcard-win-pkg', 'npm', '%', 'WHITELIST', 'Global authorization', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
@@ -285,11 +309,13 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
     @Test
     void shouldApplyXWildcardPatternForVersions() {
-        // SQL translates 'x' to '%' via REPLACE : '4.x' becomes '4.%', so '4.17.21' must match.
-        // If the translation is broken, GitOps policies using '4.x' do not apply.
+        // version_pattern is always pre-translated by GitOpsSyncService at write time (a GitOps
+        // rule version of '4.x' is stored here already as '4.%') -- this test inserts that
+        // translated form directly to simulate the real write path, bypassing GitOpsSyncService.
+        // '4.17.21' must match the stored '4.%' pattern via a plain LIKE.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('x-wildcard-pkg', 'npm', '4.x', 'WHITELIST', 'Series 4 approved', 'team')
+            VALUES ('x-wildcard-pkg', 'npm', '4.%', 'WHITELIST', 'Series 4 approved', 'team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", 7.0);
@@ -353,10 +379,10 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
     @Test
     void shouldNotMatchXWildcardPatternForDifferentMajor() {
-        // '4.x' must not match '3.0.0' : the SQL translation '4.%' correctly excludes other series.
+        // Stored (already-translated) pattern '4.%' must not match '3.0.0'.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('x-wildcard-no-match-pkg', 'npm', '4.x', 'WHITELIST', 'Series 4 only', 'team')
+            VALUES ('x-wildcard-no-match-pkg', 'npm', '4.%', 'WHITELIST', 'Series 4 only', 'team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-no-match-pkg", "3.0.0", "npm", 7.0);
