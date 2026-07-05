@@ -87,4 +87,10 @@ public final class Metrics {
     public static final String GITOPS_FRESHNESS_METRIC = "silicaproxy.gitops.sync.seconds_since_last_success";
     public static final String OUTCOME_SUCCESS = "SUCCESS";
     public static final String OUTCOME_FAILURE = "FAILURE";
+
+    // ---- AuditLogService (outcome reuses OUTCOME_SUCCESS/OUTCOME_FAILURE above) ----
+    public static final String AUDIT_LOG_WRITES_METRIC = "silicaproxy.service.auditlog.writes";
+
+    // ---- SslMitmService ----
+    public static final String CA_CERT_EXPIRY_METRIC = "silicaproxy.ssl.mitm.ca.seconds_until_expiry";
 }

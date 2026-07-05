@@ -20,6 +20,7 @@ package com.silicaproxy.service.monitoring;
 import com.zaxxer.hikari.HikariDataSource;
 import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.SslMitmService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncScheduler;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService.JobStatus;
@@ -44,9 +45,16 @@ import java.util.Map;
 @NullMarked
 public class MonitoringService {
 
+    // Below this many remaining days, checkCaCertificateHealth() reports DEGRADED instead of UP
+    // -- the CA is generated with a 10-year validity (MitmCertificateFactory.buildCACertificate),
+    // so 30 days is a wide enough window to rotate it well before every intercepted TLS
+    // connection starts failing client-side.
+    private static final long CA_CERT_EXPIRY_WARNING_DAYS = 30;
+
     private final HealthCheckDao healthCheckDao;
     private final VulnerabilitySyncStatusService statusService;
     private final SilicaProxyProperties properties;
+    private final SslMitmService sslMitmService;
     @Nullable
     private final HikariDataSource dataSource;
 
@@ -54,10 +62,12 @@ public class MonitoringService {
             HealthCheckDao healthCheckDao,
             VulnerabilitySyncStatusService statusService,
             SilicaProxyProperties properties,
+            SslMitmService sslMitmService,
             @Nullable HikariDataSource dataSource) {
         this.healthCheckDao = healthCheckDao;
         this.statusService = statusService;
         this.properties = properties;
+        this.sslMitmService = sslMitmService;
         this.dataSource = dataSource;
     }
 
@@ -85,6 +95,7 @@ public class MonitoringService {
         components.put("vulnerabilitySync", checkVulnerabilitySyncHealth());
         components.put("gitopsSync", checkGitOpsSyncHealth());
         components.put("osvIncrementalSync", checkOsvIncrementalSyncHealth());
+        components.put("caCertificate", checkCaCertificateHealth());
 
         String overallStatus = "UP";
         for (ComponentHealth component : components.values()) {
@@ -124,6 +135,10 @@ public class MonitoringService {
 
     public ComponentHealth osvIncrementalSyncHealth() {
         return checkOsvIncrementalSyncHealth();
+    }
+
+    public ComponentHealth caCertificateHealth() {
+        return checkCaCertificateHealth();
     }
 
     private ComponentHealth checkDatabaseHealth() {
@@ -284,6 +299,30 @@ public class MonitoringService {
             }
         }
 
+        return new ComponentHealth("UP", details);
+    }
+
+    private ComponentHealth checkCaCertificateHealth() {
+        Map<String, Object> details = new HashMap<>();
+        Instant notAfter = sslMitmService.getCaCertNotAfter();
+        if (notAfter == null) {
+            details.put("message", "CA certificate not yet initialized");
+            return new ComponentHealth("DOWN", details);
+        }
+
+        details.put("notAfter", notAfter.toString());
+        long daysRemaining = ChronoUnit.DAYS.between(Instant.now(), notAfter);
+        details.put("daysRemaining", daysRemaining);
+
+        if (daysRemaining < 0) {
+            details.put("message", "CA certificate has expired -- TLS interception is broken for every client "
+                    + "that trusts it");
+            return new ComponentHealth("DOWN", details);
+        }
+        if (daysRemaining < CA_CERT_EXPIRY_WARNING_DAYS) {
+            details.put("message", "CA certificate expires soon, plan a rotation");
+            return new ComponentHealth("DEGRADED", details);
+        }
         return new ComponentHealth("UP", details);
     }
 

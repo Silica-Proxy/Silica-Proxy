@@ -17,10 +17,15 @@
 
 package com.silicaproxy.service.audit;
 
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.audit.AuditLogDao;
 import com.silicaproxy.model.entity.AuditLog;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import io.micrometer.core.annotation.Timed;
@@ -36,10 +41,14 @@ import java.time.Instant;
 @NullMarked
 public class AuditLogService {
 
-    private final AuditLogDao auditLogDao;
+    private static final Logger LOG = LoggerFactory.getLogger(AuditLogService.class);
 
-    public AuditLogService(AuditLogDao auditLogDao) {
+    private final AuditLogDao auditLogDao;
+    private final MeterRegistry meterRegistry;
+
+    public AuditLogService(AuditLogDao auditLogDao, MeterRegistry meterRegistry) {
         this.auditLogDao = auditLogDao;
+        this.meterRegistry = meterRegistry;
     }
 
     @Async("auditTaskExecutor")
@@ -67,6 +76,25 @@ public class AuditLogService {
                 executionTimeMs
         );
 
-        auditLogDao.save(auditLog);
+        // Runs on the audit executor (see AsyncConfig), whose default async-exception handler
+        // only logs and drops -- catching here instead lets a failed write surface as a
+        // Prometheus counter (silicaproxy_service_auditlog_writes_total), otherwise a broken
+        // audit trail (disk full, constraint violation) would be invisible on every dashboard.
+        try {
+            auditLogDao.save(auditLog);
+            recordWriteOutcome(Metrics.OUTCOME_SUCCESS);
+        } catch (RuntimeException e) {
+            recordWriteOutcome(Metrics.OUTCOME_FAILURE);
+            LOG.error("Failed to write audit log for {}/{} ({}): {}",
+                    ecosystem, packageName, packageVersion, e.getMessage(), e);
+        }
+    }
+
+    private void recordWriteOutcome(String outcome) {
+        Counter.builder(Metrics.AUDIT_LOG_WRITES_METRIC)
+                .description("Total number of audit log write attempts, by outcome (SUCCESS/FAILURE)")
+                .tag(Metrics.TAG_OUTCOME, outcome)
+                .register(meterRegistry)
+                .increment();
     }
 }

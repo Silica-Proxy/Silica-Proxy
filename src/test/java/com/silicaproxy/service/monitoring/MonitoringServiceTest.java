@@ -23,6 +23,7 @@ import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.GitOpsProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.OsvIncrementalProperties;
+import com.silicaproxy.service.interception.SslMitmService;
 import com.silicaproxy.service.monitoring.MonitoringService.HealthReport;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService.JobStatus;
@@ -56,10 +57,13 @@ class MonitoringServiceTest {
     @Mock
     private HikariDataSource dataSource;
 
+    @Mock
+    private SslMitmService sslMitmService;
+
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        monitoringService = new MonitoringService(healthCheckDao, statusService, properties, dataSource);
+        monitoringService = new MonitoringService(healthCheckDao, statusService, properties, sslMitmService, dataSource);
 
         // Default mocks for GitOps (enabled, 10 min interval)
         GitOpsProperties gitopsProps = mock(GitOpsProperties.class);
@@ -71,6 +75,9 @@ class MonitoringServiceTest {
         OsvIncrementalProperties osvIncrementalProps = mock(OsvIncrementalProperties.class);
         when(osvIncrementalProps.enabled()).thenReturn(true);
         when(properties.osvIncremental()).thenReturn(osvIncrementalProps);
+
+        // Default: CA certificate healthy, far from its 10-year expiry
+        when(sslMitmService.getCaCertNotAfter()).thenReturn(Instant.now().plus(300, ChronoUnit.DAYS));
     }
 
     private void mockDatabaseOk() {
@@ -112,6 +119,7 @@ class MonitoringServiceTest {
         assertThat(report.components().get("gitopsSync").status()).isEqualTo("UP");
         assertThat(report.components().get("gitopsSync").details()).containsKey("nextRunTime");
         assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("UP");
+        assertThat(report.components().get("caCertificate").status()).isEqualTo("UP");
     }
 
     @Test
@@ -335,5 +343,46 @@ class MonitoringServiceTest {
         assertThat(report.components().get("gitopsSync").status()).isEqualTo("DOWN");
         assertThat(report.components().get("gitopsSync").details().get("message"))
                 .isEqualTo("GitOps sync status row missing");
+    }
+
+    @Test
+    void shouldReturnDegradedWhenCaCertificateExpiresSoon() {
+        mockDatabaseOk();
+        when(statusService.getJobs()).thenReturn(createDefaultOkJobs());
+        when(sslMitmService.getCaCertNotAfter()).thenReturn(Instant.now().plus(10, ChronoUnit.DAYS));
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("caCertificate").status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("caCertificate").details().get("daysRemaining")).isEqualTo(9L);
+    }
+
+    @Test
+    void shouldReturnDownWhenCaCertificateHasExpired() {
+        mockDatabaseOk();
+        when(statusService.getJobs()).thenReturn(createDefaultOkJobs());
+        when(sslMitmService.getCaCertNotAfter()).thenReturn(Instant.now().minus(1, ChronoUnit.DAYS));
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DOWN");
+        assertThat(report.components().get("caCertificate").status()).isEqualTo("DOWN");
+        assertThat(report.components().get("caCertificate").details().get("message"))
+                .isEqualTo("CA certificate has expired -- TLS interception is broken for every client that trusts it");
+    }
+
+    @Test
+    void shouldReturnDownWhenCaCertificateNotYetInitialized() {
+        mockDatabaseOk();
+        when(statusService.getJobs()).thenReturn(createDefaultOkJobs());
+        when(sslMitmService.getCaCertNotAfter()).thenReturn(null);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DOWN");
+        assertThat(report.components().get("caCertificate").status()).isEqualTo("DOWN");
+        assertThat(report.components().get("caCertificate").details().get("message"))
+                .isEqualTo("CA certificate not yet initialized");
     }
 }

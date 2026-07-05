@@ -30,8 +30,8 @@ import org.springframework.context.annotation.Configuration;
  * Exposes the same per-component checks already computed by {@link MonitoringService} for
  * {@code GET /api/monitoring/health} as standard Spring Boot {@link HealthIndicator} beans, so
  * they also appear under {@code GET /actuator/health} (component keys: {@code database},
- * {@code vulnerabilitySync}, {@code gitopsSync}, {@code osvIncrementalSync}). No check logic is
- * duplicated here -- each bean only adapts {@link ComponentHealth} to {@link Health}.
+ * {@code vulnerabilitySync}, {@code gitopsSync}, {@code osvIncrementalSync}, {@code caCertificate}).
+ * No check logic is duplicated here -- each bean only adapts {@link ComponentHealth} to {@link Health}.
  */
 @Configuration
 @NullMarked
@@ -66,5 +66,10 @@ public class HealthIndicatorsConfig {
     @Bean
     public HealthIndicator osvIncrementalSyncHealthIndicator(MonitoringService monitoringService) {
         return () -> toHealth(monitoringService.osvIncrementalSyncHealth());
+    }
+
+    @Bean
+    public HealthIndicator caCertificateHealthIndicator(MonitoringService monitoringService) {
+        return () -> toHealth(monitoringService.caCertificateHealth());
     }
 }
