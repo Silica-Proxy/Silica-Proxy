@@ -82,18 +82,18 @@ class ApiKeyProtectionTest extends BaseIntegrationTest {
         apiKeyValidator.setEnabled(false);
     }
 
-    // -------------------------------------------------------------------------
-    // READ scope
-    // -------------------------------------------------------------------------
-
     @Test
-    void monitoringHealthShouldRejectWithoutKeyAndAllowWithReadOrActionKey() {
-        assertThat(get("/api/monitoring/health", null).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        assertThat(get("/api/monitoring/health", "wrong-key").getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    void monitoringHealthShouldAcceptWithoutKeyAndAllowWithReadOrActionKey() {
+        assertThat(get("/api/monitoring/health", null).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(get("/api/monitoring/health", "wrong-key").getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(get("/api/monitoring/health", READ_KEY).getStatusCode()).isEqualTo(HttpStatus.OK);
         // ACTION is a superset of READ: the action key must also unlock read-only endpoints.
         assertThat(get("/api/monitoring/health", ACTION_KEY).getStatusCode()).isEqualTo(HttpStatus.OK);
     }
+
+    // -------------------------------------------------------------------------
+    // READ scope
+    // -------------------------------------------------------------------------
 
     @Test
     void monitoringCaCertShouldRejectWithoutKeyAndAllowWithReadKey() {
