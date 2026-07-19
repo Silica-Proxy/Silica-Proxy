@@ -254,7 +254,25 @@ silicaproxy:
         blocking: true
         cache-ttl-minutes: 10080
         pending-ttl-minutes: 60
+
+      package-name-guardian:
+        enabled: true
+        url: "https://package-name-guardian.yourcompany.com/api/v1/check"
+        api-key: "${PACKAGE_NAME_GUARDIAN_API_KEY}"
+        mode: sync
+        timeout-seconds: 1
+        fail-open: true
+        blocking: true
+        cache-ttl-minutes: 10080
 ```
+
+**Package-Name-Guardian example:** This configuration integrates [Package-Name-Guardian](https://github.com/Silica-Proxy/Package-Name-Guardian), a package name analysis service that validates whether package names match internal naming conventions, detects typosquatting patterns, and flags suspicious naming anomalies across ecosystems. Run it in sync mode (blocking until resolved) with a 1-second timeout.
+
+#### Available External Services
+
+| Service | Purpose | Repository |
+|---|---|---|
+| **Package-Name-Guardian** | Validates package names against internal conventions; detects typosquatting and naming anomalies | [Silica-Proxy/Package-Name-Guardian](https://github.com/Silica-Proxy/Package-Name-Guardian) |
 
 ---
 
