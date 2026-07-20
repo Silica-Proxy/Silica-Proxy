@@ -59,11 +59,11 @@ class UrlParserServiceTest {
     }
 
     @Test
-    void parseUrl_shouldParseNpmMetadata() {
+    void parseUrl_shouldReturnUnknownForNpmMetadataRequest() {
         ParsedPackage parsed = urlParserService.parseUrl("https://registry.npmjs.org/express");
         assertThat(parsed.ecosystem()).isEqualTo("npm");
-        assertThat(parsed.packageName()).isEqualTo("express");
-        assertThat(parsed.version()).isEqualTo("latest");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
     }
 
     @Test
@@ -75,11 +75,11 @@ class UrlParserServiceTest {
     }
 
     @Test
-    void parseUrl_shouldParsePypiJson() {
+    void parseUrl_shouldReturnUnknownForPypiJsonRequest() {
         ParsedPackage parsed = urlParserService.parseUrl("https://pypi.org/pypi/requests/json");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
-        assertThat(parsed.packageName()).isEqualTo("requests");
-        assertThat(parsed.version()).isEqualTo("latest");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
     }
 
     @Test
@@ -187,6 +187,24 @@ class UrlParserServiceTest {
     }
 
     @Test
+    void parseUrl_shouldReturnUnknownForMavenMetadataXml() {
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://repo1.maven.org/maven2/dev/kuml/kuml-metamodel-uml/maven-metadata.xml");
+        assertThat(parsed.ecosystem()).isEqualTo("maven");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
+    }
+
+    @Test
+    void parseUrl_shouldReturnUnknownForMavenChecksumFile() {
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://repo1.maven.org/maven2/org/springframework/spring-core/6.0.0/spring-core-6.0.0.jar.sha1");
+        assertThat(parsed.ecosystem()).isEqualTo("maven");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
+    }
+
+    @Test
     void parseUrl_shouldReturnUnknownForUnknownHost() {
         ParsedPackage parsed = urlParserService.parseUrl("https://example.com/some/path");
         assertThat(parsed.ecosystem()).isEqualTo("unknown");
@@ -240,11 +258,11 @@ class UrlParserServiceTest {
     }
 
     @Test
-    void parseUrl_shouldParsePypiFromLegacyPythonOrg() {
+    void parseUrl_shouldReturnUnknownForPypiJsonFromLegacyPythonOrg() {
         ParsedPackage parsed = urlParserService.parseUrl("https://pypi.python.org/pypi/requests/json");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
-        assertThat(parsed.packageName()).isEqualTo("requests");
-        assertThat(parsed.version()).isEqualTo("latest");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
     }
 
     @Test
@@ -315,11 +333,11 @@ class UrlParserServiceTest {
     // --- Couche 2 : fallback structurel — PyPI ---
 
     @Test
-    void parseUrl_shouldParsePypiJsonFromPrivateMirror() {
+    void parseUrl_shouldReturnUnknownForPypiJsonFromPrivateMirror() {
         ParsedPackage parsed = urlParserService.parseUrl("https://my-devpi.internal/pypi/requests/json");
-        assertThat(parsed.ecosystem()).isEqualTo("pypi");
-        assertThat(parsed.packageName()).isEqualTo("requests");
-        assertThat(parsed.version()).isEqualTo("latest");
+        assertThat(parsed.ecosystem()).isEqualTo("unknown");
+        assertThat(parsed.packageName()).isEqualTo("unknown");
+        assertThat(parsed.version()).isEqualTo("unknown");
     }
 
     @Test
