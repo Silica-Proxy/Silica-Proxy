@@ -148,6 +148,44 @@ class RealToolchainGradleIntegrationTest extends BaseRealToolchainTest {
     }
 
     @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerability() throws Exception {
+        injectVulnerability("org.slf4j:slf4j-api", "maven", "2.0.9", 9.5);
+
+        GradleResult blockedResult = gradleBuild("org.slf4j:slf4j-api:2.0.9");
+        assertThat(blockedResult.exitCode())
+                .withFailMessage("Expected gradle build of slf4j-api:2.0.9 (CVSS 9.5 vulnerability) to fail, but it succeeded:%n%s",
+                        blockedResult.output())
+                .isNotZero();
+        assertThat(blockedResult.output()).contains("403");
+
+        GradleResult allowedResult = gradleBuild("org.slf4j:slf4j-api:2.0.13");
+        assertThat(allowedResult.exitCode())
+                .withFailMessage("Expected gradle build of slf4j-api:2.0.13 (no vulnerability, only 2.0.9 is affected) to succeed:%n%s",
+                        allowedResult.output())
+                .isZero();
+    }
+
+    @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerabilityViaRange() throws Exception {
+        injectVulnerability("org.slf4j:slf4j-api", "maven", "2.0.9", 9.5);
+
+        // [2.0.9,2.0.10) contains only 2.0.9 in the real Maven Central sequence
+        GradleResult blockedResult = gradleBuild("org.slf4j:slf4j-api:[2.0.9,2.0.10)");
+        assertThat(blockedResult.exitCode())
+                .withFailMessage("Expected gradle build resolving range to vulnerable slf4j-api:2.0.9 to fail, but it succeeded:%n%s",
+                        blockedResult.output())
+                .isNotZero();
+        assertThat(blockedResult.output()).contains("403");
+
+        // [2.0.8,2.0.9) contains only 2.0.8, which has no injected vulnerability
+        GradleResult allowedResult = gradleBuild("org.slf4j:slf4j-api:[2.0.8,2.0.9)");
+        assertThat(allowedResult.exitCode())
+                .withFailMessage("Expected gradle build resolving range to slf4j-api:2.0.8 (no vulnerability, only 2.0.9 is affected) to succeed:%n%s",
+                        allowedResult.output())
+                .isZero();
+    }
+
+    @Test
     void shouldBlockBlacklistedDependencyWithLatestRelease() throws Exception {
         blacklist("org.slf4j:slf4j-api", "maven");
         GradleResult result = gradleBuild("org.slf4j:slf4j-api:latest.release");

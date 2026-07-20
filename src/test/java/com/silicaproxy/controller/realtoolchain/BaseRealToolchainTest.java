@@ -31,6 +31,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Base class for real-toolchain integration tests. Sets up shared infrastructure:
@@ -57,7 +58,11 @@ abstract class BaseRealToolchainTest {
         registry.add("silicaproxy.proxy.port", () -> 0);
         registry.add("silicaproxy.quarantine.enabled", () -> "false");
         registry.add("silicaproxy.deprecation.enabled", () -> "false");
-        registry.add("silicaproxy.severity-threshold.enabled", () -> "false");
+        // Enabled (with the ecosystem thresholds from application-test.yaml: maven/pypi 7.0,
+        // npm 9.0) so real-toolchain tests can inject a public_vulnerabilities row and verify
+        // the CVSS block reaches the real CLI as a 403. Safe for the other tests in this
+        // package: the table is empty unless a test explicitly inserts into it.
+        registry.add("silicaproxy.severity-threshold.enabled", () -> "true");
         registry.add("silicaproxy.api-fallback.osv.enabled", () -> "false");
         registry.add("silicaproxy.api-fallback.deps-dev.enabled", () -> "false");
     }
@@ -78,6 +83,7 @@ abstract class BaseRealToolchainTest {
     @BeforeEach
     void setUp() {
         jdbcClient.sql("DELETE FROM company_policies").update();
+        jdbcClient.sql("DELETE FROM public_vulnerabilities WHERE source = 'TEST'").update();
 
         if (!toolchainStarted) {
             int loomPort = loomProxyServer.getProxyPort();
@@ -107,6 +113,21 @@ abstract class BaseRealToolchainTest {
                 .param("packageName", packageName)
                 .param("ecosystem", ecosystem)
                 .param("versionPattern", versionPattern)
+                .update();
+    }
+
+    protected void injectVulnerability(String packageName, String ecosystem, String version, double cvssScore) {
+        jdbcClient.sql("""
+                INSERT INTO public_vulnerabilities
+                    (id, source, package_name, ecosystem, summary, affected_versions, cvss_score, published_at)
+                VALUES (:id, 'TEST', :packageName, :ecosystem, 'Injected for real-toolchain BLOCK test',
+                        CAST(:affectedVersions AS JSONB), :cvssScore, NOW())
+                """)
+                .param("id", "TEST-" + UUID.randomUUID())
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("affectedVersions", "[\"" + version + "\"]")
+                .param("cvssScore", cvssScore)
                 .update();
     }
 

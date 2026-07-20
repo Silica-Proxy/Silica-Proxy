@@ -132,6 +132,48 @@ class   RealToolchainPipIntegrationTest extends BaseRealToolchainTest {
     }
 
     @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerability() throws Exception {
+        injectVulnerability("requests", "pypi", "2.31.0", 9.5);
+
+        String blockedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult blockedResult = pipInstall("requests==2.31.0", blockedWorkdir);
+        assertThat(blockedResult.getExitCode())
+                .withFailMessage("Expected pip install of requests==2.31.0 (CVSS 9.5 vulnerability) to fail, but it succeeded:%n%s",
+                        blockedResult.getStdout())
+                .isNotZero();
+        assertThat(blockedResult.getStdout() + blockedResult.getStderr()).contains("403");
+
+        String allowedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult allowedResult = pipInstall("requests==2.30.0", allowedWorkdir);
+        assertThat(allowedResult.getExitCode())
+                .withFailMessage("Expected pip install of requests==2.30.0 (no vulnerability, only 2.31.0 is affected) to succeed:%n%s",
+                        allowedResult.getStdout() + allowedResult.getStderr())
+                .isZero();
+    }
+
+    @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerabilityViaRange() throws Exception {
+        injectVulnerability("requests", "pypi", "2.31.0", 9.5);
+
+        // >=2.31.0,<2.32.0 resolves only to 2.31.0 in the real PyPI sequence
+        String blockedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult blockedResult = pipInstall("requests>=2.31.0,<2.32.0", blockedWorkdir);
+        assertThat(blockedResult.getExitCode())
+                .withFailMessage("Expected pip install resolving range to vulnerable requests==2.31.0 to fail, but it succeeded:%n%s",
+                        blockedResult.getStdout())
+                .isNotZero();
+        assertThat(blockedResult.getStdout() + blockedResult.getStderr()).contains("403");
+
+        // >=2.30.0,<2.31.0 resolves only to 2.30.0, which has no injected vulnerability
+        String allowedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult allowedResult = pipInstall("requests>=2.30.0,<2.31.0", allowedWorkdir);
+        assertThat(allowedResult.getExitCode())
+                .withFailMessage("Expected pip install resolving range to requests==2.30.0 (no vulnerability, only 2.31.0 is affected) to succeed:%n%s",
+                        allowedResult.getStdout() + allowedResult.getStderr())
+                .isZero();
+    }
+
+    @Test
     void shouldBlockBlacklistedPackageWithUnpinned() throws Exception {
         blacklist("requests", "pypi");
         String workdir = "/work/" + UUID.randomUUID();

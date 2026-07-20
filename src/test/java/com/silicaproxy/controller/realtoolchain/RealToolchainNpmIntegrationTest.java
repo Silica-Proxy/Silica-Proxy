@@ -122,6 +122,48 @@ class RealToolchainNpmIntegrationTest extends BaseRealToolchainTest {
     }
 
     @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerability() throws Exception {
+        injectVulnerability("lodash", "npm", "4.17.21", 9.5);
+
+        String blockedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult blockedResult = npmInstall("lodash@4.17.21", blockedWorkdir);
+        assertThat(blockedResult.getExitCode())
+                .withFailMessage("Expected npm install of lodash@4.17.21 (CVSS 9.5 vulnerability) to fail, but it succeeded:%n%s",
+                        blockedResult.getStdout())
+                .isNotZero();
+        assertThat(blockedResult.getStdout() + blockedResult.getStderr()).contains("403");
+
+        String allowedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult allowedResult = npmInstall("lodash@4.17.20", allowedWorkdir);
+        assertThat(allowedResult.getExitCode())
+                .withFailMessage("Expected npm install of lodash@4.17.20 (no vulnerability, only 4.17.21 is affected) to succeed:%n%s",
+                        allowedResult.getStdout() + allowedResult.getStderr())
+                .isZero();
+    }
+
+    @Test
+    void shouldBlockOnlyVersionWithHighCvssVulnerabilityViaRange() throws Exception {
+        injectVulnerability("lodash", "npm", "4.17.21", 9.5);
+
+        // >=4.17.21 <4.17.22 resolves only to 4.17.21 (excludes the later 4.17.23 patch release)
+        String blockedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult blockedResult = npmInstall("lodash@>=4.17.21 <4.17.22", blockedWorkdir);
+        assertThat(blockedResult.getExitCode())
+                .withFailMessage("Expected npm install resolving range to vulnerable lodash@4.17.21 to fail, but it succeeded:%n%s",
+                        blockedResult.getStdout())
+                .isNotZero();
+        assertThat(blockedResult.getStdout() + blockedResult.getStderr()).contains("403");
+
+        // >=4.17.20 <4.17.21 resolves only to 4.17.20, which has no injected vulnerability
+        String allowedWorkdir = "/work/" + UUID.randomUUID();
+        Container.ExecResult allowedResult = npmInstall("lodash@>=4.17.20 <4.17.21", allowedWorkdir);
+        assertThat(allowedResult.getExitCode())
+                .withFailMessage("Expected npm install resolving range to lodash@4.17.20 (no vulnerability, only 4.17.21 is affected) to succeed:%n%s",
+                        allowedResult.getStdout() + allowedResult.getStderr())
+                .isZero();
+    }
+
+    @Test
     void shouldBlockBlacklistedPackageWithLatest() throws Exception {
         blacklist("lodash", "npm");
         String workdir = "/work/" + UUID.randomUUID();
