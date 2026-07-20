@@ -42,9 +42,7 @@ public class UrlParserService {
 
     private static final Pattern NPM_UNSCOPED_TARBALL_PATTERN = Pattern.compile("^/([^/]+)/-/\\1-([\\d\\.]+.*)\\.tgz$");
     private static final Pattern NPM_SCOPED_TARBALL_PATTERN = Pattern.compile("^/(@[^/]+)/([^/]+)/-/\\2-([\\d\\.]+.*)\\.tgz$");
-    private static final Pattern NPM_METADATA_PATTERN = Pattern.compile("^/([^/]+|@[^/]+/[^/]+)$");
 
-    private static final Pattern PYPI_JSON_PATTERN = Pattern.compile("^/pypi/([^/]+)/json$");
     // Version group is [^-/]* (not .*): compiled-wheel filenames repeat the ABI tag
     // (e.g. "tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl"), and a greedy ".*" backtracks
     // to the LAST "-cp"/"-py" occurrence instead of the first, swallowing part of the tag into
@@ -66,7 +64,12 @@ public class UrlParserService {
     // wrongly consume a directory segment when the legacy layout repeats the name in the path.
     private static final Pattern PYPI_TAR_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-([\\d\\.]+[^/]*)\\.tar\\.gz$");
 
-    private static final Pattern MAVEN_PATTERN = Pattern.compile("^/maven2/(.+)/([^/]+)/([^/]+)/[^/]+$");
+    // Excludes maven-metadata.xml and checksum files (.sha1/.sha256/.sha512/.md5/.asc): those
+    // have no version segment, and without this exclusion the pattern misreads the artifactId
+    // as the version.
+    private static final Pattern MAVEN_PATTERN = Pattern.compile(
+            "^/maven2/(.+)/([^/]+)/([^/]+)/(?!maven-metadata\\.xml$)"
+                    + "(?!.+\\.(?:sha1|sha256|sha512|md5|asc)$)[^/]+$");
     private static final Pattern MAVEN_STRUCTURAL_PATTERN =
             Pattern.compile("^/[^/]+/(.+)/([^/]+)/([^/]+)/[^/]+\\.(?:jar|pom|aar|war|ear|zip|module)$");
 
@@ -124,11 +127,7 @@ public class UrlParserService {
         if (scopedNpm.matches()) {
             return new ParsedPackage(scopedNpm.group(1) + "/" + scopedNpm.group(2), scopedNpm.group(3), "npm");
         }
-        Matcher m = PYPI_JSON_PATTERN.matcher(path);
-        if (m.matches()) {
-            return new ParsedPackage(m.group(1), "latest", "pypi");
-        }
-        m = PYPI_WHL_PATTERN.matcher(path);
+        Matcher m = PYPI_WHL_PATTERN.matcher(path);
         if (m.matches()) {
             return new ParsedPackage(m.group(1), m.group(2), "pypi");
         }
@@ -156,19 +155,11 @@ public class UrlParserService {
                     scopedMatcher.group(3),
                     "npm");
         }
-        Matcher metaMatcher = NPM_METADATA_PATTERN.matcher(path);
-        if (metaMatcher.matches()) {
-            return new ParsedPackage(metaMatcher.group(1), "latest", "npm");
-        }
         return new ParsedPackage("unknown", "unknown", "npm");
     }
 
     private static ParsedPackage parsePypiUrl(String path) {
-        Matcher m = PYPI_JSON_PATTERN.matcher(path);
-        if (m.matches()) {
-            return new ParsedPackage(m.group(1), "latest", "pypi");
-        }
-        m = PYPI_WHL_PATTERN.matcher(path);
+        Matcher m = PYPI_WHL_PATTERN.matcher(path);
         if (m.matches()) {
             return new ParsedPackage(m.group(1), m.group(2), "pypi");
         }
