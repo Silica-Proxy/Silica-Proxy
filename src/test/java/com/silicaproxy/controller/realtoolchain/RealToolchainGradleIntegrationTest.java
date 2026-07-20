@@ -20,6 +20,7 @@ package com.silicaproxy.controller.realtoolchain;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,6 +32,21 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RealToolchainGradleIntegrationTest extends BaseRealToolchainTest {
+
+    // Reuses the developer's already-populated ~/.gradle/wrapper/dists cache when present
+    private static final Path SHARED_WRAPPER_DISTS = resolveSharedWrapperDistsCache();
+
+    private static Path resolveSharedWrapperDistsCache() {
+        Path realDists = Path.of(System.getProperty("user.home"), ".gradle", "wrapper", "dists");
+        if (Files.isDirectory(realDists)) {
+            return realDists;
+        }
+        try {
+            return Files.createTempDirectory("silicaproxy-shared-gradle-dists-");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
 
     @Test
     void shouldResolveFixedVersion() throws Exception {
@@ -189,9 +205,8 @@ class RealToolchainGradleIntegrationTest extends BaseRealToolchainTest {
                 """);
 
         Path gradleUserHome = Files.createTempDirectory("silicaproxy-gradle-home-");
-        Path realWrapperDists = Path.of(System.getProperty("user.home"), ".gradle", "wrapper", "dists");
         Files.createDirectories(gradleUserHome.resolve("wrapper"));
-        Files.createSymbolicLink(gradleUserHome.resolve("wrapper").resolve("dists"), realWrapperDists);
+        Files.createSymbolicLink(gradleUserHome.resolve("wrapper").resolve("dists"), SHARED_WRAPPER_DISTS);
 
         ProcessBuilder processBuilder = new ProcessBuilder(
                 "./gradlew", "build", "--no-daemon",
