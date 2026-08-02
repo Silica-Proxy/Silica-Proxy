@@ -42,7 +42,7 @@ dependencies {
 	implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:7.7.0'
 	
 	// JSpecify
-	implementation 'org.jspecify:jspecify:1.0.0'
+	implementation 'org.jspecify:jspecify:1.0.1'
 
 	// SSL MITM
 	implementation 'org.bouncycastle:bcprov-jdk18on:1.85'
