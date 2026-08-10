@@ -52,7 +52,7 @@ dependencies {
 	implementation 'us.springett:cvss-calculator:1.5.1'
 	
 	// Git & YAML parsing for external advisories
-	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.7.0.202606012155-r'
+	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.7.1.202607240634-r'
 	implementation 'tools.jackson.dataformat:jackson-dataformat-yaml'
 
 	// Observabilité
