@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
 
   # Configuration to keep GitHub Actions workflows up to date
   - package-ecosystem: "github-actions"
