@@ -21,6 +21,8 @@ import com.silicaproxy.dao.audit.PartitionMaintenanceDao;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.YearMonth;
@@ -65,5 +67,10 @@ public class PartitionMaintenanceService {
         }
         LOG.info("Ensured partitions exist from {} through {} for tables {}",
                 referenceMonth, referenceMonth.plusMonths(MONTHS_AHEAD), MANAGED_PARTITIONED_TABLES);
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void executeMaintenanceOnStartup() {
+        ensureFuturePartitionsExist();
     }
 }
