@@ -424,91 +424,91 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 
 ### Full variable table
 
-| Category | YAML property | Environment variable | Default | Description |
-|---|---|---|---|---|
-| **Database** | `spring.datasource.url` | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/security_db` | PostgreSQL JDBC URL |
-| | `spring.datasource.username` | `SPRING_DATASOURCE_USERNAME` | `postgres` | |
-| | `spring.datasource.password` | `SPRING_DATASOURCE_PASSWORD` | `postgres` | |
-| **Connection pool** | `spring.datasource.hikari.maximum-pool-size` | `HIKARI_MAX_POOL_SIZE` | `50` | Max DB connections |
-| | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE` | `15` | Min idle connections |
-| | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT` | `1500` | ms to wait for a connection |
-| **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT` | `8080` | Public TCP entry point |
-| **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL` | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
-| | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL` | `https://pypi.org` | PyPI registry base URL for metadata resolution |
-| | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL` | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
-| **Quarantine** | `silicaproxy.quarantine.enabled` | `SILICAPROXY_QUARANTINE_ENABLED` | `true` | Enable age-based quarantine globally |
-| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN` | `true` | Allow on registry error |
-| | `silicaproxy.quarantine.default-min-age-days` | `SILICAPROXY_QUARANTINE_DEFAULT_MIN_AGE_DAYS` | `7` | Fallback threshold if not set per ecosystem |
-| | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED` | `true` | |
-| | `silicaproxy.quarantine.ecosystems.npm.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_MIN_AGE_DAYS` | `7` | |
-| | `silicaproxy.quarantine.ecosystems.pypi.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_ENABLED` | `true` | |
-| | `silicaproxy.quarantine.ecosystems.pypi.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_MIN_AGE_DAYS` | `10` | |
-| | `silicaproxy.quarantine.ecosystems.maven.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_ENABLED` | `false` | |
-| | `silicaproxy.quarantine.ecosystems.maven.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_MIN_AGE_DAYS` | `5` | |
-| **Deprecation** | `silicaproxy.deprecation.enabled` | `SILICAPROXY_DEPRECATION_ENABLED` | `true` | Block deprecated/yanked packages |
-| | `silicaproxy.deprecation.ecosystems.npm` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_NPM` | `true` | |
-| | `silicaproxy.deprecation.ecosystems.pypi` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_PYPI` | `true` | |
-| **CVSS threshold** | `silicaproxy.severity-threshold.enabled` | `SILICAPROXY_SEVERITY_THRESHOLD_ENABLED` | `true` | |
-| | `silicaproxy.severity-threshold.default-max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_SEVERITY` | `CRITICAL` | Severity level above which a package is blocked |
-| | `silicaproxy.severity-threshold.default-max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_CVSS` | `7.0` | Score above which a package is blocked |
+| Category | YAML property | Environment variable                                              | Default | Description |
+|---|---|-------------------------------------------------------------------|---|---|
+| **Database** | `spring.datasource.url` | `SPRING_DATASOURCE_URL`                                           | `jdbc:postgresql://localhost:5432/security_db` | PostgreSQL JDBC URL |
+| | `spring.datasource.username` | `SPRING_DATASOURCE_USERNAME`                                      | `postgres` | |
+| | `spring.datasource.password` | `SPRING_DATASOURCE_PASSWORD`                                      | `postgres` | |
+| **Connection pool** | `spring.datasource.hikari.maximum-pool-size` | `HIKARI_MAX_POOL_SIZE`                                            | `50` | Max DB connections |
+| | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE`                                                 | `15` | Min idle connections |
+| | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
+| **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
+| **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL`                                  | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
+| | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
+| | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
+| **Quarantine** | `silicaproxy.quarantine.enabled` | `SILICAPROXY_QUARANTINE_ENABLED`                                  | `true` | Enable age-based quarantine globally |
+| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN`                                | `true` | Allow on registry error |
+| | `silicaproxy.quarantine.default-min-age-days` | `SILICAPROXY_QUARANTINE_DEFAULT_MIN_AGE_DAYS`                     | `7` | Fallback threshold if not set per ecosystem |
+| | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED`                   | `true` | |
+| | `silicaproxy.quarantine.ecosystems.npm.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_MIN_AGE_DAYS`              | `7` | |
+| | `silicaproxy.quarantine.ecosystems.pypi.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_ENABLED`                  | `true` | |
+| | `silicaproxy.quarantine.ecosystems.pypi.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_MIN_AGE_DAYS`             | `10` | |
+| | `silicaproxy.quarantine.ecosystems.maven.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_ENABLED`                 | `false` | |
+| | `silicaproxy.quarantine.ecosystems.maven.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_MIN_AGE_DAYS`            | `5` | |
+| **Deprecation** | `silicaproxy.deprecation.enabled` | `SILICAPROXY_DEPRECATION_ENABLED`                                 | `true` | Block deprecated/yanked packages |
+| | `silicaproxy.deprecation.ecosystems.npm` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_NPM`                          | `true` | |
+| | `silicaproxy.deprecation.ecosystems.pypi` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_PYPI`                         | `true` | |
+| **CVSS threshold** | `silicaproxy.severity-threshold.enabled` | `SILICAPROXY_SEVERITY_THRESHOLD_ENABLED`                          | `true` | |
+| | `silicaproxy.severity-threshold.default-max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_SEVERITY`     | `CRITICAL` | Severity level above which a package is blocked |
+| | `silicaproxy.severity-threshold.default-max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_CVSS`         | `7.0` | Score above which a package is blocked |
 | | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_SEVERITY` | `HIGH` | |
-| | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_CVSS` | `9.0` | |
+| | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_CVSS`  | `9.0` | |
 | | `silicaproxy.severity-threshold.ecosystems.maven.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_MAVEN_MAX_ALLOWED_SEVERITY` | `MEDIUM` | |
 | | `silicaproxy.severity-threshold.ecosystems.maven.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_MAVEN_MAX_ALLOWED_CVSS` | `7.0` | |
 | | `silicaproxy.severity-threshold.ecosystems.pypi.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_PYPI_MAX_ALLOWED_SEVERITY` | `MEDIUM` | |
 | | `silicaproxy.severity-threshold.ecosystems.pypi.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_PYPI_MAX_ALLOWED_CVSS` | `7.0` | |
-| **API cache** | `silicaproxy.api-cache.cache-allow-verdict` | `SILICAPROXY_API_CACHE_CACHE_ALLOW_VERDICT` | `true` | Cache verdicts where no vulnerability found |
-| | `silicaproxy.api-cache.block-verdict-ttl-minutes` | `SILICAPROXY_API_CACHE_BLOCK_VERDICT_TTL_MINUTES` | `10080` | Minutes to cache when vulnerability is found (7 days) |
-| | `silicaproxy.api-cache.allow-verdict-ttl-minutes` | `SILICAPROXY_API_CACHE_ALLOW_VERDICT_TTL_MINUTES` | `1440` | Minutes to cache when no vulnerability found (24 hours) |
-| **GitOps** | `silicaproxy.gitops.enabled` | `SILICAPROXY_GITOPS_ENABLED` | `true` | |
-| | `silicaproxy.gitops.repository-url` | `SILICAPROXY_GITOPS_REPOSITORY_URL` | `http://localhost:3000/devops/policies.git` | URL of the policy Git repository |
-| | `silicaproxy.gitops.directory-path` | `SILICAPROXY_GITOPS_DIRECTORY_PATH` | `policies/` | Subfolder inside the repo |
-| | `silicaproxy.gitops.clone-token` | `SILICAPROXY_GITOPS_CLONE_TOKEN` | _(empty)_ | OAuth token or PAT for private repos |
-| | `silicaproxy.gitops.sync-interval-minutes` | `SILICAPROXY_GITOPS_SYNC_INTERVAL_MINUTES` | `10` | |
-| **SSL MITM** | `silicaproxy.ssl-mitm.ca-keystore-path` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH` | `./certs/ca.p12` | PKCS12 path — empty = ephemeral CA |
-| | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD` | _(empty)_ | Keystore password for encryption |
-| | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH` | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
-| | `silicaproxy.ssl-mitm.context-cache-max-entries` | `SILICAPROXY_SSL_MITM_CONTEXT_CACHE_MAX_ENTRIES` | `2000` | Hard cap on the per-host SSLContext cache, on top of its 24h inactivity TTL — bounds the CPU/memory cost of CONNECT requests to many distinct hostnames |
-| **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED` | `false` | Route outbound traffic through a corporate proxy |
-| | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST` | — | |
-| | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT` | — | |
-| | `silicaproxy.corporate-proxy.non-proxy-hosts` | `SILICAPROXY_CORPORATE_PROXY_NON_PROXY_HOSTS` | `localhost\|127.0.0.1` | Pipe-separated bypass list |
-| | `silicaproxy.corporate-proxy.scope.registries` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_REGISTRIES` | `true` | Route registry traffic through proxy |
-| | `silicaproxy.corporate-proxy.scope.security-apis` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_SECURITY_APIS` | `true` | Route security API traffic through proxy |
-| | `silicaproxy.corporate-proxy.scope.external-git-repositories` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_GIT_REPOSITORIES` | `true` | Route vulnerability DB git clones through proxy |
-| | `silicaproxy.corporate-proxy.scope.internal-git-repository` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_INTERNAL_GIT_REPOSITORY` | `false` | Route GitOps repo through proxy |
-| **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL` | _(empty)_ | Base URL of this proxy instance — **required if any service uses `mode: async`**, and checked at startup: the proxy refuses to start rather than send a broken relative callback URL |
-| | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK` | `false` | If true, async services are triggered even when a sync service already blocks |
-| | `silicaproxy.external-validation.services.<name>.enabled` | — | `false` | Enable this external validation service |
-| | `silicaproxy.external-validation.services.<name>.url` | — | — | HTTP endpoint to POST validation requests to |
-| | `silicaproxy.external-validation.services.<name>.api-key` | — | _(empty)_ | Sent as `Authorization` header on outbound calls; for async services, also required back as `Authorization: Bearer {api-key}` on the callback if set (optional otherwise) |
-| | `silicaproxy.external-validation.services.<name>.mode` | — | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
-| | `silicaproxy.external-validation.services.<name>.timeout-seconds` | — | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
-| | `silicaproxy.external-validation.services.<name>.fail-open` | — | `true` | `true` = allow on error/timeout/pending; `false` = block |
-| | `silicaproxy.external-validation.services.<name>.blocking` | — | `true` | `false` = verdict stored for audit but never blocks a package |
-| | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | — | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
-| | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | — | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
+| **API cache** | `silicaproxy.api-cache.cache-allow-verdict` | `SILICAPROXY_API_CACHE_CACHE_ALLOW_VERDICT`                       | `true` | Cache verdicts where no vulnerability found |
+| | `silicaproxy.api-cache.block-verdict-ttl-minutes` | `SILICAPROXY_API_CACHE_BLOCK_VERDICT_TTL_MINUTES`                 | `10080` | Minutes to cache when vulnerability is found (7 days) |
+| | `silicaproxy.api-cache.allow-verdict-ttl-minutes` | `SILICAPROXY_API_CACHE_ALLOW_VERDICT_TTL_MINUTES`                 | `1440` | Minutes to cache when no vulnerability found (24 hours) |
+| **GitOps** | `silicaproxy.gitops.enabled` | `SILICAPROXY_GITOPS_ENABLED`                                      | `true` | |
+| | `silicaproxy.gitops.repository-url` | `SILICAPROXY_GITOPS_REPOSITORY_URL`                               | `http://localhost:3000/devops/policies.git` | URL of the policy Git repository |
+| | `silicaproxy.gitops.directory-path` | `SILICAPROXY_GITOPS_DIRECTORY_PATH`                               | `policies/` | Subfolder inside the repo |
+| | `silicaproxy.gitops.clone-token` | `SILICAPROXY_GITOPS_CLONE_TOKEN`                                  | _(empty)_ | OAuth token or PAT for private repos |
+| | `silicaproxy.gitops.sync-interval-minutes` | `SILICAPROXY_GITOPS_SYNC_INTERVAL_MINUTES`                        | `10` | |
+| **SSL MITM** | `silicaproxy.ssl-mitm.ca-keystore-path` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH`                           | `./certs/ca.p12` | PKCS12 path — empty = ephemeral CA |
+| | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD`                       | _(empty)_ | Keystore password for encryption |
+| | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH`                        | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
+| | `silicaproxy.ssl-mitm.context-cache-max-entries` | `SILICAPROXY_SSL_MITM_CONTEXT_CACHE_MAX_ENTRIES`                  | `2000` | Hard cap on the per-host SSLContext cache, on top of its 24h inactivity TTL — bounds the CPU/memory cost of CONNECT requests to many distinct hostnames |
+| **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED`                             | `false` | Route outbound traffic through a corporate proxy |
+| | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST`                                | — | |
+| | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT`                                | — | |
+| | `silicaproxy.corporate-proxy.non-proxy-hosts` | `SILICAPROXY_CORPORATE_PROXY_NON_PROXY_HOSTS`                     | `localhost\|127.0.0.1` | Pipe-separated bypass list |
+| | `silicaproxy.corporate-proxy.scope.registries` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_REGISTRIES`                    | `true` | Route registry traffic through proxy |
+| | `silicaproxy.corporate-proxy.scope.security-apis` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_SECURITY_APIS`                 | `true` | Route security API traffic through proxy |
+| | `silicaproxy.corporate-proxy.scope.external-git-repositories` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_GIT_REPOSITORIES`     | `true` | Route vulnerability DB git clones through proxy |
+| | `silicaproxy.corporate-proxy.scope.internal-git-repository` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_INTERNAL_GIT_REPOSITORY`       | `false` | Route GitOps repo through proxy |
+| **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL`               | _(empty)_ | Base URL of this proxy instance — **required if any service uses `mode: async`**, and checked at startup: the proxy refuses to start rather than send a broken relative callback URL |
+| | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK`     | `false` | If true, async services are triggered even when a sync service already blocks |
+| | `silicaproxy.external-validation.services.<name>.enabled` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_ENABLED`          | `false` | Enable this external validation service |
+| | `silicaproxy.external-validation.services.<name>.url` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_URL`              | — | HTTP endpoint to POST validation requests to |
+| | `silicaproxy.external-validation.services.<name>.api-key` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_APIKEY`           | _(empty)_ | Sent as `Authorization` header on outbound calls; for async services, also required back as `Authorization: Bearer {api-key}` on the callback if set (optional otherwise) |
+| | `silicaproxy.external-validation.services.<name>.mode` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_MODE`             | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
+| | `silicaproxy.external-validation.services.<name>.timeout-seconds` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_TIMEOUTSECONDS`                                                               | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
+| | `silicaproxy.external-validation.services.<name>.fail-open` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_FAILOPEN`                                                                | `true` | `true` = allow on error/timeout/pending; `false` = block |
+| | `silicaproxy.external-validation.services.<name>.blocking` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_BLOCKING`                                                                | `true` | `false` = verdict stored for audit but never blocks a package |
+| | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_CACHETTLMINUTES`                                                               | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
+| | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_PENDINGTTLMINUTES`                                                                | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
 | | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for calls to external validation services |
-| | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION` | `false` | Route external validation traffic through the corporate proxy |
-| **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED` | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
-| | `silicaproxy.api-call-log.flush-interval-seconds` | `SILICAPROXY_API_CALL_LOG_FLUSH_INTERVAL_SECONDS` | `30` | Batch flush interval (seconds) |
-| | `silicaproxy.api-call-log.buffer-capacity` | `SILICAPROXY_API_CALL_LOG_BUFFER_CAPACITY` | `5000` | In-memory buffer size before entries are dropped |
-| **OSV incremental** | `silicaproxy.osv-incremental.enabled` | `SILICAPROXY_OSV_INCREMENTAL_ENABLED` | `true` | Enable hourly incremental OSV sync |
-| | `silicaproxy.osv-incremental.gcs-base-url` | `SILICAPROXY_OSV_INCREMENTAL_GCS_BASE_URL` | `https://storage.googleapis.com/osv-vulnerabilities` | GCS base URL for `modified_id.csv` files |
-| | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS` | `25` | Window fetched on first run (before any watermark) |
-| **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED` | `true` | Enable Google OSV Live API (free) |
-| | `silicaproxy.api-fallback.osv.url` | — | `https://api.osv.dev/v1/query` | OSV API endpoint |
-| | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN` | `true` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
-| | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED` | `true` | Enable Google deps.dev API (free) |
-| | `silicaproxy.api-fallback.deps-dev.url` | — | `https://api.deps.dev/v3/` | deps.dev API endpoint |
-| | `silicaproxy.api-fallback.deps-dev.fail-open` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_FAIL_OPEN` | `true` | Verdict when deps.dev fails **and** no later source in the chain concludes either |
-| **HTTP timeouts** | `silicaproxy.http-client.connect-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_CONNECT_TIMEOUT_SECONDS` | `5` | |
-| | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS` | `60` | For binary downloads |
-| | `silicaproxy.http-client.security-apis-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_SECURITY_APIS_READ_TIMEOUT_SECONDS` | `10` | For JSON security API calls |
-| **SSRF protection** | `silicaproxy.security.ssrf-protection.enabled` | `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED` | `true` | Block outbound calls to loopback/private IPs |
-| **API key auth** | `silicaproxy.security.api-auth.enabled` | `SILICAPROXY_SECURITY_API_AUTH_ENABLED` | `true` | Require a Bearer API key on internal admin/API endpoints (see [API Endpoints](#api-endpoints)) — set `false` only for local dev/tests |
-| | `silicaproxy.security.api-auth.key-read` | `SILICAPROXY_API_KEY_READ` | _(empty)_ | Bearer key for read-only endpoints (consultation, no side effect) |
-| | `silicaproxy.security.api-auth.key-action` | `SILICAPROXY_API_KEY_ACTION` | _(empty)_ | Bearer key for action endpoints (triggers a side effect, e.g. forced sync) — also grants access to `READ` endpoints |
+| | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION`           | `false` | Route external validation traffic through the corporate proxy |
+| **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED`                                | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
+| | `silicaproxy.api-call-log.flush-interval-seconds` | `SILICAPROXY_API_CALL_LOG_FLUSH_INTERVAL_SECONDS`                 | `30` | Batch flush interval (seconds) |
+| | `silicaproxy.api-call-log.buffer-capacity` | `SILICAPROXY_API_CALL_LOG_BUFFER_CAPACITY`                        | `5000` | In-memory buffer size before entries are dropped |
+| **OSV incremental** | `silicaproxy.osv-incremental.enabled` | `SILICAPROXY_OSV_INCREMENTAL_ENABLED`                             | `true` | Enable hourly incremental OSV sync |
+| | `silicaproxy.osv-incremental.gcs-base-url` | `SILICAPROXY_OSV_INCREMENTAL_GCS_BASE_URL`                        | `https://storage.googleapis.com/osv-vulnerabilities` | GCS base URL for `modified_id.csv` files |
+| | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS`              | `25` | Window fetched on first run (before any watermark) |
+| **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED`                            | `true` | Enable Google OSV Live API (free) |
+| | `silicaproxy.api-fallback.osv.url` | —                                                                 | `https://api.osv.dev/v1/query` | OSV API endpoint |
+| | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN`                          | `true` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
+| | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED`                       | `true` | Enable Google deps.dev API (free) |
+| | `silicaproxy.api-fallback.deps-dev.url` | —                                                                 | `https://api.deps.dev/v3/` | deps.dev API endpoint |
+| | `silicaproxy.api-fallback.deps-dev.fail-open` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_FAIL_OPEN`                     | `true` | Verdict when deps.dev fails **and** no later source in the chain concludes either |
+| **HTTP timeouts** | `silicaproxy.http-client.connect-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_CONNECT_TIMEOUT_SECONDS`                 | `5` | |
+| | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS`         | `60` | For binary downloads |
+| | `silicaproxy.http-client.security-apis-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_SECURITY_APIS_READ_TIMEOUT_SECONDS`      | `10` | For JSON security API calls |
+| **SSRF protection** | `silicaproxy.security.ssrf-protection.enabled` | `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED`                    | `true` | Block outbound calls to loopback/private IPs |
+| **API key auth** | `silicaproxy.security.api-auth.enabled` | `SILICAPROXY_SECURITY_API_AUTH_ENABLED`                           | `true` | Require a Bearer API key on internal admin/API endpoints (see [API Endpoints](#api-endpoints)) — set `false` only for local dev/tests |
+| | `silicaproxy.security.api-auth.key-read` | `SILICAPROXY_API_KEY_READ`                                        | _(empty)_ | Bearer key for read-only endpoints (consultation, no side effect) |
+| | `silicaproxy.security.api-auth.key-action` | `SILICAPROXY_API_KEY_ACTION`                                      | _(empty)_ | Bearer key for action endpoints (triggers a side effect, e.g. forced sync) — also grants access to `READ` endpoints |
 
 > **Warning — API call log performance impact:** enabling `silicaproxy.api-call-log.enabled` generates one database row per package that reaches the live API fallback (OSV Live / deps.dev). In a busy CI/CD environment where many unknown packages are requested simultaneously, this can produce hundreds of writes per minute. Calls are buffered in memory and flushed in batches (configurable via `flush-interval-seconds`), so the write never blocks the security decision path. However, the underlying PostgreSQL table (`api_call_log`) will grow at the rate of live API calls, and partition maintenance (creating monthly partitions) must be planned. Only enable in production if you have a monitoring setup to track table growth.
 
