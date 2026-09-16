@@ -34,5 +34,6 @@ public record AuditLog(
     String decisionSource,
     String verdict,
     @Nullable String reason,
-    int executionTimeMs
+    int executionTimeMs,
+    String fullUrl
 ) {}

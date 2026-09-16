@@ -182,7 +182,8 @@ public class ProxyController {
                 decision.sourceType(),
                 decision.result(),
                 decision.reason(),
-                (int) executionTimeMs
+                (int) executionTimeMs,
+                fullUrl
         );
 
         if (blocked) {
