@@ -64,7 +64,7 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
                 VALUES ('CVE-low-floor', 'OSV', 'low-floor-pkg', 'low-eco', 'LOW floor test', '["1.0.0"]'::jsonb, 4.5)
                 """).update();
-        DecisionResult lowDecision = securityService.getDecision("low-floor-pkg", "1.0.0", "low-eco");
+        DecisionResult lowDecision = securityService.getDecision("low-floor-pkg", "1.0.0", "low-eco", "");
         assertThat(lowDecision.result()).as("LOW severity floor 4.0 : CVSS 4.5 doit bloquer").isEqualTo("BLOCK");
         assertThat(lowDecision.sourceType()).isEqualTo("PUBLIC_VULN");
 
@@ -74,7 +74,7 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
                 VALUES ('CVE-medium-floor', 'OSV', 'medium-floor-pkg', 'maven', 'MEDIUM floor test', '["1.0.0"]'::jsonb, 7.5)
                 """).update();
-        DecisionResult mediumDecision = securityService.getDecision("medium-floor-pkg", "1.0.0", "maven");
+        DecisionResult mediumDecision = securityService.getDecision("medium-floor-pkg", "1.0.0", "maven", "");
         assertThat(mediumDecision.result()).as("MEDIUM severity floor 7.0 : CVSS 7.5 doit bloquer").isEqualTo("BLOCK");
         assertThat(mediumDecision.sourceType()).isEqualTo("PUBLIC_VULN");
 
@@ -84,7 +84,7 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
                 VALUES ('CVE-high-floor', 'OSV', 'high-floor-pkg', 'npm', 'HIGH floor test', '["1.0.0"]'::jsonb, 9.5)
                 """).update();
-        DecisionResult highDecision = securityService.getDecision("high-floor-pkg", "1.0.0", "npm");
+        DecisionResult highDecision = securityService.getDecision("high-floor-pkg", "1.0.0", "npm", "");
         assertThat(highDecision.result()).as("HIGH severity floor 9.0 : CVSS 9.5 doit bloquer").isEqualTo("BLOCK");
         assertThat(highDecision.sourceType()).isEqualTo("PUBLIC_VULN");
 
@@ -95,7 +95,7 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
                 VALUES ('CVE-critical-floor', 'OSV', 'critical-floor-pkg', 'critical-eco', 'CRITICAL floor test', '["1.0.0"]'::jsonb, 10.0)
                 """).update();
-        DecisionResult criticalDecision = securityService.getDecision("critical-floor-pkg", "1.0.0", "critical-eco");
+        DecisionResult criticalDecision = securityService.getDecision("critical-floor-pkg", "1.0.0", "critical-eco", "");
         assertThat(criticalDecision.sourceType()).as("CRITICAL severity floor 11.0 : CVSS 10.0 ne doit pas bloquer via PUBLIC_VULN")
                 .isNotEqualTo("PUBLIC_VULN");
         assertThat(criticalDecision.result()).isEqualTo("ALLOW");

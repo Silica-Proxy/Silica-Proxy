@@ -247,7 +247,7 @@ class CorporateProxyOutboundClientsTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm");
+        DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
@@ -267,7 +267,7 @@ class CorporateProxyOutboundClientsTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("com.example:mylib", "1.0.0", "maven");
+        DecisionResult decision = securityService.getDecision("com.example:mylib", "1.0.0", "maven", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
@@ -285,7 +285,7 @@ class CorporateProxyOutboundClientsTest {
                     'Critical bug', 'Details', '["9.9.9"]'::jsonb, 9.8, NOW())
         """).update();
 
-        DecisionResult decision = securityService.getDecision("critical-pkg", "9.9.9", "npm");
+        DecisionResult decision = securityService.getDecision("critical-pkg", "9.9.9", "npm", "");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");

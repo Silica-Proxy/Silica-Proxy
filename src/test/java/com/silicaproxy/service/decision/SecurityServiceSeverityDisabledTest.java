@@ -79,7 +79,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("high-cvss-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("high-cvss-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.sourceType()).isNotEqualTo("PUBLIC_VULN");
         assertThat(decision.result()).isEqualTo("ALLOW");
@@ -95,7 +95,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
                 VALUES ('MAL-severity-disabled-1', 'OSV', 'malware-pkg-1', 'npm', 'Known malware', '["1.0.0"]'::jsonb, 0.0)
                 """).update();
 
-        DecisionResult decision = securityService.getDecision("malware-pkg-1", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("malware-pkg-1", "1.0.0", "npm", "");
 
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision.result()).isEqualTo("BLOCK");
@@ -109,7 +109,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
                 VALUES ('GHSA-severity-disabled-2', 'OPENSSF', 'malware-pkg-2', 'npm', 'Known malware', '["1.0.0"]'::jsonb, 0.0)
                 """).update();
 
-        DecisionResult decision = securityService.getDecision("malware-pkg-2", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("malware-pkg-2", "1.0.0", "npm", "");
 
         assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
         assertThat(decision.result()).isEqualTo("BLOCK");

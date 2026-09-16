@@ -216,4 +216,69 @@ class RegistryClientTest extends BaseIntegrationTest {
         Optional<PackageMetadataResult> result = registryClient.fetchMetadata("org.example:missing", "1.0.0", "maven");
         assertThat(result).isEmpty();
     }
+
+    @Test
+    void shouldFallBackToFullUrlWhenMavenCentralHeadFails() {
+        wireMock.stubFor(head(urlEqualTo("/maven2/org/example/fallback-lib/1.0.0/"))
+                .willReturn(aResponse().withStatus(404)));
+
+        String fullUrl = wireMock.baseUrl()
+                + "/repository/maven-proxy/org/example/fallback-lib/1.0.0/fallback-lib-1.0.0.jar";
+        wireMock.stubFor(head(urlEqualTo(
+                "/repository/maven-proxy/org/example/fallback-lib/1.0.0/fallback-lib-1.0.0.jar"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Last-Modified", "Wed, 16 Nov 2022 13:00:00 GMT")));
+
+        Optional<PackageMetadataResult> result =
+                registryClient.fetchMetadata("org.example:fallback-lib", "1.0.0", "maven", fullUrl);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().publishedAt()).isEqualTo(Instant.parse("2022-11-16T13:00:00Z"));
+        assertThat(result.get().isDeprecated()).isFalse();
+    }
+
+    @Test
+    void shouldReturnEmptyWhenBothMavenCentralAndFullUrlFail() {
+        wireMock.stubFor(head(urlEqualTo("/maven2/org/example/still-missing/1.0.0/"))
+                .willReturn(aResponse().withStatus(404)));
+
+        String fullUrl = wireMock.baseUrl()
+                + "/repository/maven-proxy/org/example/still-missing/1.0.0/still-missing-1.0.0.jar";
+        wireMock.stubFor(head(urlEqualTo(
+                "/repository/maven-proxy/org/example/still-missing/1.0.0/still-missing-1.0.0.jar"))
+                .willReturn(aResponse().withStatus(404)));
+
+        Optional<PackageMetadataResult> result =
+                registryClient.fetchMetadata("org.example:still-missing", "1.0.0", "maven", fullUrl);
+
+        assertThat(result).isEmpty();
+    }
+
+    // Mirrors a real-world case observed manually: org.apache.tomcat.experimental:
+    // tomcat-embed-programmatic:9.0.38-dev is a milestone build published on
+    // repo.spring.io/artifactory/milestone and genuinely 404s on Maven Central (verified via
+    // curl), so the registry-driven quarantine check depends entirely on this fallback for it.
+    @Test
+    void shouldFallBackToFullUrlForMilestoneArtifactMissingFromMavenCentral() {
+        wireMock.stubFor(head(urlEqualTo(
+                "/maven2/org/apache/tomcat/experimental/tomcat-embed-programmatic/9.0.38-dev/"))
+                .willReturn(aResponse().withStatus(404)));
+
+        String fullUrl = wireMock.baseUrl()
+                + "/artifactory/milestone/org/apache/tomcat/experimental/tomcat-embed-programmatic"
+                + "/9.0.38-dev/tomcat-embed-programmatic-9.0.38-dev.jar";
+        wireMock.stubFor(head(urlEqualTo(
+                "/artifactory/milestone/org/apache/tomcat/experimental/tomcat-embed-programmatic"
+                + "/9.0.38-dev/tomcat-embed-programmatic-9.0.38-dev.jar"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Last-Modified", "Mon, 10 Aug 2020 22:57:52 GMT")));
+
+        Optional<PackageMetadataResult> result = registryClient.fetchMetadata(
+                "org.apache.tomcat.experimental:tomcat-embed-programmatic", "9.0.38-dev", "maven", fullUrl);
+
+        assertThat(result).isPresent();
+        assertThat(result.get().publishedAt()).isEqualTo(Instant.parse("2020-08-10T22:57:52Z"));
+    }
 }

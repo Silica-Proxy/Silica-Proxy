@@ -79,7 +79,7 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"vulns\": [{\"id\": \"CVE-2024-001\"}]}")));
 
-        DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
@@ -94,7 +94,7 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("chain-safe-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("chain-safe-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
@@ -114,7 +114,7 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("osv-500-chain-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("osv-500-chain-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");

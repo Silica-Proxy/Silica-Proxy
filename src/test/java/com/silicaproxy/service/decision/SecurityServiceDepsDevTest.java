@@ -96,7 +96,7 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withBody("{\"advisoryKeys\": [\"GHSA-xxxx-yyyy\"]}")));
 
         double before = apiCallCount(Metrics.DEPS_DEV, "BLOCK");
-        DecisionResult decision = securityService.getDecision("depsdev-vuln-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("depsdev-vuln-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
@@ -112,7 +112,7 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withBody("{\"advisoryKeys\": []}")));
 
         double before = apiCallCount(Metrics.DEPS_DEV, "ALLOW");
-        DecisionResult decision = securityService.getDecision("depsdev-safe-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("depsdev-safe-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
@@ -126,7 +126,7 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                 .willReturn(aResponse().withStatus(500)));
 
         double before = apiCallCount(Metrics.DEPS_DEV, "ERROR");
-        DecisionResult decision = securityService.getDecision("depsdev-err-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("depsdev-err-pkg", "1.0.0", "npm", "");
 
         // deps.dev is the only enabled source here (osv disabled) ; when it errors, the chain
         // has nothing left to hand over to, so the fail-open policy decides -- sourceType is

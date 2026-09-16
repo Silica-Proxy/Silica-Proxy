@@ -80,7 +80,7 @@ class SecurityServiceDeprecationDisabledTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("deprecated-but-allowed-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("deprecated-but-allowed-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_DEPRECATION");

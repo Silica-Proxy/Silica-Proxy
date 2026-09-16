@@ -62,7 +62,7 @@ class SecurityServiceTimeoutTest extends BaseIntegrationTest {
                         .withBody("{}")));
 
         long start = System.currentTimeMillis();
-        DecisionResult decision = securityService.getDecision("slow-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("slow-pkg", "1.0.0", "npm", "");
         long elapsedMs = System.currentTimeMillis() - start;
 
         assertThat(decision.result()).isEqualTo("ALLOW"); // fail-open enabled by default

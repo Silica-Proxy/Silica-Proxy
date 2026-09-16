@@ -84,7 +84,7 @@ class SecurityServiceFallbackFailClosedTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/v1/query"))
                 .willReturn(aResponse().withStatus(500)));
 
-        DecisionResult decision = securityService.getDecision("fail-closed-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("fail-closed-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
@@ -119,7 +119,7 @@ class SecurityServiceFallbackFailClosedTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("fail-closed-recover-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("fail-closed-recover-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
