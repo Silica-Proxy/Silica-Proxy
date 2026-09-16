@@ -74,7 +74,7 @@ class SecurityServiceNoFallbackTest extends BaseIntegrationTest {
                                 "  \"versions\": {\"1.0.0\": {\"name\": \"no-fallback-pkg\", \"version\": \"1.0.0\"}}" +
                                 "}")));
 
-        DecisionResult decision = securityService.getDecision("no-fallback-pkg", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("no-fallback-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isEqualTo("DEFAULT");

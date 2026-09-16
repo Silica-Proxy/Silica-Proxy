@@ -61,7 +61,7 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
                         .withStatus(200)
                         .withHeader("Last-Modified", formatHttpDate(publishedAt))));
 
-        DecisionResult decision = securityService.getDecision("com.example:new-artifact", "1.0.0", "maven");
+        DecisionResult decision = securityService.getDecision("com.example:new-artifact", "1.0.0", "maven", "");
 
         assertThat(decision.result()).isEqualTo("BLOCK");
         assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
@@ -80,7 +80,55 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        DecisionResult decision = securityService.getDecision("com.example:old-artifact", "1.0.0", "maven");
+        DecisionResult decision = securityService.getDecision("com.example:old-artifact", "1.0.0", "maven", "");
+
+        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo("ALLOW");
+    }
+
+    @Test
+    void shouldBlockUsingFullUrlFallbackWhenMavenCentralIsDown() {
+        // Maven Central lookup fails outright; the fallback must HEAD the intercepted fullUrl
+        // instead and use its Last-Modified for the quarantine age check.
+        wireMock.stubFor(head(urlMatching("/maven2/com/example/fallback-new-artifact/1\\.0\\.0/.*"))
+                .willReturn(aResponse().withStatus(404)));
+
+        Instant publishedAt = Instant.now().minus(3, ChronoUnit.DAYS);
+        String fullUrl = wireMock.baseUrl()
+                + "/repository/maven-proxy/com/example/fallback-new-artifact/1.0.0/fallback-new-artifact-1.0.0.jar";
+        wireMock.stubFor(head(urlEqualTo(
+                "/repository/maven-proxy/com/example/fallback-new-artifact/1.0.0/fallback-new-artifact-1.0.0.jar"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Last-Modified", formatHttpDate(publishedAt))));
+
+        DecisionResult decision = securityService.getDecision(
+                "com.example:fallback-new-artifact", "1.0.0", "maven", fullUrl);
+
+        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+    }
+
+    @Test
+    void shouldAllowUsingFullUrlFallbackWhenMavenCentralIsDown() {
+        wireMock.stubFor(head(urlMatching("/maven2/com/example/fallback-old-artifact/1\\.0\\.0/.*"))
+                .willReturn(aResponse().withStatus(404)));
+
+        Instant publishedAt = Instant.now().minus(6, ChronoUnit.DAYS);
+        String fullUrl = wireMock.baseUrl()
+                + "/repository/maven-proxy/com/example/fallback-old-artifact/1.0.0/fallback-old-artifact-1.0.0.jar";
+        wireMock.stubFor(head(urlEqualTo(
+                "/repository/maven-proxy/com/example/fallback-old-artifact/1.0.0/fallback-old-artifact-1.0.0.jar"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Last-Modified", formatHttpDate(publishedAt))));
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{}")));
+
+        DecisionResult decision = securityService.getDecision(
+                "com.example:fallback-old-artifact", "1.0.0", "maven", fullUrl);
 
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
         assertThat(decision.result()).isEqualTo("ALLOW");

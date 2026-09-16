@@ -415,7 +415,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
 
-        DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm");
+        DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm", "");
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         List<com.github.tomakehurst.wiremock.verification.LoggedRequest> requests =

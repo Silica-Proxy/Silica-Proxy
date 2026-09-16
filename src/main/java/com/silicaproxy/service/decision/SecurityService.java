@@ -76,10 +76,6 @@ public class SecurityService {
         this.metrics = metrics;
     }
 
-    public DecisionResult getDecision(String packageName, String version, String ecosystem) {
-        return getDecision(packageName, version, ecosystem, "");
-    }
-
     @Timed(value = "silicaproxy.service.security.getdecision",
             description = "Duration of security decision evaluation by SecurityService",
             percentiles = {0.5, 0.9, 0.95, 0.99})
@@ -96,7 +92,7 @@ public class SecurityService {
         }
 
         // 3. New Package / Missing from local database
-        Optional<PackageMetadataResult> metadataOpt = resolvePackageMetadata(packageName, version, ecosystem);
+        Optional<PackageMetadataResult> metadataOpt = resolvePackageMetadata(packageName, version, ecosystem, fullUrl);
         if (metadataOpt.isEmpty()) {
             return registryUnavailableVerdict(packageName, version, ecosystem);
         }
@@ -125,8 +121,9 @@ public class SecurityService {
     // for an ALLOW, effectively never again once a BLOCK is cached) -- not on every request for
     // the package. Returns empty only when the registry is unreachable AND no local publish date
     // is cached, in which case the caller applies fail-open/fail-closed.
-    private Optional<PackageMetadataResult> resolvePackageMetadata(String packageName, String version, String ecosystem) {
-        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem);
+    private Optional<PackageMetadataResult> resolvePackageMetadata(
+            String packageName, String version, String ecosystem, String fullUrl) {
+        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem, fullUrl);
         if (registryMetaOpt.isPresent()) {
             PackageMetadataResult registryMeta = registryMetaOpt.get();
             // Permanent registration in package_metadata (idempotent: no-op if already cached)

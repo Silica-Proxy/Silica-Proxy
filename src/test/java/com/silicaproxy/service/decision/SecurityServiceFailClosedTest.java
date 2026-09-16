@@ -56,7 +56,7 @@ class SecurityServiceFailClosedTest extends BaseIntegrationTest {
                 .willReturn(aResponse()
                         .withStatus(500)));
 
-        DecisionResult decision = securityService.getDecision("down-pkg-closed", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("down-pkg-closed", "1.0.0", "npm", "");
 
         // Fail-closed enabled via test properties
         assertThat(decision.result()).isEqualTo("BLOCK");
@@ -75,7 +75,7 @@ class SecurityServiceFailClosedTest extends BaseIntegrationTest {
                         .withBody("{}")));
 
         long start = System.currentTimeMillis();
-        DecisionResult decision = securityService.getDecision("slow-pkg-closed", "1.0.0", "npm");
+        DecisionResult decision = securityService.getDecision("slow-pkg-closed", "1.0.0", "npm", "");
         long elapsedMs = System.currentTimeMillis() - start;
 
         assertThat(decision.result()).isEqualTo("BLOCK");

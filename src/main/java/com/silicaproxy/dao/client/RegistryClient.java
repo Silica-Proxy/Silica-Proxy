@@ -73,15 +73,20 @@ public class RegistryClient {
                 .build();
     }
 
+    public Optional<PackageMetadataResult> fetchMetadata(String packageName, String version, String ecosystem) {
+        return fetchMetadata(packageName, version, ecosystem, "");
+    }
+
     @Timed(value = "silicaproxy.dao.registry.fetchmetadata",
             description = "Duration of call to public registry to resolve package metadata",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public Optional<PackageMetadataResult> fetchMetadata(String packageName, String version, String ecosystem) {
+    public Optional<PackageMetadataResult> fetchMetadata(
+            String packageName, String version, String ecosystem, String fullUrl) {
         try {
             return switch (ecosystem.toLowerCase()) {
                 case "npm" -> fetchNpmMetadata(packageName, version);
                 case "pypi" -> fetchPypiMetadata(packageName, version);
-                case "maven" -> fetchMavenMetadata(packageName, version);
+                case "maven" -> fetchMavenMetadata(packageName, version, fullUrl);
                 default -> Optional.empty();
             };
         } catch (Exception e) {
@@ -244,26 +249,44 @@ public class RegistryClient {
         ));
     }
 
-    private Optional<PackageMetadataResult> fetchMavenMetadata(String packageName, String version) {
+    private Optional<PackageMetadataResult> fetchMavenMetadata(String packageName, String version, String fullUrl) {
         String[] parts = packageName.split(":");
         String groupIdSlashes = parts[0].replace('.', '/');
         String artifactId = parts.length > 1 ? parts[1] : parts[0];
 
         String url = properties.registries().mavenUrl() + "/maven2/" + groupIdSlashes + "/" + artifactId + "/" + version + "/";
 
-        ResponseEntity<Void> response = restClient.head()
-                .uri(url)
-                .retrieve()
-                .toBodilessEntity();
-
-        String lastModifiedHeader = response.getHeaders().getFirst("Last-Modified");
-        if (lastModifiedHeader == null) {
-            return Optional.empty();
+        Optional<Instant> publishedAt = headLastModified(url);
+        if (publishedAt.isEmpty() && !fullUrl.isBlank()) {
+            // Maven Central lookup failed (registry down, or artifact not yet mirrored there) --
+            // fall back to the exact URL the client requested through the proxy. Safe for Maven
+            // specifically because Last-Modified is already its primary publish-date source
+            // above (unlike npm/PyPI, where the same header on a tarball/CDN URL reflects cache
+            // freshness rather than publish date -- see fetchNpmMetadata's comment).
+            LOG.debug("Maven Central metadata lookup failed for {}/{}, falling back to intercepted URL", packageName, version);
+            publishedAt = headLastModified(fullUrl);
         }
 
-        ZonedDateTime zdt = ZonedDateTime.parse(lastModifiedHeader, DateTimeFormatter.RFC_1123_DATE_TIME);
-        Instant publishedAt = zdt.toInstant();
+        return publishedAt.map(instant -> new PackageMetadataResult(instant, false, null));
+    }
 
-        return Optional.of(new PackageMetadataResult(publishedAt, false, null));
+    private Optional<Instant> headLastModified(String url) {
+        try {
+            ResponseEntity<Void> response = restClient.head()
+                    .uri(url)
+                    .retrieve()
+                    .toBodilessEntity();
+
+            String lastModifiedHeader = response.getHeaders().getFirst("Last-Modified");
+            if (lastModifiedHeader == null) {
+                return Optional.empty();
+            }
+
+            ZonedDateTime zdt = ZonedDateTime.parse(lastModifiedHeader, DateTimeFormatter.RFC_1123_DATE_TIME);
+            return Optional.of(zdt.toInstant());
+        } catch (Exception e) {
+            LOG.debug("HEAD request failed for {} : {}", url, e.getMessage());
+            return Optional.empty();
+        }
     }
 }

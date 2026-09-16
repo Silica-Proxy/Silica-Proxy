@@ -58,7 +58,7 @@ class PerformanceLoomTest extends BaseIntegrationTest {
 
         // Warm up the JVM/JIT to get accurate timings
         for (int i = 0; i < 50; i++) {
-            securityService.getDecision("lodash", "4.17.21", "npm");
+            securityService.getDecision("lodash", "4.17.21", "npm", "");
         }
 
         int concurrentRequests = 500;
@@ -69,7 +69,7 @@ class PerformanceLoomTest extends BaseIntegrationTest {
         for (int i = 0; i < concurrentRequests; i++) {
             CompletableFuture<Long> future = CompletableFuture.supplyAsync(() -> {
                 long start = System.nanoTime();
-                DecisionResult result = securityService.getDecision("lodash", "4.17.21", "npm");
+                DecisionResult result = securityService.getDecision("lodash", "4.17.21", "npm", "");
                 long end = System.nanoTime();
                 assertThat(result.result()).isEqualTo("ALLOW"); // Verify it worked
                 return (end - start) / 1_000_000; // Convert to milliseconds

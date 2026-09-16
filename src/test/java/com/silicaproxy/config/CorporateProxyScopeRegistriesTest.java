@@ -94,7 +94,7 @@ class CorporateProxyScopeRegistriesTest {
                             .withHeader("Content-Type", "application/json")
                             .withBody("{}")));
 
-            DecisionResult decision = securityService.getDecision("scope-disabled-pkg", "1.0.0", "npm");
+            DecisionResult decision = securityService.getDecision("scope-disabled-pkg", "1.0.0", "npm", "");
 
             assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
         }
@@ -140,7 +140,7 @@ class CorporateProxyScopeRegistriesTest {
                             .withBody("{\"time\": {\"1.0.0\": \"2020-01-01T00:00:00Z\"},"
                                     + " \"versions\": {\"1.0.0\": {}}}")));
 
-            DecisionResult decision = securityService.getDecision("scope-enabled-pkg", "1.0.0", "npm");
+            DecisionResult decision = securityService.getDecision("scope-enabled-pkg", "1.0.0", "npm", "");
 
             assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
             assertThat(decision.result()).isEqualTo("ALLOW");
