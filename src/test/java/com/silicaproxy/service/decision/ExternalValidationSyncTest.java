@@ -25,6 +25,7 @@ import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
+import com.silicaproxy.model.dto.DecisionResult;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -81,6 +82,9 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private SecurityService securityService;
 
     private RestClient proxyRestClient;
 
@@ -387,5 +391,36 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                 .withRequestBody(matchingJsonPath("$.packageName", equalTo("lodash")))
                 .withRequestBody(matchingJsonPath("$.version", equalTo("4.17.21")))
                 .withRequestBody(matchingJsonPath("$.ecosystem", equalTo("npm"))));
+    }
+
+    // Verify POST body contains the original intercepted request URL
+    @Test
+    void sync_postBodyContainsUrlField() {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+
+        proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toBodilessEntity();
+
+        wireMock.verify(postRequestedFor(urlEqualTo("/external-validate"))
+                .withRequestBody(matchingJsonPath("$.url",
+                        equalTo("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
+    }
+
+    // Callers using the legacy 3-arg SecurityService.getDecision overload have no full URL to
+    // provide — the "url" field must be omitted entirely rather than sent as a literal null.
+    @Test
+    void sync_legacyGetDecisionOverload_omitsUrlField() {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+
+        DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm");
+
+        assertThat(decision.result()).isEqualTo("ALLOW");
+        List<com.github.tomakehurst.wiremock.verification.LoggedRequest> requests =
+                wireMock.findAll(postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(requests).hasSize(1);
+        assertThat(requests.get(0).getBodyAsString()).doesNotContain("\"url\"");
     }
 }

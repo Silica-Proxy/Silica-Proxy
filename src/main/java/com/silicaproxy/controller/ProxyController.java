@@ -164,7 +164,7 @@ public class ProxyController {
             LOG.debug("Package detected : ecosystem={}, package={}, version={}", ecosystem, packageName, version);
         }
 
-        DecisionResult decision = securityService.getDecision(packageName, version, ecosystem);
+        DecisionResult decision = securityService.getDecision(packageName, version, ecosystem, fullUrl);
         long executionTimeMs = System.currentTimeMillis() - startTime;
         boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
         (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));

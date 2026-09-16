@@ -314,6 +314,20 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         assertThat(body).contains("/external-validation/callback/");
     }
 
+    // Verify POST body contains the original intercepted request URL
+    @Test
+    void async_postBodyContainsUrlField() throws InterruptedException {
+        proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toBodilessEntity();
+
+        Thread.sleep(500); // Fire-and-forget async task calls WireMock after the response
+
+        wireMock.verify(postRequestedFor(urlEqualTo("/external-validate"))
+                .withRequestBody(matchingJsonPath("$.url",
+                        equalTo("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
+    }
+
     // Test 23b — async_secondPendingRequest_doesNotRetrigger
     @Test
     void async_secondRequestWhilePending_doesNotRetriggerAsyncCall() throws InterruptedException {

@@ -76,10 +76,15 @@ public class SecurityService {
         this.metrics = metrics;
     }
 
+    public DecisionResult getDecision(String packageName, String version, String ecosystem) {
+        return getDecision(packageName, version, ecosystem, "");
+    }
+
     @Timed(value = "silicaproxy.service.security.getdecision",
             description = "Duration of security decision evaluation by SecurityService",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public DecisionResult getDecision(String packageName, String version, String ecosystem) {
+    public DecisionResult getDecision(
+            String packageName, String version, String ecosystem, String fullUrl) {
         // 1. Elements for calculating the floor CVSS
         double minCvss = computeMinCvss(ecosystem);
 
@@ -105,7 +110,7 @@ public class SecurityService {
 
         // External validation services (before OSV/deps.dev — skips OSV when configured)
         Optional<DecisionResult> extResult =
-                externalValidationService.checkExternalServices(packageName, version, ecosystem);
+                externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
         if (extResult.isPresent()) {
             return extResult.get();
         }
