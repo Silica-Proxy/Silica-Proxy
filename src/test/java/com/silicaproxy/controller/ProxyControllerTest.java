@@ -76,7 +76,7 @@ class ProxyControllerTest {
     @Test
     void shouldStreamValidPackageWithHeaders() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         
         byte[] fakeTarball = "fake-tarball-content".getBytes();
@@ -92,7 +92,7 @@ class ProxyControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(fakeTarball));
 
-        verify(securityService).getDecision("lodash", "4.17.21", "npm");
+        verify(securityService).getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString());
         verify(proxyStreamClient).streamContent(eq("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"), any(HttpHeaders.class));
         verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt());
     }
@@ -104,7 +104,7 @@ class ProxyControllerTest {
         // leaking a connection on every proxied request. The underlying response wrapped in
         // StreamResponse must be closed once forwarding completes.
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
 
         byte[] fakeTarball = "fake-tarball-content".getBytes();
@@ -127,7 +127,7 @@ class ProxyControllerTest {
     @Test
     void shouldBlockPackageAndReturnRfc7807() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
-        when(securityService.getDecision("lodash", "4.17.20", "npm")).thenReturn(blocked);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString())).thenReturn(blocked);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.20", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"))
@@ -141,7 +141,7 @@ class ProxyControllerTest {
                 .andExpect(jsonPath("$.version").value("4.17.20"))
                 .andExpect(jsonPath("$.ecosystem").value("npm"));
 
-        verify(securityService).getDecision("lodash", "4.17.20", "npm");
+        verify(securityService).getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString());
         verifyNoInteractions(proxyStreamClient);
         verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt());
     }
@@ -149,7 +149,7 @@ class ProxyControllerTest {
     @Test
     void shouldStripPortWhenUpgradingToHttps() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         
         byte[] fakeTarball = "fake-tarball-content".getBytes();
@@ -272,7 +272,7 @@ class ProxyControllerTest {
     @Test
     void shouldStreamWhenDecisionIsWhitelist() throws Exception {
         DecisionResult whitelisted = new DecisionResult("COMPANY_POLICY", "WHITELIST", "Approved by security team");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(whitelisted);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         stubStreaming("whitelisted-content".getBytes());
 
@@ -285,7 +285,7 @@ class ProxyControllerTest {
     @Test
     void shouldBlockAndReturnRfc7807WhenDecisionIsBlacklist() throws Exception {
         DecisionResult blacklisted = new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Banned by security team");
-        when(securityService.getDecision("shelljs", "0.8.5", "npm")).thenReturn(blacklisted);
+        when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("shelljs", "0.8.5", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/shelljs/-/shelljs-0.8.5.tgz"))
@@ -301,7 +301,7 @@ class ProxyControllerTest {
     @Test
     void shouldUseQuarantineBlockedErrorCodeForQuarantineStep() throws Exception {
         DecisionResult quarantined = new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", "Published less than 7 days ago");
-        when(securityService.getDecision("new-pkg", "0.0.1", "npm")).thenReturn(quarantined);
+        when(securityService.getDecision(eq("new-pkg"), eq("0.0.1"), eq("npm"), anyString())).thenReturn(quarantined);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("new-pkg", "0.0.1", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/new-pkg/-/new-pkg-0.0.1.tgz"))
@@ -316,7 +316,7 @@ class ProxyControllerTest {
     @ValueSource(strings = {"COMPANY_POLICY", "PUBLIC_VULN", "REGISTRY_DEPRECATION", "OSV_LIVE", "PHYLUM", "DEPS_DEV", "SONATYPE_OSS", "API_CACHE"})
     void shouldUseSecurityBlockedErrorCodeForEveryNonQuarantineBlockingStep(String sourceType) throws Exception {
         DecisionResult blocked = new DecisionResult(sourceType, "BLOCK", "Blocked for test reasons");
-        when(securityService.getDecision("some-pkg", "1.0.0", "npm")).thenReturn(blocked);
+        when(securityService.getDecision(eq("some-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("some-pkg", "1.0.0", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/some-pkg/-/some-pkg-1.0.0.tgz"))
@@ -330,7 +330,7 @@ class ProxyControllerTest {
     @Test
     void shouldAllowWhenApiCacheDecisionIsAllow() throws Exception {
         DecisionResult cached = new DecisionResult("API_CACHE", "ALLOW", "Validated via API cache");
-        when(securityService.getDecision("safe-pkg", "1.0.0", "npm")).thenReturn(cached);
+        when(securityService.getDecision(eq("safe-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(cached);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("safe-pkg", "1.0.0", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -341,7 +341,7 @@ class ProxyControllerTest {
     @Test
     void shouldAllowWhenDecisionIsDefault() throws Exception {
         DecisionResult defaultAllow = new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
-        when(securityService.getDecision("unrated-pkg", "1.0.0", "npm")).thenReturn(defaultAllow);
+        when(securityService.getDecision(eq("unrated-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(defaultAllow);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unrated-pkg", "1.0.0", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -352,7 +352,7 @@ class ProxyControllerTest {
     @Test
     void shouldReturnBadGatewayWhenUpstreamRegistryFailsAfterAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
                 .thenThrow(new IOException("Connection refused"));
@@ -367,7 +367,7 @@ class ProxyControllerTest {
     @Test
     void shouldLogAuditWithExactReasonAndNonNegativeExecutionTime() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-9999");
-        when(securityService.getDecision("vuln-pkg", "1.0.0", "npm")).thenReturn(blocked);
+        when(securityService.getDecision(eq("vuln-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("vuln-pkg", "1.0.0", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/vuln-pkg/-/vuln-pkg-1.0.0.tgz"))
@@ -386,7 +386,7 @@ class ProxyControllerTest {
     @Test
     void shouldPropagateMultipleRequestHeadersToUpstreamOnAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -406,7 +406,7 @@ class ProxyControllerTest {
     @Test
     void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -423,7 +423,7 @@ class ProxyControllerTest {
     @Test
     void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnBlock() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
-        when(securityService.getDecision("lodash", "4.17.20", "npm")).thenReturn(blocked);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString())).thenReturn(blocked);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.20", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"))
@@ -439,7 +439,7 @@ class ProxyControllerTest {
     @Test
     void shouldIncrementDecisionCounterForWhitelistAndBlacklistVerdicts() throws Exception {
         DecisionResult whitelisted = new DecisionResult("COMPANY_POLICY", "WHITELIST", "Approved by security team");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(whitelisted);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         stubStreaming("whitelisted-content".getBytes());
 
@@ -447,7 +447,7 @@ class ProxyControllerTest {
                 .andExpect(status().isOk());
 
         DecisionResult blacklisted = new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Banned by security team");
-        when(securityService.getDecision("shelljs", "0.8.5", "npm")).thenReturn(blacklisted);
+        when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("shelljs", "0.8.5", "npm"));
 
         mockMvc.perform(get("http://registry.npmjs.org/shelljs/-/shelljs-0.8.5.tgz"))
@@ -464,7 +464,7 @@ class ProxyControllerTest {
     @Test
     void shouldAccumulateDecisionCounterAcrossRepeatedRequestsForSameTags() throws Exception {
         DecisionResult allowed = new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
-        when(securityService.getDecision("unrated-pkg", "1.0.0", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("unrated-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unrated-pkg", "1.0.0", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -482,7 +482,7 @@ class ProxyControllerTest {
     @Test
     void shouldForwardQueryStringToUpstreamUrl() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
         stubStreaming("ok".getBytes());
 
@@ -500,7 +500,7 @@ class ProxyControllerTest {
     @Test
     void shouldNotForwardHttp2PseudoHeadersToDownstreamClient() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
 
         HttpHeaders upstreamHeaders = new HttpHeaders();
@@ -523,7 +523,7 @@ class ProxyControllerTest {
     @Test
     void shouldForwardNormalHeadersWhenUpstreamAlsoSendsPseudoHeaders() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed");
-        when(securityService.getDecision("lodash", "4.17.21", "npm")).thenReturn(allowed);
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
         when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
 
         HttpHeaders upstreamHeaders = new HttpHeaders();

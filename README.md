@@ -179,7 +179,8 @@ The proxy makes a POST call to the service and waits up to 1 second for a respon
 
 ```
 POST {url}
-Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm" }
+Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
+        "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz" }
 
 Response: { "verdict": "BLOCKED", "reason": "Malicious dependency detected." }
 ```
@@ -191,6 +192,7 @@ The proxy fires a POST and returns immediately (applying `fail-open` / `fail-clo
 ```
 POST {url}
 Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
+        "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
         "callbackUrl": "https://proxy.yourcompany.com/external-validation/callback/{token}" }
 
 → Callback (later): POST /external-validation/callback/{token}

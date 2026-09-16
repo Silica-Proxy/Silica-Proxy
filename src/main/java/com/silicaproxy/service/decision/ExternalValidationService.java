@@ -109,7 +109,7 @@ public class ExternalValidationService {
             description = "Duration of external validation check across all configured services",
             percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<DecisionResult> checkExternalServices(
-            String packageName, String version, String ecosystem) {
+            String packageName, String version, String ecosystem, String fullUrl) {
         Map<String, ExternalValidationServiceProperties> allServices =
                 properties.externalValidation().services();
 
@@ -138,7 +138,7 @@ public class ExternalValidationService {
             metrics.recordBlockReasonMetric(Metrics.REASON_VERDICT);
             if (properties.externalValidation().triggerAsyncOnSyncBlock()) {
                 asyncServices.forEach(e -> asyncExecutor.execute(() ->
-                        triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem)));
+                        triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl)));
             }
             return permanentBlock;
         }
@@ -149,7 +149,7 @@ public class ExternalValidationService {
 
         // 1. Run all SYNC services in parallel, wait for all results
         List<ServiceOutcome> syncOutcomes = runSyncServicesInParallel(
-                syncServices, packageName, version, ecosystem);
+                syncServices, packageName, version, ecosystem, fullUrl);
 
         boolean syncBlocked = syncOutcomes.stream().anyMatch(o -> o == ServiceOutcome.BLOCK
                 || o == ServiceOutcome.PENDING_CLOSED);
@@ -160,7 +160,7 @@ public class ExternalValidationService {
 
         if (triggerAsync) {
             asyncServices.forEach(e -> asyncExecutor.execute(() ->
-                    triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem)));
+                    triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl)));
         }
 
         // 3. Collect async state from cache (already-pending or already-resolved)
@@ -285,10 +285,10 @@ public class ExternalValidationService {
 
     private List<ServiceOutcome> runSyncServicesInParallel(
             List<Map.Entry<String, ExternalValidationServiceProperties>> services,
-            String packageName, String version, String ecosystem) {
+            String packageName, String version, String ecosystem, String fullUrl) {
         List<CompletableFuture<ServiceOutcome>> futures = services.stream()
                 .map(e -> CompletableFuture.supplyAsync(
-                        () -> checkSyncService(e.getKey(), e.getValue(), packageName, version, ecosystem),
+                        () -> checkSyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl),
                         asyncExecutor))
                 .toList();
         return futures.stream()
@@ -298,7 +298,7 @@ public class ExternalValidationService {
 
     private ServiceOutcome checkSyncService(
             String serviceName, ExternalValidationServiceProperties props,
-            String packageName, String version, String ecosystem) {
+            String packageName, String version, String ecosystem, String fullUrl) {
         // Permanent block check first
         if (verdictsDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version).isPresent()) {
             return props.blocking() ? ServiceOutcome.BLOCK : ServiceOutcome.ALLOW;
@@ -324,7 +324,7 @@ public class ExternalValidationService {
         cacheDao.upsertPendingSync(serviceName, packageName, ecosystem, version, pendingExpiry);
 
         ExternalValidationClient.ExternalValidationResult result = client.callSync(
-                props.url(), props.apiKey(), packageName, version, ecosystem);
+                props.url(), props.apiKey(), packageName, version, ecosystem, fullUrl);
 
         return resolveSyncResult(serviceName, props, packageName, version, ecosystem, result);
     }
@@ -371,7 +371,7 @@ public class ExternalValidationService {
 
     private void triggerAsyncService(
             String serviceName, ExternalValidationServiceProperties props,
-            String packageName, String version, String ecosystem) {
+            String packageName, String version, String ecosystem, String fullUrl) {
         // Already in process (valid PENDING or ALLOWED) — no need to re-trigger
         if (verdictsDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version).isPresent()) {
             return;
@@ -392,7 +392,8 @@ public class ExternalValidationService {
         cacheDao.upsertPendingAsync(token, serviceName, packageName, ecosystem, version, pendingExpiry);
 
         String callbackUrl = buildCallbackUrl(token);
-        boolean sent = client.callAsync(props.url(), props.apiKey(), packageName, version, ecosystem, callbackUrl);
+        boolean sent = client.callAsync(
+                props.url(), props.apiKey(), packageName, version, ecosystem, callbackUrl, fullUrl);
         metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, sent ? Metrics.RESULT_TRIGGERED : Metrics.RESULT_TRIGGER_ERROR);
         if (!sent) {
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);

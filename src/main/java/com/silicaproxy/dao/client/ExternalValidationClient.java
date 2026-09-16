@@ -54,11 +54,14 @@ public class ExternalValidationClient {
     @Nullable
     public ExternalValidationResult callSync(
             String url, @Nullable String apiKey,
-            String packageName, String version, String ecosystem) {
-        Map<String, Object> body = Map.of(
-                "packageName", packageName,
-                "version", version,
-                "ecosystem", ecosystem);
+            String packageName, String version, String ecosystem, String fullUrl) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("packageName", packageName);
+        body.put("version", version);
+        body.put("ecosystem", ecosystem);
+        if (!fullUrl.isBlank()) {
+            body.put("url", fullUrl);
+        }
 
         long start = System.nanoTime();
         try {
@@ -99,12 +102,16 @@ public class ExternalValidationClient {
     // The service will call back later with the verdict.
     public boolean callAsync(
             String url, @Nullable String apiKey,
-            String packageName, String version, String ecosystem, String callbackUrl) {
+            String packageName, String version, String ecosystem, String callbackUrl,
+            String fullUrl) {
         Map<String, Object> body = new HashMap<>();
         body.put("packageName", packageName);
         body.put("version", version);
         body.put("ecosystem", ecosystem);
         body.put("callbackUrl", callbackUrl);
+        if (!fullUrl.isBlank()) {
+            body.put("url", fullUrl);
+        }
 
         try {
             buildRequest(url, apiKey, body)
