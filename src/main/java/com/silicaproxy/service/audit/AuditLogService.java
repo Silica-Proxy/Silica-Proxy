@@ -62,7 +62,8 @@ public class AuditLogService {
             String decisionSource,
             String verdict,
             @Nullable String reason,
-            int executionTimeMs) {
+            int executionTimeMs,
+            String fullUrl) {
 
         AuditLog auditLog = new AuditLog(
                 null,
@@ -73,7 +74,8 @@ public class AuditLogService {
                 decisionSource,
                 verdict,
                 reason,
-                executionTimeMs
+                executionTimeMs,
+                fullUrl
         );
 
         // Runs on the audit executor (see AsyncConfig), whose default async-exception handler

@@ -73,7 +73,8 @@ class AuditLogServiceTest extends BaseIntegrationTest {
                 "COMPANY_POLICY",
                 "ALLOW",
                 "Passed checks",
-                15
+                15,
+                "https://registry.npmjs.org/async-pkg/-/async-pkg-1.0.0.tgz"
         );
 
         // Attente de l'insertion asynchrone (Awaitility-like loop)
@@ -96,6 +97,34 @@ class AuditLogServiceTest extends BaseIntegrationTest {
         assertThat(logRow.get("verdict")).isEqualTo("ALLOW");
         assertThat(logRow.get("reason")).isEqualTo("Passed checks");
         assertThat((Integer) logRow.get("execution_time_ms")).isEqualTo(15);
+    }
+
+    @Test
+    void shouldPersistFullUrl() throws Exception {
+        auditLogService.logAudit(
+                "url-pkg",
+                "2.0.0",
+                "npm",
+                "COMPANY_POLICY",
+                "ALLOW",
+                "Passed checks",
+                10,
+                "https://registry.npmjs.org/url-pkg/-/url-pkg-2.0.0.tgz"
+        );
+
+        int attempts = 0;
+        List<Map<String, Object>> logs = List.of();
+        while (attempts < 50) {
+            logs = jdbcClient.sql("SELECT * FROM proxy_audit_logs WHERE package_name = 'url-pkg'").query().listOfRows();
+            if (!logs.isEmpty()) {
+                break;
+            }
+            Thread.sleep(50);
+            attempts++;
+        }
+
+        assertThat(logs).hasSize(1);
+        assertThat(logs.get(0).get("full_url")).isEqualTo("https://registry.npmjs.org/url-pkg/-/url-pkg-2.0.0.tgz");
     }
 
     @Test

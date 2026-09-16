@@ -94,7 +94,7 @@ class ProxyControllerTest {
 
         verify(securityService).getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString());
         verify(proxyStreamClient).streamContent(eq("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"), any(HttpHeaders.class));
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -143,7 +143,7 @@ class ProxyControllerTest {
 
         verify(securityService).getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString());
         verifyNoInteractions(proxyStreamClient);
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -279,7 +279,7 @@ class ProxyControllerTest {
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
                 .andExpect(status().isOk());
 
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("WHITELIST"), anyString(), anyInt());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("WHITELIST"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -295,7 +295,7 @@ class ProxyControllerTest {
                 .andExpect(jsonPath("$.detail").value("Banned by security team"));
 
         verifyNoInteractions(proxyStreamClient);
-        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLACKLIST"), anyString(), anyInt());
+        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLACKLIST"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -361,7 +361,7 @@ class ProxyControllerTest {
                 .andExpect(status().isBadGateway());
 
         // The decision was made and audited even if the upstream relay failed afterwards.
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -377,7 +377,7 @@ class ProxyControllerTest {
         ArgumentCaptor<Integer> executionTimeCaptor = ArgumentCaptor.forClass(Integer.class);
         verify(auditLogService).logAudit(
                 eq("vuln-pkg"), eq("1.0.0"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"),
-                reasonCaptor.capture(), executionTimeCaptor.capture());
+                reasonCaptor.capture(), executionTimeCaptor.capture(), anyString());
 
         assertThat(reasonCaptor.getValue()).isEqualTo("Known vulnerability CVE-9999");
         assertThat(executionTimeCaptor.getValue()).isGreaterThanOrEqualTo(0);
