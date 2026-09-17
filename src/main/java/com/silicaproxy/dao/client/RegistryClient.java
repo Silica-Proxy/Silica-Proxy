@@ -35,6 +35,7 @@ import tools.jackson.core.JsonToken;
 import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -110,17 +111,44 @@ public class RegistryClient {
     // token-by-token instead of deserialized into a generic Map: unwanted version entries are
     // skipped via skipChildren() without allocating any object graph for them.
     private Optional<PackageMetadataResult> fetchNpmMetadata(String packageName, String version) {
-        String url = properties.registries().npmUrl() + "/" + packageName;
-        return restClient.get()
-                .uri(url)
-                .exchange((request, response) -> {
-                    if (!response.getStatusCode().is2xxSuccessful()) {
-                        return Optional.empty();
-                    }
-                    try (InputStream body = response.getBody()) {
-                        return parseNpmPackument(body, version);
-                    }
-                });
+        return fetchNpmMetadataFrom(properties.registries().npmUrl() + "/" + packageName, version);
+    }
+
+    /**
+     * Resolves publish date and deprecation status from the packument at {@code packumentUrl},
+     * whatever registry serves it. Used by {@code SecurityService} to ask the registry the client
+     * actually resolved against (npm.jsr.io, a private Verdaccio/Artifactory…) when the
+     * abbreviated packument relayed to the client carried no {@code time} entry -- the package
+     * may not exist at all on the configured public registry. The full packument format is
+     * requested explicitly : the abbreviated one (npm's default {@code Accept}) omits
+     * {@code time}. Goes through the same {@code restClient}, so the SSRF interceptor and the
+     * registries timeouts apply.
+     */
+    @Timed(value = "silicaproxy.dao.registry.fetchnpmmetadatafrom",
+            description = "Duration of call to the origin npm registry to resolve package metadata",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public Optional<PackageMetadataResult> fetchNpmMetadataFrom(String packumentUrl, String version) {
+        try {
+            // URI.create, not the String overload : the latter is a URI template and would
+            // re-encode the "%2f" of a scoped package name into "%252f".
+            return restClient.get()
+                    .uri(URI.create(packumentUrl))
+                    .header("Accept", "application/json")
+                    .exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            return Optional.empty();
+                        }
+                        try (InputStream body = response.getBody()) {
+                            return parseNpmPackument(body, version);
+                        }
+                    });
+        } catch (Exception e) {
+            LOG.warn("Error while retrieving npm metadata from {} (version {}) : {}", packumentUrl, version, e.getMessage());
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Details of npm metadata retrieval error", e);
+            }
+            return Optional.empty();
+        }
     }
 
     private Optional<PackageMetadataResult> parseNpmPackument(InputStream body, String version) throws IOException {

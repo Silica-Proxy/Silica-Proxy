@@ -202,6 +202,19 @@ silicaproxy:
     # the CPU/memory cost of a client sending CONNECT to many distinct hostnames in a short window.
     context-cache-max-entries: 2000
 
+  # 8b. npm tarball identification through relayed packuments. The npm client follows the
+  # dist.tarball URL declared in the packument verbatim ; indexing those URLs as the packument
+  # is relayed identifies the following tarball request whatever the registry's URL layout
+  # (npm.jsr.io, Artifactory repository prefixes…), instead of guessing from path patterns.
+  npm-packument-index:
+    enabled: true
+    # Hard cap on remembered tarball URLs (in-process, on top of the TTL)
+    max-entries: 200000
+    # A client fetches tarballs seconds after the packument ; the TTL only covers retries.
+    ttl-minutes: 60
+    # Packument bodies larger than this are relayed untouched and not indexed (32 MiB)
+    max-body-bytes: 33554432
+
   # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
   # shared API key protection on internal admin/API endpoints)
   security:
