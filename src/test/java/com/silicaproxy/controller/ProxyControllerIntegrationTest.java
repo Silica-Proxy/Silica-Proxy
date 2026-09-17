@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
@@ -680,7 +681,8 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         
         // Create the controller
         NpmTarballIndexDao npmTarballIndexDao = org.mockito.Mockito.mock(NpmTarballIndexDao.class);
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper, npmTarballIndexDao);
+        RegistryClient registryClient = org.mockito.Mockito.mock(RegistryClient.class);
+        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper, npmTarballIndexDao, registryClient);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

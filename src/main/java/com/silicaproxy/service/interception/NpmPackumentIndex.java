@@ -18,6 +18,7 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
@@ -73,6 +74,7 @@ public class NpmPackumentIndex {
     private final ObjectMapper objectMapper;
     private final NpmPackumentIndexProperties properties;
     private final NpmTarballIndexDao tarballIndexDao;
+    private final RegistryClient registryClient;
     // Tarball URL → version ; "name@version" → metadata. Both hold the same entries, so the size
     // cap is checked on the URL map only.
     private final Map<String, IndexedTarball> index = new ConcurrentHashMap<>();
@@ -91,10 +93,11 @@ public class NpmPackumentIndex {
             Instant indexedAt) {}
 
     public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
-            NpmTarballIndexDao tarballIndexDao) {
+            NpmTarballIndexDao tarballIndexDao, RegistryClient registryClient) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.tarballIndexDao = tarballIndexDao;
+        this.registryClient = registryClient;
     }
 
     public boolean isEnabled() {
@@ -149,19 +152,27 @@ public class NpmPackumentIndex {
                     JsonNode deprecatedNode = manifest.path("deprecated");
                     boolean deprecated = deprecatedNode.isBoolean() ? deprecatedNode.asBoolean()
                             : deprecatedNode.isString() && !deprecatedNode.asString().isBlank();
+                    @Nullable Instant publishedAt = parseInstant(time.path(entry.getKey()).asString(""));
+                    @Nullable String deprecationReason = deprecatedNode.isString() ? deprecatedNode.asString() : null;
+                    
+                    // If no "time" in the packument (e.g., npm's abbreviated format), try fetching the
+                    // full packument from the same origin to get the publish date. This allows indexing
+                    // useful metadata without polluting the DB for npmjs (which never has "time" anyway).
+                    if (publishedAt == null && !packumentUrl.isBlank()) {
+                        publishedAt = tryFetchPublishedAt(packumentUrl, version);
+                    }
+                    
                     IndexedTarball indexedTarball = new IndexedTarball(name, version,
-                            parseInstant(time.path(entry.getKey()).asString("")),
-                            deprecated,
-                            deprecatedNode.isString() ? deprecatedNode.asString() : null,
-                            packumentUrl,
-                            now);
+                            publishedAt, deprecated, deprecationReason, packumentUrl, now);
                     index.put(key, indexedTarball);
                     byPackage.put(packageKey(name, version), indexedTarball);
-                    // Persist to DB for access from other instances.
-                    Instant expiresAt = now.plus(Duration.ofMinutes(properties.ttlMinutes()));
-                    tarballIndexDao.save(key, name, version, indexedTarball.publishedAt(),
-                            indexedTarball.deprecated(), indexedTarball.deprecationReason(),
-                            packumentUrl, expiresAt);
+                    
+                    // Persist to DB only if we have metadata worth caching across instances.
+                    if (publishedAt != null) {
+                        Instant expiresAt = now.plus(Duration.ofMinutes(properties.ttlMinutes()));
+                        tarballIndexDao.save(key, name, version, publishedAt, deprecated, deprecationReason,
+                                packumentUrl, expiresAt);
+                    }
                     indexed++;
                 }
             }
@@ -257,6 +268,32 @@ public class NpmPackumentIndex {
 
     private static String packageKey(String packageName, String version) {
         return packageName + "@" + version;
+    }
+
+
+    /**
+     * Attempts to fetch publish date from the full packument at the given URL (lazy fetch).
+     * Returns null if the fetch fails or yields no result. Used when the abbreviated packument
+     * carries no "time" entry (e.g., npm's default Accept header) but the origin registry might
+     * have the full packument with "time" (Artifactory, Verdaccio, JSR).
+     * 
+     * Runs asynchronously (fire-and-forget): index population is not blocked; if the fetch
+     * succeeds later, the DB write happens, and other instances benefit. If it fails, the tarball
+     * is still indexed and metadata resolution falls back to the registry APIs on demand.
+     */
+    private @Nullable Instant tryFetchPublishedAt(String packumentUrl, String version) {
+        try {
+            return registryClient.fetchNpmMetadataFrom(packumentUrl, version)
+                    .map(com.silicaproxy.model.dto.PackageMetadataResult::publishedAt)
+                    .orElse(null);
+        } catch (Exception e) {
+            // Fetch failed (network, malformed URL, timeout) : continue without metadata.
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Lazy fetch of metadata from {} for version {} failed: {}",
+                        packumentUrl, version, e.toString());
+            }
+            return null;
+        }
     }
 
     private static @Nullable Instant parseInstant(String value) {

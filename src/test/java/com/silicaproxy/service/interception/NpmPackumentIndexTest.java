@@ -18,6 +18,7 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
@@ -34,6 +35,7 @@ import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.lenient;
 
 class NpmPackumentIndexTest {
 
@@ -53,8 +55,11 @@ class NpmPackumentIndexTest {
             """;
 
     private static NpmPackumentIndex newIndex(int maxEntries) {
+        RegistryClient regClient = mock(RegistryClient.class);
+        lenient().when(regClient.fetchNpmMetadataFrom(mock(String.class), mock(String.class)))
+                .thenReturn(java.util.Optional.empty());
         return new NpmPackumentIndex(new JsonMapper(), new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024),
-                mock(NpmTarballIndexDao.class));
+                mock(NpmTarballIndexDao.class), regClient);
     }
 
     private static byte[] utf8(String s) {
@@ -146,7 +151,7 @@ class NpmPackumentIndexTest {
     void shouldBeInertWhenDisabled() {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(),
                 new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024),
-                mock(NpmTarballIndexDao.class));
+                mock(NpmTarballIndexDao.class), mock(RegistryClient.class));
 
         assertThat(index.isEnabled()).isFalse();
         assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null)).isZero();
