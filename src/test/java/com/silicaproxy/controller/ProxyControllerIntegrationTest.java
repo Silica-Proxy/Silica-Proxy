@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.UrlParserService;
@@ -678,7 +679,8 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         when(mockRequest.getRequestURI()).thenReturn("/ftp://example.com/package.tar.gz");
         
         // Create the controller
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper);
+        NpmTarballIndexDao npmTarballIndexDao = org.mockito.Mockito.mock(NpmTarballIndexDao.class);
+        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper, npmTarballIndexDao);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

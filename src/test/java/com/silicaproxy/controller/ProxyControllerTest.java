@@ -23,6 +23,7 @@ import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
+import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.service.interception.UrlParserService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -65,12 +66,15 @@ class ProxyControllerTest {
     @Mock
     private UrlParserService urlParserService;
 
+    @Mock
+    private NpmTarballIndexDao npmTarballIndexDao;
+
     private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, new JsonMapper());
+        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, new JsonMapper(), npmTarballIndexDao);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 

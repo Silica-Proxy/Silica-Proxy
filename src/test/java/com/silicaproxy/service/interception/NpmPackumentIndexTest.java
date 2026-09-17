@@ -18,6 +18,7 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ import java.util.Optional;
 import java.util.zip.GZIPOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class NpmPackumentIndexTest {
 
@@ -51,7 +53,8 @@ class NpmPackumentIndexTest {
             """;
 
     private static NpmPackumentIndex newIndex(int maxEntries) {
-        return new NpmPackumentIndex(new JsonMapper(), new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024));
+        return new NpmPackumentIndex(new JsonMapper(), new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024),
+                mock(NpmTarballIndexDao.class));
     }
 
     private static byte[] utf8(String s) {
@@ -142,7 +145,8 @@ class NpmPackumentIndexTest {
     @Test
     void shouldBeInertWhenDisabled() {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024));
+                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024),
+                mock(NpmTarballIndexDao.class));
 
         assertThat(index.isEnabled()).isFalse();
         assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null)).isZero();

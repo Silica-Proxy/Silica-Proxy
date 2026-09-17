@@ -18,6 +18,7 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
 import org.jspecify.annotations.NullMarked;
@@ -32,6 +33,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.time.Duration;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -70,6 +72,7 @@ public class NpmPackumentIndex {
 
     private final ObjectMapper objectMapper;
     private final NpmPackumentIndexProperties properties;
+    private final NpmTarballIndexDao tarballIndexDao;
     // Tarball URL → version ; "name@version" → metadata. Both hold the same entries, so the size
     // cap is checked on the URL map only.
     private final Map<String, IndexedTarball> index = new ConcurrentHashMap<>();
@@ -87,9 +90,11 @@ public class NpmPackumentIndex {
             String packumentUrl,
             Instant indexedAt) {}
 
-    public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties) {
+    public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
+            NpmTarballIndexDao tarballIndexDao) {
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.tarballIndexDao = tarballIndexDao;
     }
 
     public boolean isEnabled() {
@@ -152,6 +157,11 @@ public class NpmPackumentIndex {
                             now);
                     index.put(key, indexedTarball);
                     byPackage.put(packageKey(name, version), indexedTarball);
+                    // Persist to DB for access from other instances.
+                    Instant expiresAt = now.plus(Duration.ofMinutes(properties.ttlMinutes()));
+                    tarballIndexDao.save(key, name, version, indexedTarball.publishedAt(),
+                            indexedTarball.deprecated(), indexedTarball.deprecationReason(),
+                            packumentUrl, expiresAt);
                     indexed++;
                 }
             }
@@ -175,7 +185,9 @@ public class NpmPackumentIndex {
         }
         IndexedTarball hit = index.get(key);
         if (hit == null) {
-            return Optional.empty();
+            // Cache miss on this instance : check shared DB (multi-instance).
+            return tarballIndexDao.findByUrl(key)
+                    .map(entry -> new ParsedPackage(entry.packageName(), entry.packageVersion(), "npm"));
         }
         return Optional.of(new ParsedPackage(hit.packageName(), hit.version(), "npm"));
     }
@@ -184,31 +196,34 @@ public class NpmPackumentIndex {
      * Publish date and deprecation status of {@code packageName@version}, as declared by the
      * packument the client actually resolved from. Empty when unknown or when the packument
      * carried no {@code time} entry for that version (some registries omit it).
+     * Falls back to DB for multi-instance cache hit.
      */
     public Optional<PackageMetadataResult> metadata(String packageName, String version) {
         if (!properties.enabled()) {
             return Optional.empty();
         }
         IndexedTarball hit = byPackage.get(packageKey(packageName, version));
-        if (hit == null || hit.publishedAt() == null) {
-            return Optional.empty();
+        if (hit != null && hit.publishedAt() != null) {
+            return Optional.of(new PackageMetadataResult(hit.publishedAt(), hit.deprecated(), hit.deprecationReason()));
         }
-        return Optional.of(new PackageMetadataResult(hit.publishedAt(), hit.deprecated(), hit.deprecationReason()));
+        // Cache miss : check shared DB.
+        return tarballIndexDao.findMetadataByPackage(packageName, version);
     }
 
     /**
      * URL of the packument {@code packageName@version} was learned from, i.e. the registry the
-     * client actually resolved against. Empty when unknown.
+     * client actually resolved against. Empty when unknown. Checks shared DB for multi-instance.
      */
     public Optional<String> originPackumentUrl(String packageName, String version) {
         if (!properties.enabled()) {
             return Optional.empty();
         }
         IndexedTarball hit = byPackage.get(packageKey(packageName, version));
-        if (hit == null || hit.packumentUrl().isBlank()) {
-            return Optional.empty();
+        if (hit != null && !hit.packumentUrl().isBlank()) {
+            return Optional.of(hit.packumentUrl());
         }
-        return Optional.of(hit.packumentUrl());
+        // Cache miss : check shared DB.
+        return tarballIndexDao.findPackumentUrl(packageName, version);
     }
 
     /** Evicts entries indexed more than {@code ttl} ago. Returns the number of entries evicted. */

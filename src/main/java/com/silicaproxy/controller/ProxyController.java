@@ -89,9 +89,10 @@ public class ProxyController {
             ProxyStreamClient proxyStreamClient,
             UrlParserService urlParserService,
             MeterRegistry meterRegistry,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            com.silicaproxy.dao.npm.NpmTarballIndexDao npmTarballIndexDao) {
         this(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper,
-                new NpmPackumentIndex(objectMapper, new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024)));
+                new NpmPackumentIndex(objectMapper, new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024), npmTarballIndexDao));
     }
 
     @Autowired
