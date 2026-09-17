@@ -19,6 +19,9 @@ package com.silicaproxy.service.interception;
 
 import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -366,5 +369,103 @@ class UrlParserServiceTest {
         assertThat(parsed.ecosystem()).isEqualTo("unknown");
         assertThat(parsed.packageName()).isEqualTo("unknown");
         assertThat(parsed.version()).isEqualTo("unknown");
+    }
+
+    // --- Layer 3 : npm metadata detection from client headers / unambiguous path ---
+
+    private static HttpHeaders headers(String name, String value) {
+        HttpHeaders h = new HttpHeaders();
+        h.add(name, value);
+        return h;
+    }
+
+    @Test
+    void detectNpmMetadata_shouldDetectScopedPackumentWithEncodedSlashOnUnknownHost() {
+        String url = "https://npm.jsr.io/@jsr%2fzerun__group-deps";
+        assertThat(urlParserService.parseUrl(url).ecosystem()).isEqualTo("unknown");
+
+        Optional<ParsedPackage> parsed = urlParserService.detectNpmMetadata(url, HttpHeaders.EMPTY);
+        assertThat(parsed).isPresent();
+        assertThat(parsed.get().ecosystem()).isEqualTo("npm");
+        assertThat(parsed.get().packageName()).isEqualTo("@jsr/zerun__group-deps");
+        assertThat(parsed.get().version()).isEqualTo("unknown");
+    }
+
+    @Test
+    void parseUrl_shouldKeepTaggingPackumentOnKnownNpmHost() {
+        ParsedPackage parsed = urlParserService.parseUrl("https://registry.npmjs.org/jsr");
+        assertThat(parsed.ecosystem()).isEqualTo("npm");
+        assertThat(parsed.version()).isEqualTo("unknown");
+    }
+
+    @Test
+    void detectNpmMetadata_shouldNotGuessFromBarePathWithoutHeaders() {
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/jsr", HttpHeaders.EMPTY)).isEmpty();
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/npm/lodash", HttpHeaders.EMPTY)).isEmpty();
+        assertThat(urlParserService.detectNpmMetadata("https://cdn.example.com/files/some-binary.exe", HttpHeaders.EMPTY))
+                .isEmpty();
+    }
+
+    @Test
+    void detectNpmMetadata_shouldDetectFromAcceptHeader() {
+        Optional<ParsedPackage> parsed = urlParserService.detectNpmMetadata("https://private.example/jsr",
+                headers(HttpHeaders.ACCEPT, "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*"));
+        assertThat(parsed).isPresent();
+        assertThat(parsed.get().ecosystem()).isEqualTo("npm");
+        assertThat(parsed.get().packageName()).isEqualTo("jsr");
+        assertThat(parsed.get().version()).isEqualTo("unknown");
+    }
+
+    @Test
+    void detectNpmMetadata_shouldDetectFromNpmFamilyUserAgents() {
+        for (String ua : new String[] {
+                "npm/10.8.2 node/v22.4.0 darwin arm64 workspaces/false",
+                "pnpm/9.1.0 npm/? node/v20.11.0 linux x64",
+                "yarn/1.22.19 npm/? node/v18.19.0 linux x64",
+                "Bun/1.1.20"}) {
+            Optional<ParsedPackage> parsed = urlParserService.detectNpmMetadata("https://private.example/jsr",
+                    headers(HttpHeaders.USER_AGENT, ua));
+            assertThat(parsed).as(ua).isPresent();
+            assertThat(parsed.get().ecosystem()).isEqualTo("npm");
+        }
+    }
+
+    @Test
+    void detectNpmMetadata_shouldIgnoreNonNpmUserAgent() {
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/jsr",
+                headers(HttpHeaders.USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64)"))).isEmpty();
+    }
+
+    @Test
+    void detectNpmMetadata_shouldDetectFromNpmCliHeaders() {
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/jsr", headers("npm-command", "install")))
+                .isPresent();
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/jsr", headers("Pacote-Req-Type", "packument")))
+                .isPresent();
+    }
+
+    @Test
+    void detectNpmMetadata_shouldDetectRegistryApiPaths() {
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/-/v1/search?text=x", HttpHeaders.EMPTY))
+                .isPresent()
+                .get().extracting(ParsedPackage::ecosystem).isEqualTo("npm");
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/-/package/lodash/dist-tags", HttpHeaders.EMPTY))
+                .isPresent();
+        assertThat(urlParserService.detectNpmMetadata("https://private.example/lodash/-/lodash-latest.tgz", HttpHeaders.EMPTY))
+                .isPresent();
+    }
+
+    @Test
+    void parseUrl_structuralDetectionMustPrevailOverNpmClientHints() {
+        // The controller only consults layer 3 when layer 1/2 returned "unknown" : a wheel or a jar
+        // requested by a tool sending an npm-like User-Agent stays in its own ecosystem.
+        assertThat(urlParserService.parseUrl("https://mirror.internal/packages/ab/cd/requests-2.28.1-py3-none-any.whl")
+                .ecosystem()).isEqualTo("pypi");
+        assertThat(urlParserService.parseUrl("https://mirror.internal/repo/com/acme/lib/1.0/lib-1.0.jar")
+                .ecosystem()).isEqualTo("maven");
+        ParsedPackage npm = urlParserService.parseUrl("https://verdaccio.internal/lodash/-/lodash-4.17.21.tgz");
+        assertThat(npm.ecosystem()).isEqualTo("npm");
+        assertThat(npm.packageName()).isEqualTo("lodash");
+        assertThat(npm.version()).isEqualTo("4.17.21");
     }
 }

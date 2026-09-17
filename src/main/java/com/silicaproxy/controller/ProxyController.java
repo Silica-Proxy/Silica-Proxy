@@ -22,6 +22,8 @@ import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
+import com.silicaproxy.properties.NpmPackumentIndexProperties;
+import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.UrlParserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -29,6 +31,7 @@ import org.jspecify.annotations.NullMarked;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -38,9 +41,13 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import tools.jackson.databind.ObjectMapper;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,6 +73,7 @@ public class ProxyController {
     private final AuditLogService auditLogService;
     private final ProxyStreamClient proxyStreamClient;
     private final UrlParserService urlParserService;
+    private final NpmPackumentIndex npmPackumentIndex;
     private final ObjectMapper objectMapper;
     // Pre-built once at startup (like LoomProxyServer.sslHandshakeTimer) instead of calling
     // Timer.builder(...).register(...) on every request: register() still does a registry
@@ -74,6 +82,7 @@ public class ProxyController {
     private final Timer allowDecisionTimer;
     private final MeterRegistry meterRegistry;
 
+    /** Wires a default, always-enabled {@link NpmPackumentIndex} : kept for tests and callers predating it. */
     public ProxyController(
             SecurityService securityService,
             AuditLogService auditLogService,
@@ -81,10 +90,24 @@ public class ProxyController {
             UrlParserService urlParserService,
             MeterRegistry meterRegistry,
             ObjectMapper objectMapper) {
+        this(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper,
+                new NpmPackumentIndex(objectMapper, new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024)));
+    }
+
+    @Autowired
+    public ProxyController(
+            SecurityService securityService,
+            AuditLogService auditLogService,
+            ProxyStreamClient proxyStreamClient,
+            UrlParserService urlParserService,
+            MeterRegistry meterRegistry,
+            ObjectMapper objectMapper,
+            NpmPackumentIndex npmPackumentIndex) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
         this.urlParserService = urlParserService;
+        this.npmPackumentIndex = npmPackumentIndex;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
@@ -147,16 +170,35 @@ public class ProxyController {
             return;
         }
 
+        // Extracted once : the npm metadata detector reads the client hints (Accept / User-Agent /
+        // npm-*) and the forwarder replays the same headers upstream.
+        HttpHeaders headers = extractHeaders(request);
+        String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
         UrlParserService.ParsedPackage parsed = urlParserService.parseUrl(fullUrl);
+        if (parsed.ecosystem().equals("unknown")) {
+            parsed = urlParserService.detectNpmMetadata(fullUrl, headers).orElse(parsed);
+        }
+        if (parsed.ecosystem().equals("npm") && parsed.version().equals("unknown")) {
+            // Tarball whose URL layout the parser does not know (npm.jsr.io, Artifactory
+            // prefixes…) but that a relayed packument declared in dist.tarball.
+            parsed = npmPackumentIndex.lookup(forwardUrl).orElse(parsed);
+        }
         String packageName = parsed.packageName();
         String version = parsed.version();
         String ecosystem = parsed.ecosystem();
 
         if (ecosystem.equals("unknown") || packageName.equals("unknown") || version.equals("unknown")) {
             recordBypassMetric(ecosystem);
-            String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
-            LOG.warn("Unknown ecosystem or direct resource. Bypassing security control for : {}", forwardUrl);
-            forwardRequest(forwardUrl, request, response);
+            if (ecosystem.equals("unknown")) {
+                LOG.warn("Unknown ecosystem. Bypassing security control for : {}", forwardUrl);
+            } else {
+                // Metadata/index traffic (packuments, dist-tags, search…) is expected on every
+                // install and carries nothing to vet : not a warning.
+                LOG.info("Non-package resource (metadata/index) for ecosystem {}. Bypassing security control for : {}",
+                        ecosystem, forwardUrl);
+            }
+            // Any npm metadata response may be a packument : learn its tarball URLs on the way.
+            forwardRequest(forwardUrl, headers, response, ecosystem.equals("npm") && npmPackumentIndex.isEnabled());
             return;
         }
 
@@ -193,16 +235,14 @@ public class ProxyController {
             return;
         }
 
-        String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
         if (LOG.isDebugEnabled()) {
             LOG.debug("Request ALLOWED : Forwarding to {}", forwardUrl);
         }
-        forwardRequest(forwardUrl, request, response);
+        forwardRequest(forwardUrl, headers, response, false);
     }
 
-    private void forwardRequest(String fullUrl, HttpServletRequest request, HttpServletResponse response) throws IOException {
-        HttpHeaders headers = extractHeaders(request);
-
+    private void forwardRequest(String fullUrl, HttpHeaders headers, HttpServletResponse response,
+            boolean learnPackument) throws IOException {
         // try-with-resources: streamContent() opens the upstream connection, and nothing else
         // ever released it (StreamUtils.copy() only reads the body stream, it never closes the
         // response) -- every proxied request used to leak a connection, including on partial
@@ -223,12 +263,53 @@ public class ProxyController {
             });
 
             if (streamResponse.body() != null) {
-                // Buffer of 16 KB (default in StreamUtils.copy)
-                StreamUtils.copy(streamResponse.body(), response.getOutputStream());
+                if (learnPackument && isJsonOk(streamResponse)) {
+                    relayAndIndexPackument(fullUrl, streamResponse, response.getOutputStream());
+                } else {
+                    // Buffer of 16 KB (default in StreamUtils.copy)
+                    StreamUtils.copy(streamResponse.body(), response.getOutputStream());
+                }
             }
         } catch (Exception e) {
             LOG.error("Proxy error to upstream registry when forwarding request {}", fullUrl, e);
             response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
+        }
+    }
+
+    private static boolean isJsonOk(ProxyStreamClient.StreamResponse streamResponse) {
+        if (streamResponse.status() != HttpStatus.OK) {
+            return false;
+        }
+        String contentType = streamResponse.headers().getFirst(HttpHeaders.CONTENT_TYPE);
+        return contentType != null && contentType.toLowerCase(Locale.ROOT).contains("json");
+    }
+
+    // The whole body is buffered (up to the configured cap) and indexed BEFORE the first byte
+    // reaches the client : npm requests the tarballs as soon as it has parsed the packument, so
+    // indexing after the copy would race with those requests. A body that exceeds the cap is
+    // relayed untouched (buffered prefix first, then streamed) and not indexed.
+    private void relayAndIndexPackument(String packumentUrl, ProxyStreamClient.StreamResponse streamResponse,
+            OutputStream out) throws IOException {
+        long cap = npmPackumentIndex.maxBodyBytes();
+        InputStream body = streamResponse.body();
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[16 * 1024];
+        int read;
+        while (buffer.size() <= cap && (read = body.read(chunk)) != -1) {
+            buffer.write(chunk, 0, read);
+        }
+        byte[] bytes = buffer.toByteArray();
+        if (bytes.length <= cap) {
+            int indexed = npmPackumentIndex.indexPackument(bytes,
+                    streamResponse.headers().getFirst(HttpHeaders.CONTENT_ENCODING), packumentUrl);
+            if (indexed > 0 && LOG.isDebugEnabled()) {
+                LOG.debug("Indexed {} tarball URL(s) from npm packument ({} bytes)", indexed, bytes.length);
+            }
+            out.write(bytes);
+        } else {
+            LOG.debug("npm packument larger than {} bytes : relayed without indexing", cap);
+            out.write(bytes);
+            StreamUtils.copy(body, out);
         }
     }
 

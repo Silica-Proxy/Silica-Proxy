@@ -281,4 +281,39 @@ class RegistryClientTest extends BaseIntegrationTest {
         assertThat(result).isPresent();
         assertThat(result.get().publishedAt()).isEqualTo(Instant.parse("2020-08-10T22:57:52Z"));
     }
+
+    @Test
+    void fetchNpmMetadataFrom_shouldQueryGivenUrlForFullPackument() {
+        wireMock.stubFor(get(urlEqualTo("/origin/@jsr%2fzerun__group-deps"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"name": "@jsr/zerun__group-deps",
+                             "time": {"0.1.5": "2026-02-13T15:30:28.752Z"},
+                             "versions": {"0.1.5": {"name": "@jsr/zerun__group-deps", "version": "0.1.5"}}}
+                            """)));
+
+        Optional<PackageMetadataResult> result = registryClient.fetchNpmMetadataFrom(
+                wireMock.baseUrl() + "/origin/@jsr%2fzerun__group-deps", "0.1.5");
+
+        assertThat(result).isPresent();
+        assertThat(result.get().publishedAt()).isEqualTo(Instant.parse("2026-02-13T15:30:28.752Z"));
+        assertThat(result.get().isDeprecated()).isFalse();
+        // The full packument format is requested explicitly : the abbreviated one omits "time".
+        wireMock.verify(getRequestedFor(urlEqualTo("/origin/@jsr%2fzerun__group-deps"))
+                .withHeader("Accept", equalTo("application/json")));
+    }
+
+    @Test
+    void fetchNpmMetadataFrom_shouldReturnEmptyOnNotFoundOrUnknownVersion() {
+        wireMock.stubFor(get(urlEqualTo("/origin/missing")).willReturn(aResponse().withStatus(404)));
+        wireMock.stubFor(get(urlEqualTo("/origin/present"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"time\": {\"1.0.0\": \"2020-01-01T00:00:00Z\"}, \"versions\": {}}")));
+
+        assertThat(registryClient.fetchNpmMetadataFrom(wireMock.baseUrl() + "/origin/missing", "1.0.0")).isEmpty();
+        assertThat(registryClient.fetchNpmMetadataFrom(wireMock.baseUrl() + "/origin/present", "2.0.0")).isEmpty();
+        assertThat(registryClient.fetchNpmMetadataFrom("http://127.0.0.1:1/unreachable", "1.0.0")).isEmpty();
+    }
 }

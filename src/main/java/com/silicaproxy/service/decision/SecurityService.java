@@ -25,6 +25,7 @@ import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.entity.SeverityMapping;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.vulnerability.VulnerabilityApiClients;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -58,6 +59,7 @@ public class SecurityService {
     private final SilicaProxyProperties properties;
     private final ExternalValidationService externalValidationService;
     private final SecurityServiceMetrics metrics;
+    private final NpmPackumentIndex npmPackumentIndex;
 
     public SecurityService(
             DecisionDao decisionDao,
@@ -66,7 +68,8 @@ public class SecurityService {
             SecurityServiceCaches caches,
             SilicaProxyProperties properties,
             ExternalValidationService externalValidationService,
-            SecurityServiceMetrics metrics) {
+            SecurityServiceMetrics metrics,
+            NpmPackumentIndex npmPackumentIndex) {
         this.decisionDao = decisionDao;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
@@ -74,6 +77,7 @@ public class SecurityService {
         this.properties = properties;
         this.externalValidationService = externalValidationService;
         this.metrics = metrics;
+        this.npmPackumentIndex = npmPackumentIndex;
     }
 
     @Timed(value = "silicaproxy.service.security.getdecision",
@@ -123,7 +127,12 @@ public class SecurityService {
     // is cached, in which case the caller applies fail-open/fail-closed.
     private Optional<PackageMetadataResult> resolvePackageMetadata(
             String packageName, String version, String ecosystem, String fullUrl) {
-        Optional<PackageMetadataResult> registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem, fullUrl);
+        Optional<PackageMetadataResult> registryMetaOpt = "npm".equals(ecosystem)
+                ? resolveNpmMetadataFromOrigin(packageName, version)
+                : Optional.empty();
+        if (registryMetaOpt.isEmpty()) {
+            registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem, fullUrl);
+        }
         if (registryMetaOpt.isPresent()) {
             PackageMetadataResult registryMeta = registryMetaOpt.get();
             // Permanent registration in package_metadata (idempotent: no-op if already cached)
@@ -137,6 +146,23 @@ public class SecurityService {
         // status is unknown this round and left at its default (not deprecated).
         return caches.metadataCacheDao().getPackagePublishedAt(packageName, ecosystem, version)
                 .map(publishedAt -> new PackageMetadataResult(publishedAt, false, null));
+    }
+
+    // The packument the client just resolved from is authoritative for that registry, and for a
+    // package absent from the configured public registry (JSR, private scope) it is the ONLY
+    // source : without it, the public lookup 404s and the request fails closed as "unreachable".
+    // (1) the relayed packument itself, when it carried "time" (JSR does, even abbreviated) ;
+    // (2) otherwise the FULL packument re-fetched from that same origin registry -- npm's
+    // abbreviated format omits "time" but Verdaccio/Artifactory/Nexus include it in the full one.
+    // The configured public registry is skipped here : the caller falls back to it anyway.
+    private Optional<PackageMetadataResult> resolveNpmMetadataFromOrigin(String packageName, String version) {
+        Optional<PackageMetadataResult> fromIndex = npmPackumentIndex.metadata(packageName, version);
+        if (fromIndex.isPresent()) {
+            return fromIndex;
+        }
+        return npmPackumentIndex.originPackumentUrl(packageName, version)
+                .filter(origin -> !origin.startsWith(properties.registries().npmUrl()))
+                .flatMap(origin -> registryClient.fetchNpmMetadataFrom(origin, version));
     }
 
     private DecisionResult registryUnavailableVerdict(String packageName, String version, String ecosystem) {

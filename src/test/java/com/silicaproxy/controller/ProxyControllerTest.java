@@ -41,6 +41,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -541,5 +542,103 @@ class ProxyControllerTest {
                 .andExpect(header().doesNotExist(":status"));
     }
 
-}
+    @Test
+    void shouldTagBypassWithNpmWhenMetadataDetectorRecognisesUnknownHost() throws Exception {
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("@jsr/zerun__group-deps", "unknown", "npm")));
+        when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream("{}".getBytes())));
 
+        mockMvc.perform(get("http://npm.jsr.io/@jsr/zerun__group-deps")
+                        .header("Accept", "application/vnd.npm.install-v1+json"))
+                .andExpect(status().isOk());
+
+        verify(urlParserService).detectNpmMetadata(eq("http://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class));
+        verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
+        verify(proxyStreamClient).streamContent(eq("https://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class));
+        assertThat(meterRegistry.get(Metrics.BYPASS_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, "npm").counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldIdentifyTarballFromRelayedPackumentWhateverTheUrlLayout() throws Exception {
+        // 1. Packument on an unknown host : bypassed, but its dist.tarball URLs get indexed.
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("@jsr/zerun__group-deps", "unknown", "npm")));
+        String packument = """
+                {"name":"@jsr/zerun__group-deps","versions":{"0.1.5":{"version":"0.1.5",
+                 "dist":{"tarball":"https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"}}}}
+                """;
+        HttpHeaders jsonHeaders = new HttpHeaders();
+        jsonHeaders.add("Content-Type", "application/vnd.npm.install-v1+json");
+        when(proxyStreamClient.streamContent(eq("https://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, jsonHeaders,
+                        new ByteArrayInputStream(packument.getBytes())));
+
+        mockMvc.perform(get("http://npm.jsr.io/@jsr/zerun__group-deps"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(packument));
+        verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
+
+        // 2. Tarball with the JSR layout : the parser still cannot name a version, the index can.
+        DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
+        when(securityService.getDecision(eq("@jsr/zerun__group-deps"), eq("0.1.5"), eq("npm"), anyString())).thenReturn(allowed);
+        byte[] tarball = "fake-tarball".getBytes();
+        when(proxyStreamClient.streamContent(eq("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream(tarball)));
+
+        mockMvc.perform(get("http://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(tarball));
+
+        verify(securityService).getDecision(eq("@jsr/zerun__group-deps"), eq("0.1.5"), eq("npm"), anyString());
+        verify(auditLogService).logAudit(eq("@jsr/zerun__group-deps"), eq("0.1.5"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"),
+                anyString(), anyInt(), anyString());
+    }
+
+    @Test
+    void shouldBlockTarballIdentifiedThroughPackumentIndex() throws Exception {
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("unknown", "unknown", "npm")));
+        HttpHeaders jsonHeaders = new HttpHeaders();
+        jsonHeaders.add("Content-Type", "application/json; charset=utf-8");
+        String packument = "{\"name\":\"evil\",\"versions\":{\"1.0.0\":{\"dist\":{\"tarball\":\"https://mirror.internal/blobs/abc.tgz\"}}}}";
+        when(proxyStreamClient.streamContent(eq("https://mirror.internal/evil"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, jsonHeaders, new ByteArrayInputStream(packument.getBytes())));
+        mockMvc.perform(get("http://mirror.internal/evil")).andExpect(status().isOk());
+
+        when(securityService.getDecision(eq("evil"), eq("1.0.0"), eq("npm"), anyString()))
+                .thenReturn(new DecisionResult("BLACKLIST", "BLOCK", "Known malware"));
+
+        mockMvc.perform(get("http://mirror.internal/blobs/abc.tgz"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.package").value("evil"))
+                .andExpect(jsonPath("$.version").value("1.0.0"));
+        verify(proxyStreamClient, never()).streamContent(eq("https://mirror.internal/blobs/abc.tgz"), any(HttpHeaders.class));
+    }
+
+    @Test
+    void shouldNotIndexNonJsonOrNonOkMetadataResponses() throws Exception {
+        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "npm"));
+        HttpHeaders html = new HttpHeaders();
+        html.add("Content-Type", "text/html");
+        String body = "{\"name\":\"x\",\"versions\":{\"1.0.0\":{\"dist\":{\"tarball\":\"https://r.internal/x.tgz\"}}}}";
+        when(proxyStreamClient.streamContent(eq("https://r.internal/x"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, html, new ByteArrayInputStream(body.getBytes())));
+        HttpHeaders json = new HttpHeaders();
+        json.add("Content-Type", "application/json");
+        when(proxyStreamClient.streamContent(eq("https://r.internal/y"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.NOT_FOUND, json, new ByteArrayInputStream(body.getBytes())));
+        when(proxyStreamClient.streamContent(eq("https://r.internal/x.tgz"), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream(new byte[0])));
+
+        mockMvc.perform(get("http://r.internal/x")).andExpect(status().isOk()).andExpect(content().string(body));
+        mockMvc.perform(get("http://r.internal/y")).andExpect(status().isNotFound());
+        mockMvc.perform(get("http://r.internal/x.tgz")).andExpect(status().isOk());
+
+        verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
+    }
+}
