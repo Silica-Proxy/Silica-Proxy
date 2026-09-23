@@ -94,7 +94,10 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
 
         assertThat(decision.result()).isEqualTo("ALLOW");
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
-        assertThat(wireMock.getAllServeEvents()).isEmpty();
+        // Public registry asked first (it wins whenever it knows the version) ; it 404s, so the
+        // relayed packument's date is used without any further registry call.
+        wireMock.verify(1, getRequestedFor(urlEqualTo("/@jsr/idx__only")));
+        assertThat(wireMock.getAllServeEvents()).hasSize(1);
         // The learned date is persisted like a registry-resolved one.
         Integer cached = jdbcClient.sql("SELECT count(*) FROM package_metadata WHERE package_name = '@jsr/idx__only'")
                 .query(Integer.class).single();
@@ -121,8 +124,8 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
         assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
         wireMock.verify(1, getRequestedFor(urlEqualTo("/origin/@priv%2fno-time"))
                 .withHeader("Accept", equalTo("application/json")));
-        // The public registry was never asked : origin answered first.
-        assertThat(wireMock.getAllServeEvents()).hasSize(1);
+        // Public registry asked first and 404s ; only then the origin registry answers.
+        assertThat(wireMock.getAllServeEvents()).hasSize(2);
     }
 
     @Test

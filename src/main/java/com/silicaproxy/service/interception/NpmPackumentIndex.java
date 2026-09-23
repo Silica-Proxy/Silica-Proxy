@@ -26,6 +26,7 @@ import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -74,7 +75,6 @@ public class NpmPackumentIndex {
     private final ObjectMapper objectMapper;
     private final NpmPackumentIndexProperties properties;
     private final NpmTarballIndexDao tarballIndexDao;
-    private final RegistryClient registryClient;
     // Tarball URL → version ; "name@version" → metadata. Both hold the same entries, so the size
     // cap is checked on the URL map only.
     private final Map<String, IndexedTarball> index = new ConcurrentHashMap<>();
@@ -92,12 +92,21 @@ public class NpmPackumentIndex {
             String packumentUrl,
             Instant indexedAt) {}
 
+    @Autowired
     public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
-            NpmTarballIndexDao tarballIndexDao, RegistryClient registryClient) {
+            NpmTarballIndexDao tarballIndexDao) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.tarballIndexDao = tarballIndexDao;
-        this.registryClient = registryClient;
+    }
+
+    /**
+     * Kept for callers predating the removal of the index-time packument re-fetch : the index no
+     * longer makes any network call, so {@code registryClient} is not used.
+     */
+    public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
+            NpmTarballIndexDao tarballIndexDao, RegistryClient registryClient) {
+        this(objectMapper, properties, tarballIndexDao);
     }
 
     public boolean isEnabled() {
@@ -154,14 +163,10 @@ public class NpmPackumentIndex {
                             : deprecatedNode.isString() && !deprecatedNode.asString().isBlank();
                     @Nullable Instant publishedAt = parseInstant(time.path(entry.getKey()).asString(""));
                     @Nullable String deprecationReason = deprecatedNode.isString() ? deprecatedNode.asString() : null;
-                    
-                    // If no "time" in the packument (e.g., npm's abbreviated format), try fetching the
-                    // full packument from the same origin to get the publish date. This allows indexing
-                    // useful metadata without polluting the DB for npmjs (which never has "time" anyway).
-                    if (publishedAt == null && !packumentUrl.isBlank()) {
-                        publishedAt = tryFetchPublishedAt(packumentUrl, version);
-                    }
-                    
+                    // No network call here when "time" is absent (npm's abbreviated format) : this
+                    // runs while the client waits for the packument, once per version. The publish
+                    // date is resolved on demand by SecurityService instead, only for the version
+                    // actually downloaded (public registry first, then the recorded packumentUrl).
                     IndexedTarball indexedTarball = new IndexedTarball(name, version,
                             publishedAt, deprecated, deprecationReason, packumentUrl, now);
                     index.put(key, indexedTarball);
@@ -270,31 +275,6 @@ public class NpmPackumentIndex {
         return packageName + "@" + version;
     }
 
-
-    /**
-     * Attempts to fetch publish date from the full packument at the given URL (lazy fetch).
-     * Returns null if the fetch fails or yields no result. Used when the abbreviated packument
-     * carries no "time" entry (e.g., npm's default Accept header) but the origin registry might
-     * have the full packument with "time" (Artifactory, Verdaccio, JSR).
-     * 
-     * Runs asynchronously (fire-and-forget): index population is not blocked; if the fetch
-     * succeeds later, the DB write happens, and other instances benefit. If it fails, the tarball
-     * is still indexed and metadata resolution falls back to the registry APIs on demand.
-     */
-    private @Nullable Instant tryFetchPublishedAt(String packumentUrl, String version) {
-        try {
-            return registryClient.fetchNpmMetadataFrom(packumentUrl, version)
-                    .map(com.silicaproxy.model.dto.PackageMetadataResult::publishedAt)
-                    .orElse(null);
-        } catch (Exception e) {
-            // Fetch failed (network, malformed URL, timeout) : continue without metadata.
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("Lazy fetch of metadata from {} for version {} failed: {}",
-                        packumentUrl, version, e.toString());
-            }
-            return null;
-        }
-    }
 
     private static @Nullable Instant parseInstant(String value) {
         if (value.isEmpty()) {

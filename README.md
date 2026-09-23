@@ -118,6 +118,13 @@ and each live API fallback source (`silicaproxy.api-fallback.<osv|deps-dev>.fail
 [§5](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) — a hardened
 environment can flip any of them to fail-closed without affecting the others.
 
+For quarantine, `silicaproxy.quarantine.fail-open` (default `true`) decides the verdict whenever
+the **publication date cannot be resolved** at all : registry unreachable, package/version
+unknown to the registry (and to the origin registry for npm), and no date already cached in
+`package_metadata`. Such packages skip the age check entirely, so every occurrence is counted in
+`silicaproxy.quarantine.publish_date.unresolved` (tagged with the applied verdict) — see
+[Metrics](#metrics) for a ready-to-use alert.
+
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
 Internal allow/block rules are read from a Git repository containing one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`). The scheduler pulls changes every 10 minutes and synchronises the `company_policies` table. These rules have the **highest priority** in the decision pipeline and always override external vulnerability data.
@@ -166,6 +173,21 @@ When a package version is not in any local database, SilicaProxy queries the reg
 | **npm** | `registry.npmjs.org` | ✓ | ✓ (`deprecated` field) | `silicaproxy.registries.npm-url` / `SILICAPROXY_REGISTRIES_NPM_URL` |
 | **PyPI** | `pypi.org` | ✓ | ✓ (`yanked` field) | `silicaproxy.registries.pypi-url` / `SILICAPROXY_REGISTRIES_PYPI_URL` |
 | **Maven** | `repo1.maven.org` | ✓ (`Last-Modified` header) | — not supported | `silicaproxy.registries.maven-url` / `SILICAPROXY_REGISTRIES_MAVEN_URL` |
+
+How the publication date is resolved :
+
+- **PyPI** — a release can receive new files (e.g. wheels for a new Python version) long after it
+  was first published, so the date used is the upload time of the **file actually downloaded**
+  (matched by filename against the release's files). If it can't be matched, the **most recent**
+  upload of the release is used — never the first file's, which would let a freshly added file
+  inherit the release's old age.
+- **npm** — the configured public registry is **always asked first**. The packument relayed to the
+  client, and the registry it came from (npm.jsr.io, a private Verdaccio/Artifactory…), are only
+  used when the public registry answers that it does **not know** the package/version (404, or no
+  `time` entry for it) — never when it merely fails to answer (5xx, timeout), so a registry outage
+  can't hand the quarantine date over to a less trusted source.
+- **All ecosystems** — if the registry can't answer, a date already cached in `package_metadata`
+  is used ; otherwise the [`quarantine.fail-open`](#what-fail-open--fail-closed-means) policy decides.
 
 The publication date is **stored permanently** in the `package_metadata` table — it never changes, so no subsequent network call is needed for a version already seen. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
 
@@ -439,7 +461,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
 | **Quarantine** | `silicaproxy.quarantine.enabled` | `SILICAPROXY_QUARANTINE_ENABLED`                                  | `true` | Enable age-based quarantine globally |
-| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN`                                | `true` | Allow on registry error |
+| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN`                                | `true` | Verdict when the publication date cannot be resolved (registry unreachable, package unknown, no cached date) : `true` = allow, `false` = block |
 | | `silicaproxy.quarantine.default-min-age-days` | `SILICAPROXY_QUARANTINE_DEFAULT_MIN_AGE_DAYS`                     | `7` | Fallback threshold if not set per ecosystem |
 | | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED`                   | `true` | |
 | | `silicaproxy.quarantine.ecosystems.npm.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_MIN_AGE_DAYS`              | `7` | |
@@ -749,6 +771,13 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
 | `silicaproxy.controller.security.overhead` | Timer | `decision` (`block`/`allow`) | Duration of the security check only, excluding binary streaming. |
 | `silicaproxy.decision.local_evaluation` | Counter | `outcome` (`HIT`/`MISS`) | Whether `DecisionDao`'s single SQL query (company policy / public vulnerability / `api_cache`) resolved the verdict without an external call (`HIT`), or a registry/OSV/deps.dev round trip was required (`MISS`). |
+
+**Quarantine publication date**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.quarantine.publish_date.lookups` | Counter | `ecosystem`, `source` (`PUBLIC_REGISTRY`/`ORIGIN_REGISTRY`/`LOCAL_CACHE`/`UNRESOLVED`) | Where the publication date used by the quarantine check came from. `ORIGIN_REGISTRY` (npm only) means the public registry did not know the version and the registry the client resolved against was trusted instead ; `LOCAL_CACHE` means the registry could not answer but the date was already known. |
+| `silicaproxy.quarantine.publish_date.unresolved` | Counter | `ecosystem`, `verdict` (`ALLOW`/`BLOCK`) | Packages whose publication date could not be resolved, with the verdict applied by `silicaproxy.quarantine.fail-open`. With the default fail-open, each `ALLOW` is a package that **skipped the quarantine** : alert on it, e.g. `increase(silicaproxy_quarantine_publish_date_unresolved_total{verdict="ALLOW"}[1h]) > 0`. |
 
 **External vulnerability APIs (OSV live fallback, deps.dev)**
 
