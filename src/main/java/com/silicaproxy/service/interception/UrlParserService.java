@@ -18,11 +18,15 @@
 package com.silicaproxy.service.interception;
 
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import io.micrometer.core.annotation.Timed;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,8 +37,12 @@ import java.util.regex.Pattern;
  * any security decision ; returns "unknown" if the URL does not match any known pattern, which
  * then bypasses the security check (resource not identifiable as a package).
  *
- * <p>Two detection layers : (1) known host → direct parser ; (2) structural fallback by
- * path pattern for private registries (Verdaccio, devpi, artifact repositories, repo.spring.io…).
+ * <p>Three detection layers : (1) known host → direct parser ; (2) structural fallback by
+ * path pattern for private registries (Verdaccio, devpi, artifact repositories, repo.spring.io…) ;
+ * (3) {@link #detectNpmMetadata}, an npm-only ecosystem hint from the client headers (Accept /
+ * User-Agent / npm-* headers) or from an unambiguous npm registry path shape. Layer 3 never
+ * yields a version : it only tags metadata traffic (packuments, dist-tags, search) with the
+ * right ecosystem so bypass logs and metrics stop reporting it as "unknown".
  */
 @Service
 @NullMarked
@@ -72,6 +80,24 @@ public class UrlParserService {
                     + "(?!.+\\.(?:sha1|sha256|sha512|md5|asc)$)[^/]+$");
     private static final Pattern MAVEN_STRUCTURAL_PATTERN =
             Pattern.compile("^/[^/]+/(.+)/([^/]+)/([^/]+)/[^/]+\\.(?:jar|pom|aar|war|ear|zip|module)$");
+
+    // Layer 3 (npm metadata) path shapes that cannot reasonably be anything but an npm registry.
+    // A bare "/{name}" is deliberately NOT here : it is too ambiguous without a client header.
+    // URI.getPath() has already decoded "%2f" to "/" so scoped names arrive as "/@scope/name".
+    private static final Pattern NPM_SCOPED_PACKUMENT_PATTERN =
+            Pattern.compile("^/(@[^/@]+/[^/@]+)(?:/[^/]+)?$");
+    private static final Pattern NPM_UNSCOPED_PACKUMENT_PATTERN = Pattern.compile("^/([^/@-][^/]*)(?:/[^/]+)?$");
+    private static final Pattern NPM_REGISTRY_API_PATTERN =
+            Pattern.compile("^/-/(?:v1/|npm/|package/|user/|ping|whoami).*$");
+    private static final Pattern NPM_DASH_SEGMENT_PATTERN = Pattern.compile("^/(?:@[^/]+/)?[^/@-][^/]*/-/.*$");
+
+    // Abbreviated packument media type requested by npm, pnpm, yarn (berry) and bun.
+    private static final String NPM_INSTALL_MEDIA_TYPE = "application/vnd.npm.install-v1+json";
+    // pnpm and yarn classic also embed "npm/?" in their User-Agent, but the leading token is enough.
+    private static final List<String> NPM_USER_AGENT_PREFIXES = List.of("npm/", "pnpm/", "yarn/", "bun/");
+    // npm CLI request headers (npm-command, npm-scope, npm-in-ci, npm-session, npm-auth-type) and
+    // its fetcher's (pacote-version, pacote-req-type, pacote-pkg-id).
+    private static final List<String> NPM_HEADER_PREFIXES = List.of("npm-", "pacote-");
 
     private record EcosystemRouter(List<String> hostPatterns, Function<String, ParsedPackage> parser) {
         boolean matches(String host) {
@@ -118,6 +144,36 @@ public class UrlParserService {
         return new ParsedPackage("unknown", "unknown", "unknown");
     }
 
+    /**
+     * Layer 3, called by the controller only when {@link #parseUrl(String)} could not name an
+     * ecosystem : recognises npm metadata traffic on hosts the proxy does not know (private
+     * registries, npm.jsr.io…) from the client headers or from an unambiguous registry path
+     * shape. The version is always "unknown" (nothing to vet), so the request is still bypassed ;
+     * the package name is best-effort, for debug logs only.
+     */
+    @Timed(value = "silicaproxy.service.urlparser.detectnpmmetadata",
+            description = "Duration of the header/path based npm metadata detection",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public Optional<ParsedPackage> detectNpmMetadata(String urlString, HttpHeaders headers) {
+        try {
+            String path = URI.create(urlString).getPath();
+            if (path == null || !(isNpmClient(headers) || isUnambiguousNpmPath(path))) {
+                return Optional.empty();
+            }
+            Matcher scoped = NPM_SCOPED_PACKUMENT_PATTERN.matcher(path);
+            if (scoped.matches()) {
+                return Optional.of(new ParsedPackage(scoped.group(1), "unknown", "npm"));
+            }
+            Matcher unscoped = NPM_UNSCOPED_PACKUMENT_PATTERN.matcher(path);
+            if (unscoped.matches()) {
+                return Optional.of(new ParsedPackage(unscoped.group(1), "unknown", "npm"));
+            }
+            return Optional.of(new ParsedPackage("unknown", "unknown", "npm"));
+        } catch (IllegalArgumentException ignored) {
+            return Optional.empty();
+        }
+    }
+
     private static ParsedPackage detectFromPath(String path) {
         Matcher unscopedNpm = NPM_UNSCOPED_TARBALL_PATTERN.matcher(path);
         if (unscopedNpm.matches()) {
@@ -141,6 +197,45 @@ public class UrlParserService {
             return new ParsedPackage(groupId + ":" + m.group(2), m.group(3), "maven");
         }
         return new ParsedPackage("unknown", "unknown", "unknown");
+    }
+
+    private static boolean isNpmClient(HttpHeaders headers) {
+        if (containsNpmInstallMediaType(headers.getFirst(HttpHeaders.ACCEPT))
+                || hasNpmUserAgent(headers.getFirst(HttpHeaders.USER_AGENT))) {
+            return true;
+        }
+        for (String name : headers.headerNames()) {
+            String lower = name.toLowerCase(Locale.ROOT);
+            for (String prefix : NPM_HEADER_PREFIXES) {
+                if (lower.startsWith(prefix)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsNpmInstallMediaType(@Nullable String accept) {
+        return accept != null && accept.toLowerCase(Locale.ROOT).contains(NPM_INSTALL_MEDIA_TYPE);
+    }
+
+    private static boolean hasNpmUserAgent(@Nullable String userAgent) {
+        if (userAgent == null) {
+            return false;
+        }
+        String lower = userAgent.toLowerCase(Locale.ROOT);
+        for (String prefix : NPM_USER_AGENT_PREFIXES) {
+            if (lower.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isUnambiguousNpmPath(String path) {
+        return NPM_SCOPED_PACKUMENT_PATTERN.matcher(path).matches()
+                || NPM_REGISTRY_API_PATTERN.matcher(path).matches()
+                || NPM_DASH_SEGMENT_PATTERN.matcher(path).matches();
     }
 
     private static ParsedPackage parseNpmUrl(String path) {

@@ -18,10 +18,12 @@
 package com.silicaproxy.dao.client;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import com.silicaproxy.model.dto.RegistryLookup;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -35,6 +37,7 @@ import tools.jackson.core.JsonToken;
 import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -85,7 +88,7 @@ public class RegistryClient {
         try {
             return switch (ecosystem.toLowerCase()) {
                 case "npm" -> fetchNpmMetadata(packageName, version);
-                case "pypi" -> fetchPypiMetadata(packageName, version);
+                case "pypi" -> fetchPypiMetadata(packageName, version, fullUrl);
                 case "maven" -> fetchMavenMetadata(packageName, version, fullUrl);
                 default -> Optional.empty();
             };
@@ -110,17 +113,84 @@ public class RegistryClient {
     // token-by-token instead of deserialized into a generic Map: unwanted version entries are
     // skipped via skipChildren() without allocating any object graph for them.
     private Optional<PackageMetadataResult> fetchNpmMetadata(String packageName, String version) {
+        return lookupNpmPublic(packageName, version).metadata();
+    }
+
+    /**
+     * Looks {@code packageName@version} up on the configured public npm registry, telling a
+     * registry that does not know the package/version (404, or no {@code time} entry for that
+     * version : {@code NOT_FOUND}) apart from one that could not answer (other non-2xx status,
+     * network error, timeout, unparseable body : {@code UNAVAILABLE}). {@code SecurityService}
+     * only falls back to the less trusted origin registry on {@code NOT_FOUND}.
+     */
+    @Timed(value = "silicaproxy.dao.registry.lookupnpmpublic",
+            description = "Duration of call to the public npm registry to resolve package metadata",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public RegistryLookup lookupNpmPublic(String packageName, String version) {
         String url = properties.registries().npmUrl() + "/" + packageName;
-        return restClient.get()
-                .uri(url)
-                .exchange((request, response) -> {
-                    if (!response.getStatusCode().is2xxSuccessful()) {
-                        return Optional.empty();
-                    }
-                    try (InputStream body = response.getBody()) {
-                        return parseNpmPackument(body, version);
-                    }
-                });
+        try {
+            return restClient.get()
+                    .uri(URI.create(url))
+                    .header("Accept", "application/json")
+                    .exchange((request, response) -> {
+                        if (response.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
+                            return RegistryLookup.notFound();
+                        }
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            LOG.warn("Public npm registry answered {} for {} (version {})",
+                                    response.getStatusCode().value(), packageName, version);
+                            return RegistryLookup.unavailable();
+                        }
+                        try (InputStream body = response.getBody()) {
+                            return parseNpmPackument(body, version)
+                                    .map(RegistryLookup::found)
+                                    .orElseGet(RegistryLookup::notFound);
+                        }
+                    });
+        } catch (Exception e) {
+            LOG.warn("Error while retrieving npm metadata from {} (version {}) : {}", url, version, e.getMessage());
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Details of public npm registry lookup error", e);
+            }
+            return RegistryLookup.unavailable();
+        }
+    }
+
+    /**
+     * Resolves publish date and deprecation status from the packument at {@code packumentUrl},
+     * whatever registry serves it. Used by {@code SecurityService} to ask the registry the client
+     * actually resolved against (npm.jsr.io, a private Verdaccio/Artifactory…) when the
+     * abbreviated packument relayed to the client carried no {@code time} entry -- the package
+     * may not exist at all on the configured public registry. The full packument format is
+     * requested explicitly : the abbreviated one (npm's default {@code Accept}) omits
+     * {@code time}. Goes through the same {@code restClient}, so the SSRF interceptor and the
+     * registries timeouts apply.
+     */
+    @Timed(value = "silicaproxy.dao.registry.fetchnpmmetadatafrom",
+            description = "Duration of call to the origin npm registry to resolve package metadata",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public Optional<PackageMetadataResult> fetchNpmMetadataFrom(String packumentUrl, String version) {
+        try {
+            // URI.create, not the String overload : the latter is a URI template and would
+            // re-encode the "%2f" of a scoped package name into "%252f".
+            return restClient.get()
+                    .uri(URI.create(packumentUrl))
+                    .header("Accept", "application/json")
+                    .exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            return Optional.empty();
+                        }
+                        try (InputStream body = response.getBody()) {
+                            return parseNpmPackument(body, version);
+                        }
+                    });
+        } catch (Exception e) {
+            LOG.warn("Error while retrieving npm metadata from {} (version {}) : {}", packumentUrl, version, e.getMessage());
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Details of npm metadata retrieval error", e);
+            }
+            return Optional.empty();
+        }
     }
 
     private Optional<PackageMetadataResult> parseNpmPackument(InputStream body, String version) throws IOException {
@@ -198,7 +268,12 @@ public class RegistryClient {
     }
 
     @SuppressWarnings("unchecked")
-    private Optional<PackageMetadataResult> fetchPypiMetadata(String packageName, String version) {
+    // PyPI lets a maintainer upload new files (wheels for a new platform/Python version) to an
+    // existing release long after it was first published : the first file's upload time is
+    // therefore NOT the publish date of the file actually being downloaded. The upload time of
+    // the requested file (matched by filename) is used ; when it can't be matched, the most
+    // recent upload of the release -- the conservative choice for the quarantine age check.
+    private Optional<PackageMetadataResult> fetchPypiMetadata(String packageName, String version, String fullUrl) {
         String url = properties.registries().pypiUrl() + "/pypi/" + packageName + "/json";
         Map<String, Object> response = restClient.get()
                 .uri(url)
@@ -219,19 +294,11 @@ public class RegistryClient {
             return Optional.empty();
         }
 
-        Map<String, Object> firstFile = files.get(0);
-        String uploadTimeStr = (String) firstFile.get("upload_time_iso_8601");
-        if (uploadTimeStr == null) {
-            uploadTimeStr = (String) firstFile.get("upload_time");
-        }
-        if (uploadTimeStr == null) {
+        Optional<Instant> publishedAtOpt = PypiUploadTimes.publishedAt(files, fullUrl);
+        if (publishedAtOpt.isEmpty()) {
             return Optional.empty();
         }
-        
-        if (!uploadTimeStr.endsWith("Z") && !uploadTimeStr.contains("+")) {
-            uploadTimeStr += "Z";
-        }
-        Instant publishedAt = Instant.parse(uploadTimeStr);
+        Instant publishedAt = publishedAtOpt.get();
 
         boolean isYanked = false;
         for (Map<String, Object> file : files) {

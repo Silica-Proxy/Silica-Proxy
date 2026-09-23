@@ -50,6 +50,29 @@ public class SecurityServiceMetrics {
                 .increment();
     }
 
+    // source is one of the bounded Metrics.DATE_SOURCE_* values : tells how often the quarantine
+    // age check ran off the public registry versus a less trusted origin, the local cache, or
+    // nothing at all.
+    public void recordPublishDateLookup(String ecosystem, String source) {
+        Counter.builder(Metrics.PUBLISH_DATE_LOOKUPS_METRIC)
+                .description("Publish date resolutions for the quarantine check, by ecosystem and source")
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .tag(Metrics.TAG_SOURCE, source)
+                .register(meterRegistry)
+                .increment();
+    }
+
+    // Alerting target : every increment is a package that skipped the quarantine age check
+    // because no publish date could be found, with the verdict applied by quarantine.fail-open.
+    public void recordPublishDateUnresolved(String ecosystem, String verdict) {
+        Counter.builder(Metrics.PUBLISH_DATE_UNRESOLVED_METRIC)
+                .description("Packages whose publish date could not be resolved, by ecosystem and applied verdict")
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .tag(Metrics.TAG_VERDICT, verdict)
+                .register(meterRegistry)
+                .increment();
+    }
+
     // apiSource/verdict are both bounded enum-like values (OSV_LIVE/DEPS_DEV and
     // ALLOW/BLOCK/ERROR), safe to use as low-cardinality Prometheus tags.
     public void recordExternalApiCallMetric(String apiSource, String result) {
