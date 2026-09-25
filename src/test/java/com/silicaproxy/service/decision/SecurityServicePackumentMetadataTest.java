@@ -133,7 +133,7 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
         String publishedAt = Instant.now().minus(30, ChronoUnit.DAYS).toString();
         // Learned from a tarball URL only (no origin recorded, no "time").
         npmPackumentIndex.indexPackument(
-                packument("pub-only", "3.0.0", null, "https://mirror.internal/pub-only-3.0.0.tgz"), null);
+                packument("pub-only", "3.0.0", null, "https://mirror.internal/pub-only-3.0.0.tgz"), null, "");
         wireMock.stubFor(get(urlEqualTo("/pub-only"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "application/json")

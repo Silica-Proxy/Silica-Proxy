@@ -18,10 +18,9 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
-import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
-import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
+import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -54,9 +53,9 @@ class NpmPackumentIndexTest {
             """;
 
     private static NpmPackumentIndex newIndex(int maxEntries) {
-        RegistryClient regClient = mock(RegistryClient.class);
-        return new NpmPackumentIndex(new JsonMapper(), new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024),
-                mock(NpmTarballIndexDao.class), regClient);
+        return new NpmPackumentIndex(new JsonMapper(),
+                new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW),
+                mock(NpmTarballIndexDao.class));
     }
 
     private static byte[] utf8(String s) {
@@ -67,7 +66,7 @@ class NpmPackumentIndexTest {
     void shouldResolveTarballUrlLearnedFromPackumentWhateverTheLayout() {
         NpmPackumentIndex index = newIndex(1000);
 
-        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null)).isEqualTo(2);
+        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null, "")).isEqualTo(2);
 
         Optional<ParsedPackage> hit = index.lookup("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz");
         assertThat(hit).isPresent();
@@ -79,7 +78,7 @@ class NpmPackumentIndexTest {
     @Test
     void shouldMatchPlainHttpRequestAgainstHttpsTarballUrl() {
         NpmPackumentIndex index = newIndex(1000);
-        index.indexPackument(utf8(JSR_PACKUMENT), null);
+        index.indexPackument(utf8(JSR_PACKUMENT), null, "");
 
         // The controller sees "http://host/..." before convertToHttpsIfNeeded ; host case differs too.
         assertThat(index.lookup("http://NPM.jsr.io/~/11/@jsr/zerun__group-deps/0.1.4.tgz")).isPresent();
@@ -89,7 +88,7 @@ class NpmPackumentIndexTest {
     @Test
     void shouldMissUnknownTarballAndUnparseableUrl() {
         NpmPackumentIndex index = newIndex(1000);
-        index.indexPackument(utf8(JSR_PACKUMENT), null);
+        index.indexPackument(utf8(JSR_PACKUMENT), null, "");
 
         assertThat(index.lookup("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.6.tgz")).isEmpty();
         assertThat(index.lookup("not a url at all")).isEmpty();
@@ -104,7 +103,7 @@ class NpmPackumentIndexTest {
         }
         NpmPackumentIndex index = newIndex(1000);
 
-        assertThat(index.indexPackument(gz.toByteArray(), "gzip")).isEqualTo(2);
+        assertThat(index.indexPackument(gz.toByteArray(), "gzip", "")).isEqualTo(2);
         assertThat(index.lookup("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz")).isPresent();
     }
 
@@ -112,11 +111,11 @@ class NpmPackumentIndexTest {
     void shouldIgnoreNonPackumentBodies() {
         NpmPackumentIndex index = newIndex(1000);
 
-        assertThat(index.indexPackument(utf8("{\"objects\":[],\"total\":0}"), null)).isZero();   // search
-        assertThat(index.indexPackument(utf8("{\"latest\":\"1.0.0\"}"), null)).isZero();          // dist-tags
-        assertThat(index.indexPackument(utf8("<html>not json</html>"), null)).isZero();
-        assertThat(index.indexPackument(utf8("{\"versions\":"), null)).isZero();                  // truncated
-        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), "br")).isZero();                     // unsupported
+        assertThat(index.indexPackument(utf8("{\"objects\":[],\"total\":0}"), null, "")).isZero();   // search
+        assertThat(index.indexPackument(utf8("{\"latest\":\"1.0.0\"}"), null, "")).isZero();          // dist-tags
+        assertThat(index.indexPackument(utf8("<html>not json</html>"), null, "")).isZero();
+        assertThat(index.indexPackument(utf8("{\"versions\":"), null, "")).isZero();                  // truncated
+        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), "br", "")).isZero();                     // unsupported
         assertThat(index.size()).isZero();
     }
 
@@ -127,7 +126,7 @@ class NpmPackumentIndexTest {
                 {"name": "lodash", "versions": {"4.17.21": {"dist": {"tarball": "https://mirror.internal/x/y/z.tgz"}}}}
                 """;
 
-        assertThat(index.indexPackument(utf8(body), null)).isEqualTo(1);
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
         ParsedPackage hit = index.lookup("https://mirror.internal/x/y/z.tgz").orElseThrow();
         assertThat(hit.packageName()).isEqualTo("lodash");
         assertThat(hit.version()).isEqualTo("4.17.21");
@@ -136,7 +135,7 @@ class NpmPackumentIndexTest {
     @Test
     void shouldEvictExpiredEntriesAndEnforceSizeCap() {
         NpmPackumentIndex index = newIndex(1);
-        index.indexPackument(utf8(JSR_PACKUMENT), null);
+        index.indexPackument(utf8(JSR_PACKUMENT), null, "");
         assertThat(index.size()).isEqualTo(1);
 
         assertThat(index.evictStaleEntries(Duration.ofMinutes(60))).isZero();
@@ -147,11 +146,11 @@ class NpmPackumentIndexTest {
     @Test
     void shouldBeInertWhenDisabled() {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024),
-                mock(NpmTarballIndexDao.class), mock(RegistryClient.class));
+                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW),
+                mock(NpmTarballIndexDao.class));
 
         assertThat(index.isEnabled()).isFalse();
-        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null)).isZero();
+        assertThat(index.indexPackument(utf8(JSR_PACKUMENT), null, "")).isZero();
         assertThat(index.lookup("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz")).isEmpty();
     }
 
@@ -160,7 +159,7 @@ class NpmPackumentIndexTest {
     @Test
     void shouldExposePublishDateAndDeprecationFromPackument() {
         NpmPackumentIndex index = newIndex(1000);
-        index.indexPackument(utf8(JSR_PACKUMENT), null);
+        index.indexPackument(utf8(JSR_PACKUMENT), null, "");
 
         Optional<PackageMetadataResult> meta = index.metadata("@jsr/zerun__group-deps", "0.1.5");
         assertThat(meta).isPresent();
@@ -178,7 +177,7 @@ class NpmPackumentIndexTest {
                 {"name": "lodash", "versions": {"4.17.21": {"dist": {"tarball": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}}}}
                 """;
 
-        assertThat(index.indexPackument(utf8(body), null)).isEqualTo(1);
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
         assertThat(index.lookup("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")).isPresent();
         assertThat(index.metadata("lodash", "4.17.21")).isEmpty();
     }
@@ -193,7 +192,7 @@ class NpmPackumentIndexTest {
                    "2.0.0": {"deprecated": true, "dist": {"tarball": "https://r/p/2.tgz"}},
                    "3.0.0": {"deprecated": "", "dist": {"tarball": "https://r/p/3.tgz"}}}}
                 """;
-        index.indexPackument(utf8(body), null);
+        index.indexPackument(utf8(body), null, "");
 
         PackageMetadataResult v1 = index.metadata("p", "1.0.0").orElseThrow();
         assertThat(v1.isDeprecated()).isTrue();
@@ -212,7 +211,7 @@ class NpmPackumentIndexTest {
                  "versions": {"1.0.0": {"dist": {"tarball": "https://r/p/1.tgz"}}}}
                 """;
 
-        assertThat(index.indexPackument(utf8(body), null)).isEqualTo(1);
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
         assertThat(index.lookup("https://r/p/1.tgz")).isPresent();
         assertThat(index.metadata("p", "1.0.0")).isEmpty();
     }
@@ -227,14 +226,14 @@ class NpmPackumentIndexTest {
         assertThat(index.originPackumentUrl("@jsr/zerun__group-deps", "9.9.9")).isEmpty();
 
         NpmPackumentIndex withoutOrigin = newIndex(1000);
-        withoutOrigin.indexPackument(utf8(JSR_PACKUMENT), null);
+        withoutOrigin.indexPackument(utf8(JSR_PACKUMENT), null, "");
         assertThat(withoutOrigin.originPackumentUrl("@jsr/zerun__group-deps", "0.1.5")).isEmpty();
     }
 
     @Test
     void shouldEvictMetadataTogetherWithTarballs() {
         NpmPackumentIndex capped = newIndex(1);
-        capped.indexPackument(utf8(JSR_PACKUMENT), null);
+        capped.indexPackument(utf8(JSR_PACKUMENT), null, "");
         assertThat(capped.size()).isEqualTo(1);
         // Exactly one of the two versions survived the cap, and its metadata with it.
         long survivors = java.util.stream.Stream.of("0.1.4", "0.1.5")
@@ -242,7 +241,7 @@ class NpmPackumentIndexTest {
         assertThat(survivors).isEqualTo(1);
 
         NpmPackumentIndex expiring = newIndex(1000);
-        expiring.indexPackument(utf8(JSR_PACKUMENT), null);
+        expiring.indexPackument(utf8(JSR_PACKUMENT), null, "");
         expiring.evictStaleEntries(Duration.ZERO.minusSeconds(1));
         assertThat(expiring.metadata("@jsr/zerun__group-deps", "0.1.5")).isEmpty();
         assertThat(expiring.originPackumentUrl("@jsr/zerun__group-deps", "0.1.5")).isEmpty();

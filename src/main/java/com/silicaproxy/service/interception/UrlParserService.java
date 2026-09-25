@@ -33,16 +33,9 @@ import java.util.regex.Pattern;
 
 /**
  * Extracts package/version/ecosystem from the absolute URL intercepted by the proxy (npm,
- * PyPI, Maven paths). Called by {@code ProxyController} first on each request, before
- * any security decision ; returns "unknown" if the URL does not match any known pattern, which
- * then bypasses the security check (resource not identifiable as a package).
- *
- * <p>Three detection layers : (1) known host → direct parser ; (2) structural fallback by
- * path pattern for private registries (Verdaccio, devpi, artifact repositories, repo.spring.io…) ;
- * (3) {@link #detectNpmMetadata}, an npm-only ecosystem hint from the client headers (Accept /
- * User-Agent / npm-* headers) or from an unambiguous npm registry path shape. Layer 3 never
- * yields a version : it only tags metadata traffic (packuments, dist-tags, search) with the
- * right ecosystem so bypass logs and metrics stop reporting it as "unknown".
+ * PyPI, Maven paths) ; returns "unknown" parts when the URL does not match any known pattern.
+ * Stateless parsing only : the detection layers are chained, and the request classified, by
+ * {@link PackageIdentificationService}.
  */
 @Service
 @NullMarked
@@ -125,8 +118,6 @@ public class UrlParserService {
             new EcosystemRouter(List.of("maven.org", "maven.apache.org"), UrlParserService::parseMavenUrl)
     );
 
-    public record ParsedPackage(String packageName, String version, String ecosystem) {}
-
     @Timed(value = "silicaproxy.service.urlparser.parseurl",
             description = "Duration of extracting package metadata from the URL",
             percentiles = {0.5, 0.9, 0.95, 0.99})
@@ -137,7 +128,7 @@ public class UrlParserService {
             String path = uri.getPath();
 
             if (host == null || path == null) {
-                return new ParsedPackage("unknown", "unknown", "unknown");
+                return ParsedPackage.unknown(ParsedPackage.UNKNOWN);
             }
 
             for (EcosystemRouter router : ROUTERS) {
@@ -150,11 +141,11 @@ public class UrlParserService {
             // fallback
         }
 
-        return new ParsedPackage("unknown", "unknown", "unknown");
+        return ParsedPackage.unknown(ParsedPackage.UNKNOWN);
     }
 
     /**
-     * Layer 3, called by the controller only when {@link #parseUrl(String)} could not name an
+     * Layer 3, called by {@link PackageIdentificationService} only when {@link #parseUrl(String)} could not name an
      * ecosystem : recognises npm metadata traffic on hosts the proxy does not know (private
      * registries, npm.jsr.io…) from the client headers or from an unambiguous registry path
      * shape. The version is always "unknown" (nothing to vet), so the request is still bypassed ;
@@ -171,13 +162,13 @@ public class UrlParserService {
             }
             Matcher scoped = NPM_SCOPED_PACKUMENT_PATTERN.matcher(path);
             if (scoped.matches()) {
-                return Optional.of(new ParsedPackage(scoped.group(1), "unknown", "npm"));
+                return Optional.of(new ParsedPackage(scoped.group(1), ParsedPackage.UNKNOWN, "npm"));
             }
             Matcher unscoped = NPM_UNSCOPED_PACKUMENT_PATTERN.matcher(path);
             if (unscoped.matches()) {
-                return Optional.of(new ParsedPackage(unscoped.group(1), "unknown", "npm"));
+                return Optional.of(new ParsedPackage(unscoped.group(1), ParsedPackage.UNKNOWN, "npm"));
             }
-            return Optional.of(new ParsedPackage("unknown", "unknown", "npm"));
+            return Optional.of(ParsedPackage.unknown("npm"));
         } catch (IllegalArgumentException ignored) {
             return Optional.empty();
         }
@@ -237,6 +228,19 @@ public class UrlParserService {
         return Optional.of(new ParsedPackage(fullName, versionAndRest, "npm"));
     }
 
+    /**
+     * Whether {@code url}'s path has the {@code .tgz} extension every npm tarball layout but GitHub
+     * Packages uses ; false for an unparseable URL.
+     */
+    public static boolean hasNpmTarballExtension(String url) {
+        try {
+            String path = URI.create(url).getPath();
+            return path != null && path.endsWith(NPM_TARBALL_EXTENSION);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     private static boolean isVersionStart(char c) {
         return c == '.' || c >= '0' && c <= '9';
     }
@@ -246,20 +250,15 @@ public class UrlParserService {
         if (npmTarball.isPresent()) {
             return npmTarball.get();
         }
-        Matcher m = PYPI_WHL_PATTERN.matcher(path);
-        if (m.matches()) {
-            return new ParsedPackage(m.group(1), m.group(2), "pypi");
+        Optional<ParsedPackage> pypi = parsePypiPath(path);
+        if (pypi.isPresent()) {
+            return pypi.get();
         }
-        m = PYPI_TAR_PATTERN.matcher(path);
+        Matcher m = MAVEN_STRUCTURAL_PATTERN.matcher(path);
         if (m.matches()) {
-            return new ParsedPackage(m.group(1), m.group(2), "pypi");
+            return mavenPackage(m);
         }
-        m = MAVEN_STRUCTURAL_PATTERN.matcher(path);
-        if (m.matches()) {
-            String groupId = m.group(1).replace('/', '.');
-            return new ParsedPackage(groupId + ":" + m.group(2), m.group(3), "maven");
-        }
-        return new ParsedPackage("unknown", "unknown", "unknown");
+        return ParsedPackage.unknown(ParsedPackage.UNKNOWN);
     }
 
     private static boolean isNpmClient(HttpHeaders headers) {
@@ -302,27 +301,32 @@ public class UrlParserService {
     }
 
     private static ParsedPackage parseNpmUrl(String path) {
-        return parseNpmTarball(path).orElseGet(() -> new ParsedPackage("unknown", "unknown", "npm"));
+        return parseNpmTarball(path).orElseGet(() -> ParsedPackage.unknown("npm"));
     }
 
     private static ParsedPackage parsePypiUrl(String path) {
-        Matcher m = PYPI_WHL_PATTERN.matcher(path);
-        if (m.matches()) {
-            return new ParsedPackage(m.group(1), m.group(2), "pypi");
+        return parsePypiPath(path).orElseGet(() -> ParsedPackage.unknown("pypi"));
+    }
+
+    // Wheel first, then sdist : both are filename-anchored, whatever the host.
+    private static Optional<ParsedPackage> parsePypiPath(String path) {
+        for (Pattern pattern : List.of(PYPI_WHL_PATTERN, PYPI_TAR_PATTERN)) {
+            Matcher m = pattern.matcher(path);
+            if (m.matches()) {
+                return Optional.of(new ParsedPackage(m.group(1), m.group(2), "pypi"));
+            }
         }
-        m = PYPI_TAR_PATTERN.matcher(path);
-        if (m.matches()) {
-            return new ParsedPackage(m.group(1), m.group(2), "pypi");
-        }
-        return new ParsedPackage("unknown", "unknown", "pypi");
+        return Optional.empty();
     }
 
     private static ParsedPackage parseMavenUrl(String path) {
         Matcher m = MAVEN_PATTERN.matcher(path);
-        if (m.matches()) {
-            String groupId = m.group(1).replace('/', '.');
-            return new ParsedPackage(groupId + ":" + m.group(2), m.group(3), "maven");
-        }
-        return new ParsedPackage("unknown", "unknown", "maven");
+        return m.matches() ? mavenPackage(m) : ParsedPackage.unknown("maven");
+    }
+
+    // Groups : (1) groupId path, (2) artifactId, (3) version.
+    private static ParsedPackage mavenPackage(Matcher m) {
+        String groupId = m.group(1).replace('/', '.');
+        return new ParsedPackage(groupId + ":" + m.group(2), m.group(3), "maven");
     }
 }
