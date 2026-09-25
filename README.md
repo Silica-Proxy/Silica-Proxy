@@ -32,11 +32,11 @@ Artifact Repository
 └────────┬────────────┘
          │ plain HTTP
          ▼
-┌─────────────────────┐
-│   ProxyController   │  Spring Boot / Tomcat (port 8089, internal)
-│   UrlParserService  │  extracts package name, version, ecosystem
-│   SecurityService   │  orchestrates the decision pipeline
-└────────┬────────────┘
+┌─────────────────────────────────┐
+│   ProxyController               │  Spring Boot / Tomcat (port 8089, internal)
+│   PackageIdentificationService  │  package name, version, ecosystem (URL → npm headers → packument index)
+│   SecurityService               │  orchestrates the decision pipeline
+└────────┬────────────────────────┘
          │
     ┌────┴──────────────────────────────┐
     │         Decision pipeline         │

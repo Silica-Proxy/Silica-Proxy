@@ -18,22 +18,23 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
-import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
-import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StreamUtils;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -99,35 +100,18 @@ public class NpmPackumentIndex {
         this.tarballIndexDao = tarballIndexDao;
     }
 
-    /**
-     * Kept for callers predating the removal of the index-time packument re-fetch : the index no
-     * longer makes any network call, so {@code registryClient} is not used.
-     */
-    public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
-            NpmTarballIndexDao tarballIndexDao, RegistryClient registryClient) {
-        this(objectMapper, properties, tarballIndexDao);
-    }
-
     public boolean isEnabled() {
         return properties.enabled();
     }
 
-    public long maxBodyBytes() {
-        return properties.maxBodyBytes();
-    }
-
     /**
      * Parses a packument body (optionally gzip/deflate encoded, as relayed from upstream) and
-     * remembers every {@code dist.tarball} URL it declares. Never throws : a body that is not a
-     * packument (search results, dist-tags, an error page) is simply ignored.
+     * remembers every {@code dist.tarball} URL it declares, with the URL the packument came from
+     * ({@code ""} when unknown). Never throws : a body that is not a packument (search results,
+     * dist-tags, an error page) is simply ignored.
      *
      * @return the number of tarball URLs indexed from this body
      */
-    public int indexPackument(byte[] body, @Nullable String contentEncoding) {
-        return indexPackument(body, contentEncoding, "");
-    }
-
-    /** Same as {@link #indexPackument(byte[], String)}, remembering the URL the packument came from. */
     public int indexPackument(byte[] body, @Nullable String contentEncoding, String packumentUrl) {
         if (!properties.enabled()) {
             return 0;
@@ -189,6 +173,37 @@ public class NpmPackumentIndex {
             // Not a packument, truncated body, unsupported encoding… : nothing to learn.
             LOG.debug("Packument body not indexable : {}", e.toString());
             return 0;
+        }
+    }
+
+    /**
+     * Relays a packument response body to the client, indexing it first.
+     *
+     * <p>The whole body is buffered (up to {@code max-body-bytes}) and indexed BEFORE the first
+     * byte reaches the client : npm requests the tarballs as soon as it has parsed the packument,
+     * so indexing after the copy would race with those requests. A body that exceeds the cap is
+     * relayed untouched (buffered prefix first, then streamed) and not indexed.
+     */
+    public void relayAndIndex(InputStream body, @Nullable String contentEncoding, String packumentUrl,
+            OutputStream out) throws IOException {
+        long cap = properties.maxBodyBytes();
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[16 * 1024];
+        int read;
+        while (buffer.size() <= cap && (read = body.read(chunk)) != -1) {
+            buffer.write(chunk, 0, read);
+        }
+        byte[] bytes = buffer.toByteArray();
+        if (bytes.length <= cap) {
+            int indexed = indexPackument(bytes, contentEncoding, packumentUrl);
+            if (indexed > 0 && LOG.isDebugEnabled()) {
+                LOG.debug("Indexed {} tarball URL(s) from npm packument ({} bytes)", indexed, bytes.length);
+            }
+            out.write(bytes);
+        } else {
+            LOG.debug("npm packument larger than {} bytes : relayed without indexing", cap);
+            out.write(bytes);
+            StreamUtils.copy(body, out);
         }
     }
 
@@ -271,10 +286,6 @@ public class NpmPackumentIndex {
                 }
             });
         }
-    }
-
-    public boolean blocksUnidentifiedTarballs() {
-        return properties.unidentifiedTarballAction() == NpmPackumentIndexProperties.UnidentifiedTarballAction.BLOCK;
     }
 
     private static boolean isIdentifiableWithoutIndex(String tarballUrl) {

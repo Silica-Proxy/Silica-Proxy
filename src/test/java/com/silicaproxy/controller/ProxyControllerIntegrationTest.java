@@ -19,11 +19,10 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
-import com.silicaproxy.dao.client.RegistryClient;
-import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
-import com.silicaproxy.service.interception.UrlParserService;
+import com.silicaproxy.service.interception.NpmPackumentIndex;
+import com.silicaproxy.service.interception.PackageIdentificationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -79,7 +78,10 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
     private AuditLogService auditLogService;
 
     @Mock
-    private UrlParserService urlParserService;
+    private PackageIdentificationService packageIdentification;
+
+    @Mock
+    private NpmPackumentIndex npmPackumentIndex;
 
     @Autowired
     private MeterRegistry meterRegistry;
@@ -680,9 +682,8 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         when(mockRequest.getRequestURI()).thenReturn("/ftp://example.com/package.tar.gz");
         
         // Create the controller
-        NpmTarballIndexDao npmTarballIndexDao = org.mockito.Mockito.mock(NpmTarballIndexDao.class);
-        RegistryClient registryClient = org.mockito.Mockito.mock(RegistryClient.class);
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, objectMapper, npmTarballIndexDao, registryClient);
+        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
+                packageIdentification, npmPackumentIndex, meterRegistry, objectMapper);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

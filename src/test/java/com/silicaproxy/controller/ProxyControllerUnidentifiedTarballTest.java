@@ -24,6 +24,8 @@ import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarbal
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
+import com.silicaproxy.service.interception.PackageIdentificationService;
+import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.UrlParserService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -63,13 +65,14 @@ class ProxyControllerUnidentifiedTarballTest {
     private final UrlParserService urlParserService = mock(UrlParserService.class);
 
     private MockMvc mockMvc(UnidentifiedTarballAction action) throws Exception {
-        NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action), mock(NpmTarballIndexDao.class));
+        NpmPackumentIndexProperties properties = new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action);
+        NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), properties, mock(NpmTarballIndexDao.class));
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                urlParserService, new SimpleMeterRegistry(), new JsonMapper(), index);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+                new PackageIdentificationService(urlParserService, index, properties), index,
+                new SimpleMeterRegistry(), new JsonMapper());
+        when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "unknown"));
         when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
-                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("unknown", "unknown", "npm")));
+                .thenReturn(Optional.of(new ParsedPackage("unknown", "unknown", "npm")));
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(),
                         new ByteArrayInputStream("tarball".getBytes())));
