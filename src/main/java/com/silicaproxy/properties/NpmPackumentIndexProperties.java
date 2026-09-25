@@ -20,6 +20,7 @@ package com.silicaproxy.properties;
 import jakarta.validation.constraints.Min;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 
@@ -41,5 +42,19 @@ public record NpmPackumentIndexProperties(
     @DefaultValue("60") @Min(1) int ttlMinutes,
     // Packument bodies bigger than this are relayed untouched and not indexed : a full
     // (non-abbreviated) packument of a huge package can weigh tens of megabytes.
-    @DefaultValue("33554432") @Min(1024) long maxBodyBytes
-) {}
+    @DefaultValue("33554432") @Min(1024) long maxBodyBytes,
+    // npm tarball request whose package/version could be identified neither from its URL nor
+    // from a relayed packument : ALLOW relays it unchecked (bypass), BLOCK answers 403.
+    @DefaultValue("ALLOW") UnidentifiedTarballAction unidentifiedTarballAction
+) {
+    @ConstructorBinding
+    public NpmPackumentIndexProperties {
+        // canonical constructor, the one bound by Spring
+    }
+
+    public NpmPackumentIndexProperties(boolean enabled, int maxEntries, int ttlMinutes, long maxBodyBytes) {
+        this(enabled, maxEntries, ttlMinutes, maxBodyBytes, UnidentifiedTarballAction.ALLOW);
+    }
+
+    public enum UnidentifiedTarballAction { ALLOW, BLOCK }
+}

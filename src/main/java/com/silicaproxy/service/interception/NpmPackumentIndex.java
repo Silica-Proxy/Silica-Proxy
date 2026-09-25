@@ -36,7 +36,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
@@ -172,8 +171,11 @@ public class NpmPackumentIndex {
                     index.put(key, indexedTarball);
                     byPackage.put(packageKey(name, version), indexedTarball);
                     
-                    // Persist to DB only if we have metadata worth caching across instances.
-                    if (publishedAt != null) {
+                    // Persist to DB when there is a date worth sharing, or when the tarball URL
+                    // can only be identified through this index : otherwise a tarball request
+                    // landing on another instance would bypass the security check. Standard
+                    // layouts without a date are skipped (hundreds of versions per packument).
+                    if (publishedAt != null || !isIdentifiableWithoutIndex(tarball)) {
                         Instant expiresAt = now.plus(Duration.ofMinutes(properties.ttlMinutes()));
                         tarballIndexDao.save(key, name, version, publishedAt, deprecated, deprecationReason,
                                 packumentUrl, expiresAt);
@@ -268,6 +270,19 @@ public class NpmPackumentIndex {
                     byPackage.remove(packageKey(removed.packageName(), removed.version()), removed);
                 }
             });
+        }
+    }
+
+    public boolean blocksUnidentifiedTarballs() {
+        return properties.unidentifiedTarballAction() == NpmPackumentIndexProperties.UnidentifiedTarballAction.BLOCK;
+    }
+
+    private static boolean isIdentifiableWithoutIndex(String tarballUrl) {
+        try {
+            String path = URI.create(tarballUrl.trim()).getPath();
+            return path != null && UrlParserService.parseNpmTarball(path).isPresent();
+        } catch (IllegalArgumentException e) {
+            return false;
         }
     }
 

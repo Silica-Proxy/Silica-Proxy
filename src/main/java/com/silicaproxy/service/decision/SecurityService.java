@@ -97,9 +97,10 @@ public class SecurityService {
         }
 
         // 3. New Package / Missing from local database
-        Optional<PackageMetadataResult> metadataOpt = resolvePackageMetadata(packageName, version, ecosystem, fullUrl);
+        RegistryLookup resolution = resolvePackageMetadata(packageName, version, ecosystem, fullUrl);
+        Optional<PackageMetadataResult> metadataOpt = resolution.metadata();
         if (metadataOpt.isEmpty()) {
-            return registryUnavailableVerdict(packageName, version, ecosystem);
+            return unresolvedPublishDateVerdict(packageName, version, ecosystem, resolution.status());
         }
         PackageMetadataResult metadata = metadataOpt.get();
 
@@ -116,7 +117,7 @@ public class SecurityService {
             return extResult.get();
         }
 
-        return runFallbackChain(packageName, version, ecosystem);
+        return runFallbackChain(packageName, version, ecosystem, true);
     }
 
     // Deprecation/yanked status is never persisted (unlike published_at): it must stay fresh, so
@@ -124,32 +125,35 @@ public class SecurityService {
     // already cached. Reaching this code already means the SQL evaluation above found no cached
     // verdict in api_cache, so in practice this only happens once per api_cache TTL window (24h
     // for an ALLOW, effectively never again once a BLOCK is cached) -- not on every request for
-    // the package. Returns empty only when the registry is unreachable AND no local publish date
-    // is cached, in which case the caller applies fail-open/fail-closed.
-    private Optional<PackageMetadataResult> resolvePackageMetadata(
+    // the package. Carries no metadata only when no source could date the version AND no local
+    // publish date is cached ; its status then tells "unknown version" (NOT_FOUND) from "registry
+    // could not answer" (UNAVAILABLE) for the caller's fail-open/fail-closed decision.
+    private RegistryLookup resolvePackageMetadata(
             String packageName, String version, String ecosystem, String fullUrl) {
-        Optional<PackageMetadataResult> registryMetaOpt;
+        RegistryLookup lookup;
         String dateSource = Metrics.DATE_SOURCE_PUBLIC_REGISTRY;
         if ("npm".equals(ecosystem)) {
-            RegistryLookup publicLookup = registryClient.lookupNpmPublic(packageName, version);
-            registryMetaOpt = publicLookup.metadata();
+            lookup = registryClient.lookupNpmPublic(packageName, version);
             // The public registry always wins when it knows the version ; the less trusted
             // relayed packument / origin registry is only consulted when it does NOT (JSR,
             // private scope) -- never when it merely failed to answer, otherwise a registry
             // outage would hand the quarantine date over to whatever packument was relayed.
-            if (publicLookup.status() == RegistryLookup.Status.NOT_FOUND) {
-                registryMetaOpt = resolveNpmMetadataFromOrigin(packageName, version);
+            if (lookup.status() == RegistryLookup.Status.NOT_FOUND) {
+                lookup = resolveNpmMetadataFromOrigin(packageName, version)
+                        .map(RegistryLookup::found)
+                        .orElseGet(RegistryLookup::notFound);
                 dateSource = Metrics.DATE_SOURCE_ORIGIN_REGISTRY;
             }
         } else {
-            registryMetaOpt = registryClient.fetchMetadata(packageName, version, ecosystem, fullUrl);
+            lookup = registryClient.lookup(packageName, version, ecosystem, fullUrl);
         }
+        Optional<PackageMetadataResult> registryMetaOpt = lookup.metadata();
         if (registryMetaOpt.isPresent()) {
             PackageMetadataResult registryMeta = registryMetaOpt.get();
             // Permanent registration in package_metadata (idempotent: no-op if already cached)
             caches.metadataCacheDao().savePackagePublishedAt(packageName, ecosystem, version, registryMeta.publishedAt());
             metrics.recordPublishDateLookup(ecosystem, dateSource);
-            return registryMetaOpt;
+            return lookup;
         }
 
         // Registry temporarily unreachable but this package/version's publish date is already
@@ -161,7 +165,7 @@ public class SecurityService {
                         .map(publishedAt -> new PackageMetadataResult(publishedAt, false, null));
         metrics.recordPublishDateLookup(ecosystem,
                 cachedMetaOpt.isPresent() ? Metrics.DATE_SOURCE_LOCAL_CACHE : Metrics.DATE_SOURCE_UNRESOLVED);
-        return cachedMetaOpt;
+        return cachedMetaOpt.map(RegistryLookup::found).orElse(lookup);
     }
 
     // The packument the client just resolved from is authoritative for that registry, and for a
@@ -182,15 +186,33 @@ public class SecurityService {
                 .flatMap(origin -> registryClient.fetchNpmMetadataFrom(origin, version));
     }
 
-    private DecisionResult registryUnavailableVerdict(String packageName, String version, String ecosystem) {
+    // Never cached : the version may appear on the registry (or the registry recover) any time.
+    private DecisionResult unresolvedPublishDateVerdict(
+            String packageName, String version, String ecosystem, RegistryLookup.Status status) {
+        if (status == RegistryLookup.Status.NOT_FOUND
+                && properties.quarantine().unknownVersionAction() == SilicaProxyProperties.UnknownVersionAction.BLOCK) {
+            LOG.warn("{}/{} ({}) is unknown to every registry consulted : blocked (unknown-version-action=BLOCK)",
+                    ecosystem, packageName, version);
+            metrics.recordPublishDateUnresolved(ecosystem, "BLOCK");
+            return new DecisionResult("REGISTRY_NOT_FOUND", "BLOCK",
+                    "Package version is unknown to the registry, its publication date cannot be verified.");
+        }
         boolean failOpen = properties.quarantine().failOpen();
         LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
                 ecosystem, packageName, version, failOpen);
         metrics.recordPublishDateUnresolved(ecosystem, failOpen ? "ALLOW" : "BLOCK");
-        if (failOpen) {
-            return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
+        if (!failOpen) {
+            return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
         }
-        return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
+        if (properties.quarantine().checkVulnerabilitiesOnRegistryError()) {
+            // cacheAllow=false : an ALLOW cached here would short-circuit the quarantine check
+            // for the whole TTL once the registry recovers.
+            DecisionResult vulnVerdict = runFallbackChain(packageName, version, ecosystem, false);
+            if ("BLOCK".equals(vulnVerdict.result())) {
+                return vulnVerdict;
+            }
+        }
+        return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
     }
 
     private Optional<DecisionResult> checkDeprecationAndQuarantine(
@@ -239,7 +261,8 @@ public class SecurityService {
     // verdict is deliberately NEVER written to api_cache : caching it would keep allowing (or
     // blocking) for the whole TTL after the API recovers, turning a transient outage into a
     // 24h security hole.
-    private DecisionResult runFallbackChain(String packageName, String version, String ecosystem) {
+    // cacheAllow=false never writes an ALLOW verdict to api_cache (a BLOCK is still cached).
+    private DecisionResult runFallbackChain(String packageName, String version, String ecosystem, boolean cacheAllow) {
         boolean anyAttempted = false;
         boolean anyFailClosed = false;
 
@@ -252,7 +275,7 @@ public class SecurityService {
             logApiCall(source.apiSource(), packageName, ecosystem, version, result);
             if (!result.isError()) {
                 return resolveFallbackVerdict(packageName, version, ecosystem, source.apiSource(),
-                        source.providerLabel(), result.vulnerable());
+                        source.providerLabel(), result.vulnerable(), cacheAllow);
             }
             anyAttempted = true;
             anyFailClosed |= !sourceProps.failOpen();
@@ -272,7 +295,7 @@ public class SecurityService {
         }
 
         // If no fallback enabled, authorize by default
-        if (properties.apiCache().cacheAllowVerdict()) {
+        if (cacheAllow && properties.apiCache().cacheAllowVerdict()) {
             Instant expiresAt = Instant.now().plus(properties.apiCache().allowVerdictTtlMinutes(), ChronoUnit.MINUTES);
             caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true, "DEFAULT", expiresAt);
         }
@@ -289,7 +312,8 @@ public class SecurityService {
     }
 
     private DecisionResult resolveFallbackVerdict(
-            String packageName, String version, String ecosystem, String apiSource, String providerLabel, boolean isVulnerable) {
+            String packageName, String version, String ecosystem, String apiSource, String providerLabel,
+            boolean isVulnerable, boolean cacheAllow) {
         boolean isSecure = !isVulnerable;
 
         // Configurable different TTL for BLOCK and ALLOW (0 = do not cache)
@@ -298,7 +322,7 @@ public class SecurityService {
             : properties.apiCache().blockVerdictTtlMinutes();
 
         // Cache the verdict if TTL > 0 (BLOCK always, ALLOW only if configured and TTL > 0)
-        if (ttlMinutes > 0 && (!isSecure || properties.apiCache().cacheAllowVerdict())) {
+        if (ttlMinutes > 0 && (!isSecure || cacheAllow && properties.apiCache().cacheAllowVerdict())) {
             Instant expiresAt = Instant.now().plus(ttlMinutes, ChronoUnit.MINUTES);
             caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt);
         }

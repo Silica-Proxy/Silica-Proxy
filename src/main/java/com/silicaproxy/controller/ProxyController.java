@@ -68,6 +68,8 @@ import java.util.Enumeration;
 public class ProxyController {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProxyController.class);
+    private static final DecisionResult UNIDENTIFIED_TARBALL_VERDICT = new DecisionResult("UNIDENTIFIED_ARTIFACT", "BLOCK",
+            "npm tarball could not be identified from its URL or from a relayed packument (unidentified-tarball-action=BLOCK).");
 
     private final SecurityService securityService;
     private final AuditLogService auditLogService;
@@ -190,7 +192,7 @@ public class ProxyController {
         String version = parsed.version();
         String ecosystem = parsed.ecosystem();
 
-        if (ecosystem.equals("unknown") || packageName.equals("unknown") || version.equals("unknown")) {
+        if (isBypassed(parsed, forwardUrl)) {
             recordBypassMetric(ecosystem);
             if (ecosystem.equals("unknown")) {
                 LOG.warn("Unknown ecosystem. Bypassing security control for : {}", forwardUrl);
@@ -209,7 +211,7 @@ public class ProxyController {
             LOG.debug("Package detected : ecosystem={}, package={}, version={}", ecosystem, packageName, version);
         }
 
-        DecisionResult decision = securityService.getDecision(packageName, version, ecosystem, fullUrl);
+        DecisionResult decision = decide(parsed, fullUrl, forwardUrl);
         long executionTimeMs = System.currentTimeMillis() - startTime;
         boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
         (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));
@@ -276,6 +278,33 @@ public class ProxyController {
         } catch (Exception e) {
             LOG.error("Proxy error to upstream registry when forwarding request {}", fullUrl, e);
             response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
+        }
+    }
+
+    private boolean isBypassed(UrlParserService.ParsedPackage parsed, String forwardUrl) {
+        boolean unidentified = "unknown".equals(parsed.ecosystem()) || "unknown".equals(parsed.packageName())
+                || "unknown".equals(parsed.version());
+        return unidentified && !isBlockedUnidentifiedNpmTarball(parsed, forwardUrl);
+    }
+
+    private boolean isBlockedUnidentifiedNpmTarball(UrlParserService.ParsedPackage parsed, String forwardUrl) {
+        return "npm".equals(parsed.ecosystem()) && "unknown".equals(parsed.version())
+                && npmPackumentIndex.blocksUnidentifiedTarballs() && isTarballPath(forwardUrl);
+    }
+
+    private DecisionResult decide(UrlParserService.ParsedPackage parsed, String fullUrl, String forwardUrl) {
+        if (isBlockedUnidentifiedNpmTarball(parsed, forwardUrl)) {
+            return UNIDENTIFIED_TARBALL_VERDICT;
+        }
+        return securityService.getDecision(parsed.packageName(), parsed.version(), parsed.ecosystem(), fullUrl);
+    }
+
+    private static boolean isTarballPath(String url) {
+        try {
+            String path = URI.create(url).getPath();
+            return path != null && path.endsWith(".tgz");
+        } catch (IllegalArgumentException e) {
+            return false;
         }
     }
 

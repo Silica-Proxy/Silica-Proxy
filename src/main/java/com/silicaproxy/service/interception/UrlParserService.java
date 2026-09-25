@@ -48,8 +48,17 @@ import java.util.regex.Pattern;
 @NullMarked
 public class UrlParserService {
 
-    private static final Pattern NPM_UNSCOPED_TARBALL_PATTERN = Pattern.compile("^/([^/]+)/-/\\1-([\\d\\.]+.*)\\.tgz$");
-    private static final Pattern NPM_SCOPED_TARBALL_PATTERN = Pattern.compile("^/(@[^/]+)/([^/]+)/-/\\2-([\\d\\.]+.*)\\.tgz$");
+    // npmjs layout "/{name}/-/{name}-{version}.tgz" (optionally scoped) is parsed by string
+    // splitting in parseNpmjsLayoutTarball rather than by a regex : accepting any repository
+    // prefix in front of it with a regex needs overlapping quantifiers, a ReDoS risk on
+    // client-supplied URLs.
+    private static final String NPM_TARBALL_SEPARATOR = "/-/";
+    private static final String NPM_TARBALL_EXTENSION = ".tgz";
+    // npm.jsr.io : "/~/{rev}/@jsr/{scope}__{name}/{version}.tgz".
+    private static final Pattern NPM_JSR_TARBALL_PATTERN = Pattern.compile("^/~/\\d+/(@jsr/[^/]+)/(\\d[^/]*)\\.tgz$");
+    // npm.pkg.github.com : "/download/@{owner}/{name}/{version}/{sha}".
+    private static final Pattern NPM_GITHUB_TARBALL_PATTERN =
+            Pattern.compile("^/download/(@[^/]+/[^/]+)/(\\d[^/]*)/[0-9a-f]+$");
 
     // Version group is [^-/]* (not .*): compiled-wheel filenames repeat the ABI tag
     // (e.g. "tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl"), and a greedy ".*" backtracks
@@ -174,14 +183,68 @@ public class UrlParserService {
         }
     }
 
-    private static ParsedPackage detectFromPath(String path) {
-        Matcher unscopedNpm = NPM_UNSCOPED_TARBALL_PATTERN.matcher(path);
-        if (unscopedNpm.matches()) {
-            return new ParsedPackage(unscopedNpm.group(1), unscopedNpm.group(2), "npm");
+    /**
+     * Identifies an npm tarball from its (decoded) URL path, whatever the host : npmjs layout,
+     * optionally behind a repository prefix, npm.jsr.io and GitHub Packages layouts.
+     */
+    public static Optional<ParsedPackage> parseNpmTarball(String path) {
+        Optional<ParsedPackage> npmjsLayout = parseNpmjsLayoutTarball(path);
+        if (npmjsLayout.isPresent()) {
+            return npmjsLayout;
         }
-        Matcher scopedNpm = NPM_SCOPED_TARBALL_PATTERN.matcher(path);
-        if (scopedNpm.matches()) {
-            return new ParsedPackage(scopedNpm.group(1) + "/" + scopedNpm.group(2), scopedNpm.group(3), "npm");
+        for (Pattern pattern : List.of(NPM_JSR_TARBALL_PATTERN, NPM_GITHUB_TARBALL_PATTERN)) {
+            Matcher m = pattern.matcher(path);
+            if (m.matches()) {
+                return Optional.of(new ParsedPackage(m.group(1), m.group(2), "npm"));
+            }
+        }
+        return Optional.empty();
+    }
+
+    // "{prefix}/{name}/-/{name}-{version}.tgz" or "{prefix}/@{scope}/{name}/-/{name}-{version}.tgz",
+    // where {prefix} is empty (npmjs) or a repository path (Artifactory
+    // "/artifactory/api/npm/{repo}", Nexus "/repository/{repo}", CodeArtifact "/npm/{repo}").
+    // Artifactory writes the scoped file as "-/@{scope}/{name}-{version}.tgz". The version must
+    // start with a digit or a dot, like the historical regex "[\d\.]+.*".
+    private static Optional<ParsedPackage> parseNpmjsLayoutTarball(String path) {
+        int separator = path.lastIndexOf(NPM_TARBALL_SEPARATOR);
+        if (separator <= 0 || !path.endsWith(NPM_TARBALL_EXTENSION)) {
+            return Optional.empty();
+        }
+        String head = path.substring(0, separator);
+        String file = path.substring(separator + NPM_TARBALL_SEPARATOR.length(), path.length() - NPM_TARBALL_EXTENSION.length());
+        int lastSlash = head.lastIndexOf('/');
+        String name = head.substring(lastSlash + 1);
+        if (name.isEmpty() || name.charAt(0) == '@') {
+            return Optional.empty();
+        }
+        int scopeSlash = lastSlash > 0 ? head.lastIndexOf('/', lastSlash - 1) : -1;
+        String parentSegment = lastSlash > 0 ? head.substring(scopeSlash + 1, lastSlash) : "";
+        boolean scoped = parentSegment.length() > 1 && parentSegment.charAt(0) == '@';
+        String fullName = scoped ? parentSegment + "/" + name : name;
+
+        String versionAndRest;
+        if (file.startsWith(name + "-")) {
+            versionAndRest = file.substring(name.length() + 1);
+        } else if (scoped && file.startsWith(fullName + "-")) {
+            versionAndRest = file.substring(fullName.length() + 1);
+        } else {
+            return Optional.empty();
+        }
+        if (versionAndRest.isEmpty() || !isVersionStart(versionAndRest.charAt(0))) {
+            return Optional.empty();
+        }
+        return Optional.of(new ParsedPackage(fullName, versionAndRest, "npm"));
+    }
+
+    private static boolean isVersionStart(char c) {
+        return c == '.' || c >= '0' && c <= '9';
+    }
+
+    private static ParsedPackage detectFromPath(String path) {
+        Optional<ParsedPackage> npmTarball = parseNpmTarball(path);
+        if (npmTarball.isPresent()) {
+            return npmTarball.get();
         }
         Matcher m = PYPI_WHL_PATTERN.matcher(path);
         if (m.matches()) {
@@ -239,18 +302,7 @@ public class UrlParserService {
     }
 
     private static ParsedPackage parseNpmUrl(String path) {
-        Matcher unscopedMatcher = NPM_UNSCOPED_TARBALL_PATTERN.matcher(path);
-        if (unscopedMatcher.matches()) {
-            return new ParsedPackage(unscopedMatcher.group(1), unscopedMatcher.group(2), "npm");
-        }
-        Matcher scopedMatcher = NPM_SCOPED_TARBALL_PATTERN.matcher(path);
-        if (scopedMatcher.matches()) {
-            return new ParsedPackage(
-                    scopedMatcher.group(1) + "/" + scopedMatcher.group(2),
-                    scopedMatcher.group(3),
-                    "npm");
-        }
-        return new ParsedPackage("unknown", "unknown", "npm");
+        return parseNpmTarball(path).orElseGet(() -> new ParsedPackage("unknown", "unknown", "npm"));
     }
 
     private static ParsedPackage parsePypiUrl(String path) {

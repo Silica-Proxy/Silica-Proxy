@@ -65,6 +65,13 @@ silicaproxy:
     default-min-age-days: 7
     # Behavior on registry error (true = allow package ; false = block for security)
     fail-open: true
+    # Package version unknown to every registry consulted (404 / absent), as opposed to a
+    # registry that could not answer : FOLLOW_FAIL_OPEN = treated like an outage (fail-open
+    # decides) ; BLOCK = always blocked (REGISTRY_NOT_FOUND)
+    unknown-version-action: FOLLOW_FAIL_OPEN
+    # When fail-open allows a package whose publication date could not be resolved, still query
+    # the live vulnerability APIs (OSV/deps.dev) : a BLOCK wins, an ALLOW is never cached
+    check-vulnerabilities-on-registry-error: false
     # Ecosystem-specific thresholds and activation
     ecosystems:
       npm:
@@ -214,6 +221,10 @@ silicaproxy:
     ttl-minutes: 60
     # Packument bodies larger than this are relayed untouched and not indexed (32 MiB)
     max-body-bytes: 33554432
+    # npm tarball (.tgz) identified neither by its URL nor by a relayed packument (e.g. `npm ci`
+    # with a lockfile on an unknown registry layout) : ALLOW = relayed without any security
+    # check (bypass) ; BLOCK = 403 (UNIDENTIFIED_ARTIFACT)
+    unidentified-tarball-action: ALLOW
 
   # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
   # shared API key protection on internal admin/API endpoints)

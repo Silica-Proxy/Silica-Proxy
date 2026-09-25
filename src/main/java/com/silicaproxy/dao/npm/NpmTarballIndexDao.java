@@ -23,6 +23,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -74,11 +75,11 @@ public class NpmTarballIndexDao {
                 .param(tarballUrl)
                 .param(packageName)
                 .param(packageVersion)
-                .param(publishedAt)
+                .param(publishedAt != null ? Timestamp.from(publishedAt) : null)
                 .param(deprecated)
                 .param(deprecationReason)
                 .param(packumentUrl)
-                .param(expiresAt)
+                .param(Timestamp.from(expiresAt))
                 .update();
     }
 
@@ -98,7 +99,7 @@ public class NpmTarballIndexDao {
                         rs.getString("tarball_url"),
                         rs.getString("package_name"),
                         rs.getString("package_version"),
-                        rs.getObject("published_at", java.time.Instant.class),
+                        toInstant(rs.getTimestamp("published_at")),
                         rs.getBoolean("deprecated"),
                         rs.getString("deprecation_reason"),
                         rs.getString("packument_url")
@@ -115,12 +116,14 @@ public class NpmTarballIndexDao {
                 "SELECT published_at, deprecated, deprecation_reason " +
                 "FROM npm_tarball_index " +
                 "WHERE package_name = ? AND package_version = ? AND expires_at > NOW() " +
+                "  AND published_at IS NOT NULL " +
                 "LIMIT 1"
         )
                 .param(packageName)
                 .param(packageVersion)
                 .query((rs, rowNum) -> new PackageMetadataResult(
-                        rs.getObject("published_at", java.time.Instant.class),
+                        // never null : filtered by "published_at IS NOT NULL" above
+                        rs.getTimestamp("published_at").toInstant(),
                         rs.getBoolean("deprecated"),
                         rs.getString("deprecation_reason")
                 ))
@@ -142,6 +145,10 @@ public class NpmTarballIndexDao {
                 .param(packageVersion)
                 .query(String.class)
                 .optional();
+    }
+
+    private static @Nullable Instant toInstant(@Nullable Timestamp timestamp) {
+        return timestamp != null ? timestamp.toInstant() : null;
     }
 
     /**
