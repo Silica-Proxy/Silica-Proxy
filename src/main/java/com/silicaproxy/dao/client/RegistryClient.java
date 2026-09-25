@@ -27,6 +27,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import io.micrometer.core.annotation.Timed;
@@ -42,6 +43,7 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -80,26 +82,27 @@ public class RegistryClient {
         return fetchMetadata(packageName, version, ecosystem, "");
     }
 
+    public Optional<PackageMetadataResult> fetchMetadata(
+            String packageName, String version, String ecosystem, String fullUrl) {
+        return lookup(packageName, version, ecosystem, fullUrl).metadata();
+    }
+
+    /**
+     * Resolves {@code packageName@version} on the public registry of {@code ecosystem}, telling
+     * a registry that does not know it ({@code NOT_FOUND}) apart from one that could not answer
+     * ({@code UNAVAILABLE}). npm only asks the configured public registry here : the origin
+     * registry fallback is {@code SecurityService}'s job.
+     */
     @Timed(value = "silicaproxy.dao.registry.fetchmetadata",
             description = "Duration of call to public registry to resolve package metadata",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public Optional<PackageMetadataResult> fetchMetadata(
-            String packageName, String version, String ecosystem, String fullUrl) {
-        try {
-            return switch (ecosystem.toLowerCase()) {
-                case "npm" -> fetchNpmMetadata(packageName, version);
-                case "pypi" -> fetchPypiMetadata(packageName, version, fullUrl);
-                case "maven" -> fetchMavenMetadata(packageName, version, fullUrl);
-                default -> Optional.empty();
-            };
-        } catch (Exception e) {
-            LOG.warn("Error while retrieving metadata for {}/{} ({}) : {}", 
-                    ecosystem, packageName, version, e.getMessage());
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("Details of registry metadata retrieval error", e);
-            }
-            return Optional.empty();
-        }
+    public RegistryLookup lookup(String packageName, String version, String ecosystem, String fullUrl) {
+        return switch (ecosystem.toLowerCase(Locale.ROOT)) {
+            case "npm" -> lookupNpmPublic(packageName, version);
+            case "pypi" -> lookupPypi(packageName, version, fullUrl);
+            case "maven" -> lookupMaven(packageName, version, fullUrl);
+            default -> RegistryLookup.unavailable();
+        };
     }
 
     // A full npm packument lists every published version of a package (dependency graphs,
@@ -112,10 +115,6 @@ public class RegistryClient {
     // silently break the anti-typosquatting quarantine age check). So the response is parsed
     // token-by-token instead of deserialized into a generic Map: unwanted version entries are
     // skipped via skipChildren() without allocating any object graph for them.
-    private Optional<PackageMetadataResult> fetchNpmMetadata(String packageName, String version) {
-        return lookupNpmPublic(packageName, version).metadata();
-    }
-
     /**
      * Looks {@code packageName@version} up on the configured public npm registry, telling a
      * registry that does not know the package/version (404, or no {@code time} entry for that
@@ -267,36 +266,52 @@ public class RegistryClient {
         return new DeprecationInfo(deprecated, reason);
     }
 
+    /**
+     * Looks {@code packageName@version} up on the PyPI JSON API. {@code NOT_FOUND} when PyPI
+     * answers 404 or the release is absent / has no file ; {@code UNAVAILABLE} on any other
+     * failure, including a response whose shape is not understood (so an API format change
+     * follows the fail-open policy instead of looking like "unknown version").
+     */
     @SuppressWarnings("unchecked")
+    public RegistryLookup lookupPypi(String packageName, String version, String fullUrl) {
+        String url = properties.registries().pypiUrl() + "/pypi/" + packageName + "/json";
+        try {
+            Map<String, Object> response = restClient.get()
+                    .uri(url)
+                    .retrieve()
+                    .body(Map.class);
+            return parsePypiRelease(response, version, fullUrl);
+        } catch (HttpClientErrorException.NotFound e) {
+            return RegistryLookup.notFound();
+        } catch (Exception e) {
+            LOG.warn("Error while retrieving PyPI metadata for {} ({}) : {}", packageName, version, e.getMessage());
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Details of PyPI metadata retrieval error", e);
+            }
+            return RegistryLookup.unavailable();
+        }
+    }
+
     // PyPI lets a maintainer upload new files (wheels for a new platform/Python version) to an
     // existing release long after it was first published : the first file's upload time is
     // therefore NOT the publish date of the file actually being downloaded. The upload time of
     // the requested file (matched by filename) is used ; when it can't be matched, the most
     // recent upload of the release -- the conservative choice for the quarantine age check.
-    private Optional<PackageMetadataResult> fetchPypiMetadata(String packageName, String version, String fullUrl) {
-        String url = properties.registries().pypiUrl() + "/pypi/" + packageName + "/json";
-        Map<String, Object> response = restClient.get()
-                .uri(url)
-                .retrieve()
-                .body(Map.class);
-
-        if (response == null) {
-            return Optional.empty();
+    @SuppressWarnings("unchecked")
+    private static RegistryLookup parsePypiRelease(@Nullable Map<String, Object> response, String version, String fullUrl) {
+        if (response == null
+                || !(response.get("releases") instanceof Map<?, ?> rawReleases)) {
+            return RegistryLookup.unavailable();
         }
-
-        Map<String, List<Map<String, Object>>> releases = (Map<String, List<Map<String, Object>>>) response.get("releases");
-        if (releases == null || !releases.containsKey(version)) {
-            return Optional.empty();
-        }
-
+        Map<String, List<Map<String, Object>>> releases = (Map<String, List<Map<String, Object>>>) rawReleases;
         List<Map<String, Object>> files = releases.get(version);
         if (files == null || files.isEmpty()) {
-            return Optional.empty();
+            return RegistryLookup.notFound();
         }
 
         Optional<Instant> publishedAtOpt = PypiUploadTimes.publishedAt(files, fullUrl);
         if (publishedAtOpt.isEmpty()) {
-            return Optional.empty();
+            return RegistryLookup.unavailable();
         }
         Instant publishedAt = publishedAtOpt.get();
 
@@ -309,35 +324,45 @@ public class RegistryClient {
             }
         }
 
-        return Optional.of(new PackageMetadataResult(
-            publishedAt, 
-            isYanked, 
+        return RegistryLookup.found(new PackageMetadataResult(
+            publishedAt,
+            isYanked,
             isYanked ? "Yanked from PyPI registry" : null
         ));
     }
 
-    private Optional<PackageMetadataResult> fetchMavenMetadata(String packageName, String version, String fullUrl) {
+    /**
+     * Resolves the publish date of a Maven artifact from the {@code Last-Modified} header of its
+     * version directory on Maven Central, falling back to the URL the client actually requested.
+     * {@code NOT_FOUND} only when every attempted URL answered 404.
+     */
+    public RegistryLookup lookupMaven(String packageName, String version, String fullUrl) {
         String[] parts = packageName.split(":");
         String groupIdSlashes = parts[0].replace('.', '/');
         String artifactId = parts.length > 1 ? parts[1] : parts[0];
 
         String url = properties.registries().mavenUrl() + "/maven2/" + groupIdSlashes + "/" + artifactId + "/" + version + "/";
 
-        Optional<Instant> publishedAt = headLastModified(url);
-        if (publishedAt.isEmpty() && !fullUrl.isBlank()) {
-            // Maven Central lookup failed (registry down, or artifact not yet mirrored there) --
-            // fall back to the exact URL the client requested through the proxy. Safe for Maven
-            // specifically because Last-Modified is already its primary publish-date source
-            // above (unlike npm/PyPI, where the same header on a tarball/CDN URL reflects cache
-            // freshness rather than publish date -- see fetchNpmMetadata's comment).
-            LOG.debug("Maven Central metadata lookup failed for {}/{}, falling back to intercepted URL", packageName, version);
-            publishedAt = headLastModified(fullUrl);
+        RegistryLookup central = headLastModified(url);
+        if (central.status() == RegistryLookup.Status.FOUND || fullUrl.isBlank()) {
+            return central;
         }
-
-        return publishedAt.map(instant -> new PackageMetadataResult(instant, false, null));
+        // Maven Central lookup failed (registry down, or artifact not yet mirrored there) --
+        // fall back to the exact URL the client requested through the proxy. Safe for Maven
+        // specifically because Last-Modified is already its primary publish-date source
+        // above (unlike npm/PyPI, where the same header on a tarball/CDN URL reflects cache
+        // freshness rather than publish date -- see lookupNpmPublic's comment).
+        LOG.debug("Maven Central metadata lookup failed for {}/{}, falling back to intercepted URL", packageName, version);
+        RegistryLookup intercepted = headLastModified(fullUrl);
+        if (intercepted.status() == RegistryLookup.Status.FOUND) {
+            return intercepted;
+        }
+        boolean bothNotFound = central.status() == RegistryLookup.Status.NOT_FOUND
+                && intercepted.status() == RegistryLookup.Status.NOT_FOUND;
+        return bothNotFound ? RegistryLookup.notFound() : RegistryLookup.unavailable();
     }
 
-    private Optional<Instant> headLastModified(String url) {
+    private RegistryLookup headLastModified(String url) {
         try {
             ResponseEntity<Void> response = restClient.head()
                     .uri(url)
@@ -346,14 +371,16 @@ public class RegistryClient {
 
             String lastModifiedHeader = response.getHeaders().getFirst("Last-Modified");
             if (lastModifiedHeader == null) {
-                return Optional.empty();
+                return RegistryLookup.unavailable();
             }
 
             ZonedDateTime zdt = ZonedDateTime.parse(lastModifiedHeader, DateTimeFormatter.RFC_1123_DATE_TIME);
-            return Optional.of(zdt.toInstant());
+            return RegistryLookup.found(new PackageMetadataResult(zdt.toInstant(), false, null));
+        } catch (HttpClientErrorException.NotFound e) {
+            return RegistryLookup.notFound();
         } catch (Exception e) {
             LOG.debug("HEAD request failed for {} : {}", url, e.getMessage());
-            return Optional.empty();
+            return RegistryLookup.unavailable();
         }
     }
 }

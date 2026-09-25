@@ -20,6 +20,7 @@ package com.silicaproxy.properties;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 import jakarta.validation.constraints.NotNull;
@@ -100,12 +101,27 @@ public record SilicaProxyProperties(
         boolean enabled,
         int defaultMinAgeDays,
         boolean failOpen,
-        @NotNull Map<String, EcosystemQuarantineProperties> ecosystems
+        @NotNull Map<String, EcosystemQuarantineProperties> ecosystems,
+        // What to do when every source answered that the package/version does not exist (as
+        // opposed to a registry that could not answer). FOLLOW_FAIL_OPEN keeps treating it like
+        // an outage, so failOpen decides.
+        @DefaultValue("FOLLOW_FAIL_OPEN") UnknownVersionAction unknownVersionAction,
+        // When failOpen lets a package through without a publish date, still run the live
+        // vulnerability APIs (OSV/deps.dev) : a BLOCK from them wins, an ALLOW is never cached.
+        @DefaultValue("false") boolean checkVulnerabilitiesOnRegistryError
     ) {
+        @ConstructorBinding
         public QuarantineProperties {
             ecosystems = Collections.unmodifiableMap(new HashMap<>(ecosystems));
         }
+
+        public QuarantineProperties(boolean enabled, int defaultMinAgeDays, boolean failOpen,
+                Map<String, EcosystemQuarantineProperties> ecosystems) {
+            this(enabled, defaultMinAgeDays, failOpen, ecosystems, UnknownVersionAction.FOLLOW_FAIL_OPEN, false);
+        }
     }
+
+    public enum UnknownVersionAction { FOLLOW_FAIL_OPEN, BLOCK }
 
     public record EcosystemQuarantineProperties(
         boolean enabled,

@@ -125,6 +125,23 @@ unknown to the registry (and to the origin registry for npm), and no date alread
 `silicaproxy.quarantine.publish_date.unresolved` (tagged with the applied verdict) — see
 [Metrics](#metrics) for a ready-to-use alert.
 
+Two options narrow that gap without turning the whole quarantine fail-closed (both keep the
+historical behavior by default) :
+
+- **`silicaproxy.quarantine.unknown-version-action`** — a version that every registry consulted
+  answered it does **not know** (HTTP 404, version absent from the release list) is not an outage.
+  `FOLLOW_FAIL_OPEN` (default) treats it like one, so `fail-open` decides ; `BLOCK` always blocks
+  it with `step: REGISTRY_NOT_FOUND`. A registry that could not answer (5xx, timeout, network
+  error, unparseable response) still follows `fail-open`.
+- **`silicaproxy.quarantine.check-vulnerabilities-on-registry-error`** — by default, a package let
+  through by `fail-open` skips the live vulnerability APIs too. With `true`, the
+  [OSV/deps.dev chain](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)
+  still runs : a BLOCK wins, otherwise the verdict stays `REGISTRY_ERROR` ALLOW. That ALLOW is
+  **never cached** : caching it would skip the quarantine check for the whole TTL once the
+  registry recovers.
+
+Neither verdict is cached : the next request re-evaluates the package.
+
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
 Internal allow/block rules are read from a Git repository containing one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`). The scheduler pulls changes every 10 minutes and synchronises the `company_policies` table. These rules have the **highest priority** in the decision pipeline and always override external vulnerability data.
@@ -186,10 +203,44 @@ How the publication date is resolved :
   used when the public registry answers that it does **not know** the package/version (404, or no
   `time` entry for it) — never when it merely fails to answer (5xx, timeout), so a registry outage
   can't hand the quarantine date over to a less trusted source.
-- **All ecosystems** — if the registry can't answer, a date already cached in `package_metadata`
-  is used ; otherwise the [`quarantine.fail-open`](#what-fail-open--fail-closed-means) policy decides.
+- **Maven** — the `Last-Modified` header of the version directory on Maven Central
+  (`HEAD /maven2/{group}/{artifact}/{version}/`). If Central does not answer with a date (404,
+  artifact not mirrored there, or outage), the URL the client actually requested is `HEAD`ed
+  instead and its `Last-Modified` is used.
+- **All ecosystems** — every lookup tells a registry that does **not know** the package/version
+  (`NOT_FOUND` : HTTP 404, version absent) apart from one that **could not answer**
+  (`UNAVAILABLE` : 5xx, timeout, network error, unexpected response). Either way, a date already
+  cached in `package_metadata` is used first ; otherwise the
+  [`quarantine.fail-open`](#what-fail-open--fail-closed-means) policy decides, except that a
+  `NOT_FOUND` is blocked outright when `quarantine.unknown-version-action` is `BLOCK`.
 
 The publication date is **stored permanently** in the `package_metadata` table — it never changes, so no subsequent network call is needed for a version already seen. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
+
+#### npm tarball identification
+
+A request is only checked if its package and version can be identified ; otherwise it is relayed
+**without any security check** (counted in `silicaproxy.controller.security.bypass`). For npm, the
+tarball is identified in two ways :
+
+1. **From its URL**, whatever the host :
+   - npmjs layout `/{name}/-/{name}-{version}.tgz` and `/@{scope}/{name}/-/{name}-{version}.tgz`,
+     optionally behind a repository prefix (Artifactory `/artifactory/api/npm/{repo}`, Nexus
+     `/repository/{repo}`, CodeArtifact…) — Artifactory's scoped form `-/@{scope}/{name}-{version}.tgz`
+     is accepted too. The file name must repeat the package name ;
+   - npm.jsr.io `/~/{rev}/@jsr/{scope}__{name}/{version}.tgz` ;
+   - GitHub Packages `/download/@{owner}/{name}/{version}/{sha}`.
+2. **From the packuments relayed earlier** (`silicaproxy.npm-packument-index.*`) : the proxy
+   remembers every `dist.tarball` URL of the packuments it relays, for any other layout. Entries
+   live in memory for `ttl-minutes` and are shared with the other instances through the
+   `npm_tarball_index` table when they carry a publish date **or** when their URL cannot be
+   identified by the patterns above (so a tarball request landing on another instance is still
+   identified).
+
+**Known limit** : a client that does not request the packument (e.g. `npm ci` with a lockfile)
+on a registry whose layout matches none of the patterns cannot be identified. By default such a
+tarball is relayed unchecked ; set `silicaproxy.npm-packument-index.unidentified-tarball-action`
+to `BLOCK` to answer 403 (`step: UNIDENTIFIED_ARTIFACT`) instead. Metadata requests (packuments,
+dist-tags, search) are never blocked by this option.
 
 ### 4. External Validation Services — on-demand, sync or async
 
@@ -469,6 +520,8 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.quarantine.ecosystems.pypi.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_PYPI_MIN_AGE_DAYS`             | `10` | |
 | | `silicaproxy.quarantine.ecosystems.maven.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_ENABLED`                 | `false` | |
 | | `silicaproxy.quarantine.ecosystems.maven.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_MIN_AGE_DAYS`            | `5` | |
+| | `silicaproxy.quarantine.unknown-version-action` | `SILICAPROXY_QUARANTINE_UNKNOWN_VERSION_ACTION`                   | `FOLLOW_FAIL_OPEN` | Version unknown to every registry consulted (404) : `FOLLOW_FAIL_OPEN` = treated like an outage (`fail-open` decides), `BLOCK` = blocked (`REGISTRY_NOT_FOUND`) |
+| | `silicaproxy.quarantine.check-vulnerabilities-on-registry-error` | `SILICAPROXY_QUARANTINE_CHECK_VULNERABILITIES_ON_REGISTRY_ERROR` | `false` | Still run OSV/deps.dev when `fail-open` allows a package without publish date ; a BLOCK wins, an ALLOW is never cached |
 | **Deprecation** | `silicaproxy.deprecation.enabled` | `SILICAPROXY_DEPRECATION_ENABLED`                                 | `true` | Block deprecated/yanked packages |
 | | `silicaproxy.deprecation.ecosystems.npm` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_NPM`                          | `true` | |
 | | `silicaproxy.deprecation.ecosystems.pypi` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_PYPI`                         | `true` | |
@@ -493,6 +546,11 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD`                       | _(empty)_ | Keystore password for encryption |
 | | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH`                        | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
 | | `silicaproxy.ssl-mitm.context-cache-max-entries` | `SILICAPROXY_SSL_MITM_CONTEXT_CACHE_MAX_ENTRIES`                  | `2000` | Hard cap on the per-host SSLContext cache, on top of its 24h inactivity TTL — bounds the CPU/memory cost of CONNECT requests to many distinct hostnames |
+| **npm tarball index** | `silicaproxy.npm-packument-index.enabled` | `SILICAPROXY_NPM_PACKUMENT_INDEX_ENABLED`                         | `true` | Learn tarball URLs from relayed packuments ([npm tarball identification](#npm-tarball-identification)) |
+| | `silicaproxy.npm-packument-index.max-entries` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_ENTRIES`                     | `200000` | Hard cap on in-memory entries |
+| | `silicaproxy.npm-packument-index.ttl-minutes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_TTL_MINUTES`                     | `60` | Lifetime of an entry, in memory and in `npm_tarball_index` |
+| | `silicaproxy.npm-packument-index.max-body-bytes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_BODY_BYTES`                  | `33554432` | Larger packuments are relayed without being indexed |
+| | `silicaproxy.npm-packument-index.unidentified-tarball-action` | `SILICAPROXY_NPM_PACKUMENT_INDEX_UNIDENTIFIED_TARBALL_ACTION`     | `ALLOW` | npm `.tgz` identified neither by URL nor by index : `ALLOW` = relayed unchecked, `BLOCK` = 403 (`UNIDENTIFIED_ARTIFACT`) |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED`                             | `false` | Route outbound traffic through a corporate proxy |
 | | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST`                                | — | |
 | | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT`                                | — | |
@@ -698,9 +756,11 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `PUBLIC_VULN` | Local vulnerability database (OSV, GHSA, …) — CVSS-threshold block |
 | `PUBLIC_VULN_MALWARE` | Local vulnerability database, `MAL-*` id or `source = OPENSSF` — always blocked regardless of CVSS |
 | `API_CACHE` | Cached result from a previous live API call |
-| `REGISTRY_ERROR` | Public registry unreachable and proxy configured fail-closed |
+| `REGISTRY_ERROR` | Publication date could not be resolved (registry unreachable, or version unknown with `unknown-version-action: FOLLOW_FAIL_OPEN`) — BLOCK when fail-closed, ALLOW when [`fail-open`](#what-fail-open--fail-closed-means) ; never cached |
 | `REGISTRY_DEPRECATION` | Package deprecated or yanked from its registry — checked before quarantine |
 | `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
+| `REGISTRY_NOT_FOUND` | Version unknown to every registry consulted, with `quarantine.unknown-version-action: BLOCK` — never cached |
+| `UNIDENTIFIED_ARTIFACT` | npm tarball identified neither by its URL nor by a relayed packument, with `npm-packument-index.unidentified-tarball-action: BLOCK` ([details](#npm-tarball-identification)) |
 | `EXTERNAL_VALIDATION` | External validation service (sync or async) |
 | `OSV_LIVE` | Google OSV live API — first fallback |
 | `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
@@ -767,7 +827,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 
 | Metric | Type | Tags | Description |
 |---|---|---|---|
-| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
+| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
 | `silicaproxy.controller.security.overhead` | Timer | `decision` (`block`/`allow`) | Duration of the security check only, excluding binary streaming. |
 | `silicaproxy.decision.local_evaluation` | Counter | `outcome` (`HIT`/`MISS`) | Whether `DecisionDao`'s single SQL query (company policy / public vulnerability / `api_cache`) resolved the verdict without an external call (`HIT`), or a registry/OSV/deps.dev round trip was required (`MISS`). |
