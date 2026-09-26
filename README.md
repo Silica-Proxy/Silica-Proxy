@@ -242,6 +242,71 @@ tarball is relayed unchecked ; set `silicaproxy.npm-packument-index.unidentified
 to `BLOCK` to answer 403 (`step: UNIDENTIFIED_ARTIFACT`) instead. Metadata requests (packuments,
 dist-tags, search) are never blocked by this option.
 
+#### Maven artifact identification
+
+On `maven.org` / `maven.apache.org` the `/maven2/{group}/{artifact}/{version}/{file}` layout is
+parsed directly. On any other host, the repository prefix is stripped before the rest is read as
+`{group path}/{artifactId}/{version}/{file}` :
+
+| Repository | Prefix stripped |
+|---|---|
+| Nexus 3 | `/repository/{repo}/`, optionally under `/nexus` |
+| Nexus 2 (incl. `oss.sonatype.org`) | `/content/repositories/{repo}/`, `/content/groups/{repo}/`, optionally under `/nexus` |
+| Artifactory | `/artifactory/{repo}/` |
+| GitLab | `/api/v4/projects/{id}/packages/maven/`, `/api/v4/groups/{id}/-/packages/maven/` |
+| AWS CodeArtifact (`*.amazonaws.com` only) | `/maven/{repo}/` |
+| Azure Artifacts (`pkgs.dev.azure.com` only) | `/{org}/[{project}/]_packaging/{feed}/maven/v1/` |
+| GitHub Packages (`maven.pkg.github.com` only) | `/{owner}/{repo}/` |
+| Google Maven (`dl.google.com` / `maven.google.com` only) | `/dl/android/maven2/` / none |
+| JitPack (`jitpack.io` only) | none |
+| anything else | exactly one segment (repo.spring.io `/release/`, plugins.gradle.org `/m2/`…) |
+
+Only artifact files are identified (`.jar`, `.pom`, `.aar`, `.war`, `.ear`, `.zip`, `.module` ;
+never checksums or `maven-metadata.xml`), and the file name must repeat the coordinates :
+`{artifactId}-{version}` followed by the extension or a `-{classifier}` (`{artifactId}-X-…` for a
+`X-SNAPSHOT` version). Anything else is relayed without a security check.
+
+**Known limit** : a custom layout with a multi-segment prefix that is not in the table above is
+read with a one-segment prefix, so the remaining segments end up in the groupId and the package
+is checked under a wrong name.
+
+#### PyPI file identification
+
+A **wheel** is identified by its file name alone, whatever the host and path : its name is fully
+self-describing (`{name}-{version}(-{build})?-{python tag}-{abi tag}-{platform}.whl`, PEP 427).
+An **sdist** (`{name}-{version}.tar.gz`) is not — any tarball has that shape — so it is only
+identified behind a known PyPI prefix :
+
+| Repository | Prefix |
+|---|---|
+| pypi.org, files.pythonhosted.org and mirrors of that layout | `/packages/` |
+| Nexus 3 | `/repository/{repo}/packages/`, optionally under `/nexus` |
+| Artifactory | `/artifactory/api/pypi/{repo}/packages/` |
+| devpi | `/{user}/{index}/+f/` |
+| GitLab | `/api/v4/projects/{id}/packages/pypi/files/` |
+
+or when the request comes from a PyPI client (see below). Wheels and sdists served by a private
+repository are therefore **checked** : an internal package unknown to pypi.org gets `NOT_FOUND`
+from the quarantine lookup, so it is blocked when `quarantine.unknown-version-action` is `BLOCK`
+(otherwise [`quarantine.fail-open`](#what-fail-open--fail-closed-means) decides) — as for npm and
+Maven on private repositories.
+
+#### Client header hints
+
+When the URL alone names no ecosystem, the client headers are read :
+
+| Ecosystem | Recognised headers | Effect |
+|---|---|---|
+| npm | `User-Agent` `npm/`, `pnpm/`, `yarn/`, `bun/` ; `Accept: application/vnd.npm.install-v1+json` ; `npm-*` / `pacote-*` headers | metadata tagged `npm` (and learned by the packument index) |
+| PyPI | `User-Agent` `pip/`, `uv/`, `poetry/`, `pdm/` ; `Accept: application/vnd.pypi.simple.v1+json` (PEP 691) | an sdist on any layout is identified and **checked** ; other requests tagged `pypi` |
+| Maven | `User-Agent` `Apache-Maven/`, `Gradle/`, `Apache Ivy/`, `Coursier/` | requests tagged `maven` (the groupId/prefix split stays ambiguous, so no version) |
+
+Headers can only add an identification the URL did not give, never remove one : a forged
+`User-Agent` cannot bypass the check. **Limit** : behind an artifact repository (the deployment
+described in [Deployment](#deployment)), the proxy sees the repository's own
+`User-Agent` (`Artifactory/…`, `Nexus/…`), so these hints only help clients that use the proxy
+directly.
+
 ### 4. External Validation Services — on-demand, sync or async
 
 SilicaProxy can call any number of external HTTP services to validate a package before reaching the live API fallback. This is designed for deep scanners that are too slow to block a build synchronously, or for proprietary tools with custom scoring.
