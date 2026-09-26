@@ -56,6 +56,9 @@ silicaproxy:
     # received for this long: a large file downloaded slowly but continuously never trips it,
     # only a truly stuck/abandoned connection does.
     relay-idle-timeout-seconds: 60
+    # Interval of the database probe (SELECT 1). While the database is unreachable, every
+    # request is blocked with a 503 -- including metadata and unidentified requests.
+    database-check-interval-seconds: ${SILICAPROXY_PROXY_DATABASE_CHECK_INTERVAL_SECONDS:5}
 
   # 1. Temporal quarantine configuration (Anti-Typosquatting)
   quarantine:

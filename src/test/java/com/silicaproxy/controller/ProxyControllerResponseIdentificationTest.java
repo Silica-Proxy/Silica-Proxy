@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
+import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
@@ -33,6 +34,7 @@ import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.ResponseIdentificationService;
 import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
 import com.silicaproxy.service.interception.UrlParserService;
+import com.silicaproxy.service.monitoring.DatabaseAvailabilityService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -91,7 +93,8 @@ class ProxyControllerResponseIdentificationTest {
             new PackageIdentificationService(urlParserService, npmIndex, npmProperties);
 
     private final ProxyController controller = new ProxyController(securityService, auditLogService,
-            proxyStreamClient, packageIdentification, npmIndex, meterRegistry, new JsonMapper());
+            proxyStreamClient, packageIdentification, npmIndex, meterRegistry, new JsonMapper(),
+            new DatabaseAvailabilityService(mock(HealthCheckDao.class), new SimpleMeterRegistry()));
 
     @BeforeEach
     void unidentifiedUrl() {
@@ -224,7 +227,8 @@ class ProxyControllerResponseIdentificationTest {
         byte[] body = body(1000);
         upstreamServes(body, sha1Of(body));
         ProxyController legacy = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmIndex, meterRegistry, new JsonMapper());
+                packageIdentification, npmIndex, meterRegistry, new JsonMapper(),
+                new DatabaseAvailabilityService(mock(HealthCheckDao.class), new SimpleMeterRegistry()));
 
         MockMvcBuilders.standaloneSetup(legacy).build().perform(get(URL))
                 .andExpect(status().isOk())

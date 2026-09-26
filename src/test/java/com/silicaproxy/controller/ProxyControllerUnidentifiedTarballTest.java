@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
+import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -27,6 +28,7 @@ import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.PackageIdentificationService;
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.UrlParserService;
+import com.silicaproxy.service.monitoring.DatabaseAvailabilityService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -69,7 +71,8 @@ class ProxyControllerUnidentifiedTarballTest {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), properties, mock(NpmTarballIndexDao.class));
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
                 new PackageIdentificationService(urlParserService, index, properties), index,
-                new SimpleMeterRegistry(), new JsonMapper());
+                new SimpleMeterRegistry(), new JsonMapper(),
+                new DatabaseAvailabilityService(mock(HealthCheckDao.class), new SimpleMeterRegistry()));
         when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "unknown"));
         when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
                 .thenReturn(Optional.of(new ParsedPackage("unknown", "unknown", "npm")));

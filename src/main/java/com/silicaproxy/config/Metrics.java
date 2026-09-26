@@ -45,6 +45,10 @@ public final class Metrics {
     // ---- ProxyController ----
     public static final String DECISIONS_METRIC = "silicaproxy.controller.decisions";
     public static final String BYPASS_METRIC = "silicaproxy.controller.security.bypass";
+    public static final String DATABASE_UNAVAILABLE_METRIC = "silicaproxy.controller.database_unavailable";
+
+    // ---- DatabaseAvailabilityService ----
+    public static final String DATABASE_AVAILABLE_METRIC = "silicaproxy.database.available";
 
     // ---- ResponseIdentificationService / ProxyController (identification from the response) ----
     public static final String RESPONSE_IDENTIFICATION_METRIC = "silicaproxy.identification.response";

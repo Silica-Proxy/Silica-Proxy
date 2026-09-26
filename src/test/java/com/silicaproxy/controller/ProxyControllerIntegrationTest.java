@@ -23,6 +23,7 @@ import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.PackageIdentificationService;
+import com.silicaproxy.service.monitoring.DatabaseAvailabilityService;
 import io.micrometer.core.instrument.MeterRegistry;
 import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -88,6 +89,9 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private DatabaseAvailabilityService databaseAvailability;
 
     private RestClient proxyRestClient;
 
@@ -683,7 +687,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         
         // Create the controller
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmPackumentIndex, meterRegistry, objectMapper);
+                packageIdentification, npmPackumentIndex, meterRegistry, objectMapper, databaseAvailability);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

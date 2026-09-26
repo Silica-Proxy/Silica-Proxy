@@ -20,6 +20,7 @@ package com.silicaproxy.controller;
 import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
@@ -32,6 +33,7 @@ import com.silicaproxy.service.interception.PackageIdentificationService.Identif
 import com.silicaproxy.service.interception.PackageIdentificationService.Outcome;
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.UrlParserService;
+import com.silicaproxy.service.monitoring.DatabaseAvailabilityService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import tools.jackson.databind.json.JsonMapper;
@@ -43,6 +45,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -87,18 +90,24 @@ class ProxyControllerTest {
 
     private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
+    @Mock
+    private HealthCheckDao healthCheckDao;
+
+    private DatabaseAvailabilityService databaseAvailability;
+
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        databaseAvailability = new DatabaseAvailabilityService(healthCheckDao, meterRegistry);
         NpmPackumentIndexProperties indexProperties =
                 new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024, UnidentifiedTarballAction.ALLOW);
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), indexProperties, npmTarballIndexDao);
         mockMvc = MockMvcBuilders.standaloneSetup(new ProxyController(securityService, auditLogService,
-                proxyStreamClient, packageIdentification, index, meterRegistry, new JsonMapper())).build();
+                proxyStreamClient, packageIdentification, index, meterRegistry, new JsonMapper(), databaseAvailability)).build();
         PackageIdentificationService realIdentification =
                 new PackageIdentificationService(urlParserService, index, indexProperties);
         endToEndMockMvc = MockMvcBuilders.standaloneSetup(new ProxyController(securityService, auditLogService,
-                proxyStreamClient, realIdentification, index, meterRegistry, new JsonMapper())).build();
+                proxyStreamClient, realIdentification, index, meterRegistry, new JsonMapper(), databaseAvailability)).build();
     }
 
     private void evaluate(String packageName, String version, String ecosystem) {
@@ -182,6 +191,68 @@ class ProxyControllerTest {
         verify(securityService).getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString());
         verifyNoInteractions(proxyStreamClient);
         verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt(), anyString());
+    }
+
+    @Test
+    void shouldBlockEveryRequestWithServiceUnavailableWhileDatabaseIsDown() throws Exception {
+        when(healthCheckDao.isDatabaseReachable()).thenThrow(new CannotGetJdbcConnectionException("connection refused"));
+        databaseAvailability.probe();
+        evaluate("lodash", "4.17.21", "npm");
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Content-Type", "application/problem+json;charset=UTF-8"))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.step").value("DATABASE_UNAVAILABLE"))
+                .andExpect(jsonPath("$.error").value("DatabaseUnavailable"));
+
+        verifyNoInteractions(securityService, proxyStreamClient, auditLogService);
+        assertThat(meterRegistry.get(Metrics.DATABASE_UNAVAILABLE_METRIC).counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldNotRelayBypassedRequestsWhileDatabaseIsDown() throws Exception {
+        when(healthCheckDao.isDatabaseReachable()).thenThrow(new CannotGetJdbcConnectionException("connection refused"));
+        databaseAvailability.probe();
+        bypass("npm");
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash"))
+                .andExpect(status().isServiceUnavailable());
+
+        verifyNoInteractions(proxyStreamClient);
+    }
+
+    @Test
+    void shouldBlockAndMarkDatabaseDownWhenDecisionHitsDatabaseError() throws Exception {
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString()))
+                .thenThrow(new CannotGetJdbcConnectionException("connection refused"));
+        evaluate("lodash", "4.17.21", "npm");
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.step").value("DATABASE_UNAVAILABLE"));
+
+        verifyNoInteractions(proxyStreamClient);
+        assertThat(databaseAvailability.isAvailable()).isFalse();
+        assertThat(meterRegistry.get(Metrics.DATABASE_AVAILABLE_METRIC).gauge().value()).isZero();
+    }
+
+    @Test
+    void shouldServeRequestsAgainOnceDatabaseProbeSucceeds() throws Exception {
+        when(healthCheckDao.isDatabaseReachable())
+                .thenThrow(new CannotGetJdbcConnectionException("connection refused"))
+                .thenReturn(true);
+        databaseAvailability.probe();
+        databaseAvailability.probe();
+        when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString()))
+                .thenReturn(new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test"));
+        evaluate("lodash", "4.17.21", "npm");
+        stubStreaming("fake-tarball-content".getBytes());
+
+        mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
+                .andExpect(status().isOk());
+
+        assertThat(databaseAvailability.isAvailable()).isTrue();
     }
 
     @Test

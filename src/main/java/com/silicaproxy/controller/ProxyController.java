@@ -31,11 +31,13 @@ import com.silicaproxy.service.interception.ChecksumVerifyingRelay.ChecksumMisma
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.ResponseIdentificationService;
 import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
+import com.silicaproxy.service.monitoring.DatabaseAvailabilityService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -93,6 +95,7 @@ public class ProxyController {
     private final Timer blockDecisionTimer;
     private final Timer allowDecisionTimer;
     private final MeterRegistry meterRegistry;
+    private final DatabaseAvailabilityService databaseAvailability;
 
     public ProxyController(
             SecurityService securityService,
@@ -101,7 +104,8 @@ public class ProxyController {
             PackageIdentificationService packageIdentification,
             NpmPackumentIndex npmPackumentIndex,
             MeterRegistry meterRegistry,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            DatabaseAvailabilityService databaseAvailability) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -109,6 +113,7 @@ public class ProxyController {
         this.npmPackumentIndex = npmPackumentIndex;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
+        this.databaseAvailability = databaseAvailability;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
     }
@@ -179,6 +184,13 @@ public class ProxyController {
             return;
         }
 
+        // Fail-closed on a database outage : no policy, blacklist or vulnerability can be read and
+        // no audit written, so nothing is relayed -- not even metadata or unidentified requests.
+        if (!databaseAvailability.isAvailable()) {
+            sendDatabaseUnavailable(response, fullUrl);
+            return;
+        }
+
         // Extracted once : the npm metadata detector reads the client hints (Accept / User-Agent /
         // npm-*) and the forwarder replays the same headers upstream.
         HttpHeaders headers = extractHeaders(request);
@@ -201,9 +213,16 @@ public class ProxyController {
             return;
         }
 
-        DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
-                ? UNIDENTIFIED_TARBALL_VERDICT
-                : securityService.getDecision(packageName, version, ecosystem, fullUrl);
+        DecisionResult decision;
+        try {
+            decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
+                    ? UNIDENTIFIED_TARBALL_VERDICT
+                    : securityService.getDecision(packageName, version, ecosystem, fullUrl);
+        } catch (DataAccessException e) {
+            databaseAvailability.markUnavailable(e);
+            sendDatabaseUnavailable(response, fullUrl);
+            return;
+        }
         if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
             return;
         }
@@ -293,6 +312,10 @@ public class ProxyController {
             }
             copyStatusAndHeaders(streamResponse, response);
             ChecksumVerifyingRelay.relay(streamResponse.body(), response.getOutputStream(), found.get().digest());
+        } catch (DataAccessException e) {
+            // Thrown by the decision, before anything was written : the upstream body is dropped.
+            databaseAvailability.markUnavailable(e);
+            sendDatabaseUnavailable(response, fullUrl);
         } catch (ChecksumMismatchException e) {
             LOG.error("Upstream body digest does not match the announced one, download aborted for {} : {}",
                     forwardUrl, e.getMessage());
@@ -379,6 +402,31 @@ public class ProxyController {
             }
         }
         return headers;
+    }
+
+    /**
+     * Answers a 503 RFC 7807 response while the database is unreachable : the request is
+     * neither evaluated nor relayed. Not audited, since the audit log lives in that database.
+     */
+    private void sendDatabaseUnavailable(HttpServletResponse response, String fullUrl) throws IOException {
+        LOG.warn("Request BLOCKED, database unavailable : {}", fullUrl);
+        Counter.builder(Metrics.DATABASE_UNAVAILABLE_METRIC)
+                .description("Total number of proxy requests blocked because the database was unreachable")
+                .register(meterRegistry)
+                .increment();
+
+        response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+        response.setContentType("application/problem+json");
+        response.setCharacterEncoding("UTF-8");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("type", "about:blank");
+        body.put("title", HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase());
+        body.put("status", HttpStatus.SERVICE_UNAVAILABLE.value());
+        body.put("detail", "The proxy database is unavailable : every request is blocked until it is back.");
+        body.put("step", "DATABASE_UNAVAILABLE");
+        body.put("error", "DatabaseUnavailable");
+        objectMapper.writeValue(response.getOutputStream(), body);
+        response.getOutputStream().flush();
     }
 
     private void sendProblemDetail(

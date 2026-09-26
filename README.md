@@ -142,6 +142,17 @@ historical behavior by default) :
 
 Neither verdict is cached : the next request re-evaluates the package.
 
+**The database itself is always fail-closed.** Without PostgreSQL, no company policy, blacklist,
+vulnerability or cached verdict can be read and no audit entry written, so while it is
+unreachable **every** request is blocked — including metadata/index requests and requests the
+proxy could not identify, which are otherwise relayed unchecked. Blocked requests get an HTTP
+`503` RFC 7807 response with `step: DATABASE_UNAVAILABLE` (see [API Endpoints](#api-endpoints)).
+Each instance probes the database with a `SELECT 1` every
+`silicaproxy.proxy.database-check-interval-seconds` (default `5`) ; a database error hit while
+evaluating a request blocks immediately, without waiting for the next probe. Requests are served
+again as soon as a probe succeeds. The state is exposed as the `silicaproxy.database.available`
+gauge (see [Metrics](#metrics)).
+
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
 Internal allow/block rules are read from a Git repository containing one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`). The scheduler pulls changes every 10 minutes and synchronises the `company_policies` table. These rules have the **highest priority** in the decision pipeline and always override external vulnerability data.
@@ -607,6 +618,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE`                                                 | `15` | Min idle connections |
 | | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
 | **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
+| | `silicaproxy.proxy.database-check-interval-seconds` | `SILICAPROXY_PROXY_DATABASE_CHECK_INTERVAL_SECONDS` | `5` | Interval of the database probe ; every request is blocked (`503`) while the database is unreachable ([details](#what-fail-open--fail-closed-means)) |
 | **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL`                                  | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
@@ -865,6 +877,7 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `OSV_LIVE` | Google OSV live API — first fallback |
 | `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
 | `API_FALLBACK_ERROR` | Every enabled live API fallback source failed — verdict decided by [`fail-open`](#what-fail-open--fail-closed-means), never cached |
+| `DATABASE_UNAVAILABLE` | The proxy database is unreachable : **every** request is answered `503` (not `403`, `error: DatabaseUnavailable`) and neither relayed nor audited ([details](#what-fail-open--fail-closed-means)) |
 
 ---
 
@@ -928,6 +941,8 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 | Metric | Type | Tags | Description |
 |---|---|---|---|
 | `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
+| `silicaproxy.controller.database_unavailable` | Counter | — | Requests blocked with `503` because the database was unreachable. |
+| `silicaproxy.database.available` | Gauge | — | `1` while the database is reachable, `0` while every request is blocked. Alert on `silicaproxy_database_available == 0`. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
 | `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
 | `silicaproxy.identification.checksum.mismatch` | Counter | `ecosystem` | Downloads identified from their announced digest whose body did not match it — the download was cut. Any increase deserves an investigation of the upstream. |
