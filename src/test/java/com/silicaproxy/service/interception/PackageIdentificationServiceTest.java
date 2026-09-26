@@ -190,4 +190,55 @@ class PackageIdentificationServiceTest {
         assertThat(id.outcome()).isEqualTo(Outcome.BYPASS);
         assertThat(id.learnPackument()).isTrue();
     }
+
+    @Test
+    void shouldEvaluateSdistIdentifiedByPypiClientHeaders() {
+        parserReturns("unknown", "unknown", "unknown");
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class))).thenReturn(Optional.empty());
+        when(urlParserService.detectClientEcosystem(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(new ParsedPackage("requests", "2.31.0", "pypi")));
+
+        Identification id = service(UnidentifiedTarballAction.BLOCK).identify(
+                "http://files.corp.example/dist/requests-2.31.0.tar.gz",
+                "https://files.corp.example/dist/requests-2.31.0.tar.gz", headers);
+
+        assertThat(id.outcome()).isEqualTo(Outcome.EVALUATE);
+        assertThat(id.pkg()).isEqualTo(new ParsedPackage("requests", "2.31.0", "pypi"));
+        assertThat(id.learnPackument()).isFalse();
+        verify(npmPackumentIndex, never()).lookup(anyString());
+    }
+
+    @Test
+    void shouldBypassMavenTrafficTaggedByClientHeaders() {
+        parserReturns("unknown", "unknown", "unknown");
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class))).thenReturn(Optional.empty());
+        when(urlParserService.detectClientEcosystem(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(ParsedPackage.unknown("maven")));
+
+        Identification id = service(UnidentifiedTarballAction.BLOCK).identify(
+                "http://repo.corp.example/libs/com/acme/lib/maven-metadata.xml",
+                "https://repo.corp.example/libs/com/acme/lib/maven-metadata.xml", headers);
+
+        assertThat(id.outcome()).isEqualTo(Outcome.BYPASS);
+        assertThat(id.pkg().ecosystem()).isEqualTo("maven");
+        assertThat(id.learnPackument()).isFalse();
+        verify(npmPackumentIndex, never()).lookup(anyString());
+    }
+
+    @Test
+    void shouldNotConsultClientHeadersOnceAnEcosystemIsKnown() {
+        parserReturns("unknown", "unknown", "unknown");
+        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
+                .thenReturn(Optional.of(ParsedPackage.unknown("npm")));
+        when(npmPackumentIndex.lookup(anyString())).thenReturn(Optional.empty());
+
+        service(UnidentifiedTarballAction.ALLOW).identify(
+                "http://registry.corp.example/internal-lib", "https://registry.corp.example/internal-lib", headers);
+        parserReturns("org.slf4j:slf4j-api", "2.0.9", "maven");
+        service(UnidentifiedTarballAction.ALLOW).identify(
+                "http://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar",
+                "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar", headers);
+
+        verify(urlParserService, never()).detectClientEcosystem(anyString(), any(HttpHeaders.class));
+    }
 }

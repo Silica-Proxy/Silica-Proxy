@@ -31,11 +31,13 @@ import org.springframework.stereotype.Service;
  *
  * <p>Three detection layers, each consulted only while the previous one left a gap : (1)
  * {@link UrlParserService#parseUrl} : known host → direct parser, else structural fallback by path
- * pattern for private registries (Verdaccio, devpi, artifact repositories, repo.spring.io…) ; (2)
- * {@link UrlParserService#detectNpmMetadata}, when no ecosystem was found : an npm-only hint from
- * the client headers (Accept / User-Agent / npm-* headers) or from an unambiguous npm registry path
- * shape. It never yields a version : it only tags metadata traffic (packuments, dist-tags, search)
- * with the right ecosystem so bypass logs and metrics stop reporting it as "unknown" ; (3)
+ * pattern for private registries (Verdaccio, devpi, Nexus, Artifactory, GitLab, repo.spring.io…) ;
+ * (2) when no ecosystem was found, client hints : {@link UrlParserService#detectNpmMetadata}, from
+ * the npm client headers (Accept / User-Agent / npm-* headers) or an unambiguous npm registry path
+ * shape, then {@link UrlParserService#detectClientEcosystem}, from the PyPI (User-Agent / PEP 691
+ * Accept) or Maven (User-Agent) client headers. Apart from a PyPI client's sdist, they never yield
+ * a version : they only tag metadata traffic (packuments, simple index, maven-metadata.xml…) with
+ * the right ecosystem so bypass logs and metrics stop reporting it as "unknown" ; (3)
  * {@link NpmPackumentIndex#lookup}, for an npm request without version : a tarball whose URL layout
  * the parser does not know (npm.jsr.io, Artifactory prefixes…) but that a relayed packument
  * declared in {@code dist.tarball}.
@@ -88,6 +90,9 @@ public class PackageIdentificationService {
         ParsedPackage parsed = urlParserService.parseUrl(fullUrl);
         if (!parsed.hasEcosystem()) {
             parsed = urlParserService.detectNpmMetadata(fullUrl, headers).orElse(parsed);
+        }
+        if (!parsed.hasEcosystem()) {
+            parsed = urlParserService.detectClientEcosystem(fullUrl, headers).orElse(parsed);
         }
         boolean npm = "npm".equals(parsed.ecosystem());
         if (npm && ParsedPackage.UNKNOWN.equals(parsed.version())) {

@@ -18,88 +18,28 @@
 package com.silicaproxy.service.interception;
 
 import org.jspecify.annotations.NullMarked;
-import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import io.micrometer.core.annotation.Timed;
 
 import java.net.URI;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Function;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Extracts package/version/ecosystem from the absolute URL intercepted by the proxy (npm,
  * PyPI, Maven paths) ; returns "unknown" parts when the URL does not match any known pattern.
- * Stateless parsing only : the detection layers are chained, and the request classified, by
- * {@link PackageIdentificationService}.
+ * Known public registry hosts go to their ecosystem's parser ; any other host goes through the
+ * structural fallbacks : npm tarball layouts ({@link NpmUrlParser}), PyPI file names — wheels
+ * anywhere, sdists behind a known PyPI prefix ({@link PypiUrlParser}) — and Maven repository
+ * layouts ({@link MavenUrlParser}). Client headers are read by {@link #detectNpmMetadata} and
+ * {@link #detectClientEcosystem}. Stateless parsing only : the detection layers are chained, and
+ * the request classified, by {@link PackageIdentificationService}.
  */
 @Service
 @NullMarked
 public class UrlParserService {
-
-    // npmjs layout "/{name}/-/{name}-{version}.tgz" (optionally scoped) is parsed by string
-    // splitting in parseNpmjsLayoutTarball rather than by a regex : accepting any repository
-    // prefix in front of it with a regex needs overlapping quantifiers, a ReDoS risk on
-    // client-supplied URLs.
-    private static final String NPM_TARBALL_SEPARATOR = "/-/";
-    private static final String NPM_TARBALL_EXTENSION = ".tgz";
-    // npm.jsr.io : "/~/{rev}/@jsr/{scope}__{name}/{version}.tgz".
-    private static final Pattern NPM_JSR_TARBALL_PATTERN = Pattern.compile("^/~/\\d+/(@jsr/[^/]+)/(\\d[^/]*)\\.tgz$");
-    // npm.pkg.github.com : "/download/@{owner}/{name}/{version}/{sha}".
-    private static final Pattern NPM_GITHUB_TARBALL_PATTERN =
-            Pattern.compile("^/download/(@[^/]+/[^/]+)/(\\d[^/]*)/[0-9a-f]+$");
-
-    // Version group is [^-/]* (not .*): compiled-wheel filenames repeat the ABI tag
-    // (e.g. "tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl"), and a greedy ".*" backtracks
-    // to the LAST "-cp"/"-py" occurrence instead of the first, swallowing part of the tag into
-    // the version ("1.6.0-cp27"). Forbidding '-' after the leading digit stops the version at
-    // the first tag boundary, matching how PyPI itself delimits {name}-{version}-{tag}.whl.
-    // The name group is lazy ([^/]+?, not [^/]+): a greedy name backtracks past the FIRST
-    // "-digit" boundary when the optional build tag segment is present (e.g.
-    // "sentry-22.3.0-0-py38-none-any.whl" is {name}-{version}-{build tag}-{python tag}...),
-    // swallowing the real version into the name and leaving only the build tag digit as the
-    // captured "version". The optional (?:-\d[^-/]*)? group consumes that build tag explicitly.
-    // Implementation tag alternatives per PEP 425: py (generic), cp (CPython), pp (PyPy),
-    // jy (Jython), ip (IronPython) -- these are the only 5 abbreviations the spec defines.
-    private static final Pattern PYPI_WHL_PATTERN =
-            Pattern.compile("^/packages/.*?/([^/]+?)-(\\d[^-/]*)(?:-\\d[^-/]*)?-(?:py|cp|pp|jy|ip)[^/]*\\.whl$");
-    // Filename-anchored, not directory-anchored: real PyPI sdist storage is content-addressed
-    // (hash directories), so a package-name-as-directory backreference only matches the legacy
-    // /packages/source/{letter}/{name}/ layout that pip no longer requests in practice. The
-    // version group is restricted to [^/]* (not .*) so it can't "tunnel" through a "/" and
-    // wrongly consume a directory segment when the legacy layout repeats the name in the path.
-    private static final Pattern PYPI_TAR_PATTERN = Pattern.compile("^/packages/.*?/([^/]+)-([\\d\\.]+[^/]*)\\.tar\\.gz$");
-
-    // Excludes maven-metadata.xml and checksum files (.sha1/.sha256/.sha512/.md5/.asc): those
-    // have no version segment, and without this exclusion the pattern misreads the artifactId
-    // as the version.
-    private static final Pattern MAVEN_PATTERN = Pattern.compile(
-            "^/maven2/(.+)/([^/]+)/([^/]+)/(?!maven-metadata\\.xml$)"
-                    + "(?!.+\\.(?:sha1|sha256|sha512|md5|asc)$)[^/]+$");
-    private static final Pattern MAVEN_STRUCTURAL_PATTERN =
-            Pattern.compile("^/[^/]+/(.+)/([^/]+)/([^/]+)/[^/]+\\.(?:jar|pom|aar|war|ear|zip|module)$");
-
-    // Layer 3 (npm metadata) path shapes that cannot reasonably be anything but an npm registry.
-    // A bare "/{name}" is deliberately NOT here : it is too ambiguous without a client header.
-    // URI.getPath() has already decoded "%2f" to "/" so scoped names arrive as "/@scope/name".
-    private static final Pattern NPM_SCOPED_PACKUMENT_PATTERN =
-            Pattern.compile("^/(@[^/@]+/[^/@]+)(?:/[^/]+)?$");
-    private static final Pattern NPM_UNSCOPED_PACKUMENT_PATTERN = Pattern.compile("^/([^/@-][^/]*)(?:/[^/]+)?$");
-    private static final Pattern NPM_REGISTRY_API_PATTERN =
-            Pattern.compile("^/-/(?:v1/|npm/|package/|user/|ping|whoami).*$");
-    private static final Pattern NPM_DASH_SEGMENT_PATTERN = Pattern.compile("^/(?:@[^/]+/)?[^/@-][^/]*/-/.*$");
-
-    // Abbreviated packument media type requested by npm, pnpm, yarn (berry) and bun.
-    private static final String NPM_INSTALL_MEDIA_TYPE = "application/vnd.npm.install-v1+json";
-    // pnpm and yarn classic also embed "npm/?" in their User-Agent, but the leading token is enough.
-    private static final List<String> NPM_USER_AGENT_PREFIXES = List.of("npm/", "pnpm/", "yarn/", "bun/");
-    // npm CLI request headers (npm-command, npm-scope, npm-in-ci, npm-session, npm-auth-type) and
-    // its fetcher's (pacote-version, pacote-req-type, pacote-pkg-id).
-    private static final List<String> NPM_HEADER_PREFIXES = List.of("npm-", "pacote-");
 
     private record EcosystemRouter(List<String> hostPatterns, Function<String, ParsedPackage> parser) {
         boolean matches(String host) {
@@ -113,9 +53,9 @@ public class UrlParserService {
     }
 
     private static final List<EcosystemRouter> ROUTERS = List.of(
-            new EcosystemRouter(List.of("npmjs.org", "npmjs.com", "npm.pkg.github.com"), UrlParserService::parseNpmUrl),
-            new EcosystemRouter(List.of("pypi.org", "pythonhosted.org", "pypi.python.org"), UrlParserService::parsePypiUrl),
-            new EcosystemRouter(List.of("maven.org", "maven.apache.org"), UrlParserService::parseMavenUrl)
+            new EcosystemRouter(List.of("npmjs.org", "npmjs.com", "npm.pkg.github.com"), NpmUrlParser::parseRegistryPath),
+            new EcosystemRouter(List.of("pypi.org", "pythonhosted.org", "pypi.python.org"), PypiUrlParser::parseRegistryPath),
+            new EcosystemRouter(List.of("maven.org", "maven.apache.org"), MavenUrlParser::parseCentralPath)
     );
 
     @Timed(value = "silicaproxy.service.urlparser.parseurl",
@@ -136,7 +76,7 @@ public class UrlParserService {
                     return router.parser().apply(path);
                 }
             }
-            return detectFromPath(path);
+            return detectFromPath(host, path);
         } catch (Exception ignored) {
             // fallback
         }
@@ -155,23 +95,29 @@ public class UrlParserService {
             description = "Duration of the header/path based npm metadata detection",
             percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<ParsedPackage> detectNpmMetadata(String urlString, HttpHeaders headers) {
-        try {
-            String path = URI.create(urlString).getPath();
-            if (path == null || !(isNpmClient(headers) || isUnambiguousNpmPath(path))) {
-                return Optional.empty();
-            }
-            Matcher scoped = NPM_SCOPED_PACKUMENT_PATTERN.matcher(path);
-            if (scoped.matches()) {
-                return Optional.of(new ParsedPackage(scoped.group(1), ParsedPackage.UNKNOWN, "npm"));
-            }
-            Matcher unscoped = NPM_UNSCOPED_PACKUMENT_PATTERN.matcher(path);
-            if (unscoped.matches()) {
-                return Optional.of(new ParsedPackage(unscoped.group(1), ParsedPackage.UNKNOWN, "npm"));
-            }
-            return Optional.of(ParsedPackage.unknown("npm"));
-        } catch (IllegalArgumentException ignored) {
-            return Optional.empty();
+        return pathOf(urlString).flatMap(path -> NpmUrlParser.detectMetadata(path, headers));
+    }
+
+    /**
+     * Layer 2 for PyPI and Maven, called by {@link PackageIdentificationService} only when neither
+     * {@link #parseUrl(String)} nor {@link #detectNpmMetadata} named an ecosystem : recognises a
+     * PyPI or Maven client from its headers. A PyPI client's sdist ({@code .tar.gz}) is identified
+     * with its version, whatever the layout, the header standing in for the known-prefix context ;
+     * any other request is only tagged with the ecosystem (version "unknown", still bypassed). The
+     * headers can only add an identification the URL did not give, never remove one.
+     */
+    @Timed(value = "silicaproxy.service.urlparser.detectclientecosystem",
+            description = "Duration of the header based PyPI/Maven client detection",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public Optional<ParsedPackage> detectClientEcosystem(String urlString, HttpHeaders headers) {
+        if (PypiUrlParser.isClient(headers)) {
+            return Optional.of(pathOf(urlString).map(PypiUrlParser::parseClientPath)
+                    .orElseGet(() -> ParsedPackage.unknown("pypi")));
         }
+        if (MavenUrlParser.isClient(headers)) {
+            return Optional.of(MavenUrlParser.clientTraffic());
+        }
+        return Optional.empty();
     }
 
     /**
@@ -179,53 +125,7 @@ public class UrlParserService {
      * optionally behind a repository prefix, npm.jsr.io and GitHub Packages layouts.
      */
     public static Optional<ParsedPackage> parseNpmTarball(String path) {
-        Optional<ParsedPackage> npmjsLayout = parseNpmjsLayoutTarball(path);
-        if (npmjsLayout.isPresent()) {
-            return npmjsLayout;
-        }
-        for (Pattern pattern : List.of(NPM_JSR_TARBALL_PATTERN, NPM_GITHUB_TARBALL_PATTERN)) {
-            Matcher m = pattern.matcher(path);
-            if (m.matches()) {
-                return Optional.of(new ParsedPackage(m.group(1), m.group(2), "npm"));
-            }
-        }
-        return Optional.empty();
-    }
-
-    // "{prefix}/{name}/-/{name}-{version}.tgz" or "{prefix}/@{scope}/{name}/-/{name}-{version}.tgz",
-    // where {prefix} is empty (npmjs) or a repository path (Artifactory
-    // "/artifactory/api/npm/{repo}", Nexus "/repository/{repo}", CodeArtifact "/npm/{repo}").
-    // Artifactory writes the scoped file as "-/@{scope}/{name}-{version}.tgz". The version must
-    // start with a digit or a dot, like the historical regex "[\d\.]+.*".
-    private static Optional<ParsedPackage> parseNpmjsLayoutTarball(String path) {
-        int separator = path.lastIndexOf(NPM_TARBALL_SEPARATOR);
-        if (separator <= 0 || !path.endsWith(NPM_TARBALL_EXTENSION)) {
-            return Optional.empty();
-        }
-        String head = path.substring(0, separator);
-        String file = path.substring(separator + NPM_TARBALL_SEPARATOR.length(), path.length() - NPM_TARBALL_EXTENSION.length());
-        int lastSlash = head.lastIndexOf('/');
-        String name = head.substring(lastSlash + 1);
-        if (name.isEmpty() || name.charAt(0) == '@') {
-            return Optional.empty();
-        }
-        int scopeSlash = lastSlash > 0 ? head.lastIndexOf('/', lastSlash - 1) : -1;
-        String parentSegment = lastSlash > 0 ? head.substring(scopeSlash + 1, lastSlash) : "";
-        boolean scoped = parentSegment.length() > 1 && parentSegment.charAt(0) == '@';
-        String fullName = scoped ? parentSegment + "/" + name : name;
-
-        String versionAndRest;
-        if (file.startsWith(name + "-")) {
-            versionAndRest = file.substring(name.length() + 1);
-        } else if (scoped && file.startsWith(fullName + "-")) {
-            versionAndRest = file.substring(fullName.length() + 1);
-        } else {
-            return Optional.empty();
-        }
-        if (versionAndRest.isEmpty() || !isVersionStart(versionAndRest.charAt(0))) {
-            return Optional.empty();
-        }
-        return Optional.of(new ParsedPackage(fullName, versionAndRest, "npm"));
+        return NpmUrlParser.parseTarball(path);
     }
 
     /**
@@ -233,100 +133,28 @@ public class UrlParserService {
      * Packages uses ; false for an unparseable URL.
      */
     public static boolean hasNpmTarballExtension(String url) {
-        try {
-            String path = URI.create(url).getPath();
-            return path != null && path.endsWith(NPM_TARBALL_EXTENSION);
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
+        return pathOf(url).map(path -> path.endsWith(NpmUrlParser.TARBALL_EXTENSION)).orElse(false);
     }
 
-    private static boolean isVersionStart(char c) {
-        return c == '.' || c >= '0' && c <= '9';
-    }
-
-    private static ParsedPackage detectFromPath(String path) {
-        Optional<ParsedPackage> npmTarball = parseNpmTarball(path);
+    private static ParsedPackage detectFromPath(String host, String path) {
+        Optional<ParsedPackage> npmTarball = NpmUrlParser.parseTarball(path);
         if (npmTarball.isPresent()) {
             return npmTarball.get();
         }
-        Optional<ParsedPackage> pypi = parsePypiPath(path);
+        Optional<ParsedPackage> pypi = PypiUrlParser.parsePath(path);
         if (pypi.isPresent()) {
             return pypi.get();
         }
-        Matcher m = MAVEN_STRUCTURAL_PATTERN.matcher(path);
-        if (m.matches()) {
-            return mavenPackage(m);
+        return MavenUrlParser.parseRepositoryPath(host, path)
+                .orElseGet(() -> ParsedPackage.unknown(ParsedPackage.UNKNOWN));
+    }
+
+    // Decoded path of the URL ; empty when the URL is unparseable or has no path.
+    private static Optional<String> pathOf(String url) {
+        try {
+            return Optional.ofNullable(URI.create(url).getPath());
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
         }
-        return ParsedPackage.unknown(ParsedPackage.UNKNOWN);
-    }
-
-    private static boolean isNpmClient(HttpHeaders headers) {
-        if (containsNpmInstallMediaType(headers.getFirst(HttpHeaders.ACCEPT))
-                || hasNpmUserAgent(headers.getFirst(HttpHeaders.USER_AGENT))) {
-            return true;
-        }
-        for (String name : headers.headerNames()) {
-            String lower = name.toLowerCase(Locale.ROOT);
-            for (String prefix : NPM_HEADER_PREFIXES) {
-                if (lower.startsWith(prefix)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean containsNpmInstallMediaType(@Nullable String accept) {
-        return accept != null && accept.toLowerCase(Locale.ROOT).contains(NPM_INSTALL_MEDIA_TYPE);
-    }
-
-    private static boolean hasNpmUserAgent(@Nullable String userAgent) {
-        if (userAgent == null) {
-            return false;
-        }
-        String lower = userAgent.toLowerCase(Locale.ROOT);
-        for (String prefix : NPM_USER_AGENT_PREFIXES) {
-            if (lower.startsWith(prefix)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isUnambiguousNpmPath(String path) {
-        return NPM_SCOPED_PACKUMENT_PATTERN.matcher(path).matches()
-                || NPM_REGISTRY_API_PATTERN.matcher(path).matches()
-                || NPM_DASH_SEGMENT_PATTERN.matcher(path).matches();
-    }
-
-    private static ParsedPackage parseNpmUrl(String path) {
-        return parseNpmTarball(path).orElseGet(() -> ParsedPackage.unknown("npm"));
-    }
-
-    private static ParsedPackage parsePypiUrl(String path) {
-        return parsePypiPath(path).orElseGet(() -> ParsedPackage.unknown("pypi"));
-    }
-
-    // Wheel first, then sdist : both are filename-anchored, whatever the host.
-    private static Optional<ParsedPackage> parsePypiPath(String path) {
-        for (Pattern pattern : List.of(PYPI_WHL_PATTERN, PYPI_TAR_PATTERN)) {
-            Matcher m = pattern.matcher(path);
-            if (m.matches()) {
-                return Optional.of(new ParsedPackage(m.group(1), m.group(2), "pypi"));
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static ParsedPackage parseMavenUrl(String path) {
-        Matcher m = MAVEN_PATTERN.matcher(path);
-        return m.matches() ? mavenPackage(m) : ParsedPackage.unknown("maven");
-    }
-
-    // Groups : (1) groupId path, (2) artifactId, (3) version.
-    private static ParsedPackage mavenPackage(Matcher m) {
-        String groupId = m.group(1).replace('/', '.');
-        return new ParsedPackage(groupId + ":" + m.group(2), m.group(3), "maven");
     }
 }
