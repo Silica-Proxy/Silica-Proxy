@@ -23,8 +23,14 @@ import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
-import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
+import com.silicaproxy.properties.NpmPackumentIndexProperties;
+import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
+import com.silicaproxy.service.interception.NpmPackumentIndex;
+import com.silicaproxy.service.interception.PackageIdentificationService;
+import com.silicaproxy.service.interception.PackageIdentificationService.Identification;
+import com.silicaproxy.service.interception.PackageIdentificationService.Outcome;
+import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.UrlParserService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -53,7 +59,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class ProxyControllerTest {
 
+    // Identification mocked : exercises the controller's orchestration only (decision, audit,
+    // metrics, relay). Detection itself is covered by PackageIdentificationServiceTest.
     private MockMvc mockMvc;
+
+    // Real PackageIdentificationService + real NpmPackumentIndex over a mocked URL parser : for the
+    // scenarios that span a packument relay and the tarball request it makes identifiable.
+    private MockMvc endToEndMockMvc;
 
     @Mock
     private SecurityService securityService;
@@ -65,28 +77,45 @@ class ProxyControllerTest {
     private ProxyStreamClient proxyStreamClient;
 
     @Mock
+    private PackageIdentificationService packageIdentification;
+
+    @Mock
     private UrlParserService urlParserService;
 
     @Mock
     private NpmTarballIndexDao npmTarballIndexDao;
-
-    @Mock
-    private RegistryClient registryClient;
 
     private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient, urlParserService, meterRegistry, new JsonMapper(), npmTarballIndexDao, registryClient);
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        NpmPackumentIndexProperties indexProperties =
+                new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024, UnidentifiedTarballAction.ALLOW);
+        NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), indexProperties, npmTarballIndexDao);
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProxyController(securityService, auditLogService,
+                proxyStreamClient, packageIdentification, index, meterRegistry, new JsonMapper())).build();
+        PackageIdentificationService realIdentification =
+                new PackageIdentificationService(urlParserService, index, indexProperties);
+        endToEndMockMvc = MockMvcBuilders.standaloneSetup(new ProxyController(securityService, auditLogService,
+                proxyStreamClient, realIdentification, index, meterRegistry, new JsonMapper())).build();
+    }
+
+    private void evaluate(String packageName, String version, String ecosystem) {
+        when(packageIdentification.identify(anyString(), anyString(), any(HttpHeaders.class)))
+                .thenReturn(new Identification(new ParsedPackage(packageName, version, ecosystem), Outcome.EVALUATE, false));
+    }
+
+    private void bypass(String ecosystem) {
+        when(packageIdentification.identify(anyString(), anyString(), any(HttpHeaders.class)))
+                .thenReturn(new Identification(ParsedPackage.unknown(ecosystem), Outcome.BYPASS, false));
     }
 
     @Test
     void shouldStreamValidPackageWithHeaders() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         
         byte[] fakeTarball = "fake-tarball-content".getBytes();
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
@@ -114,7 +143,7 @@ class ProxyControllerTest {
         // StreamResponse must be closed once forwarding completes.
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
 
         byte[] fakeTarball = "fake-tarball-content".getBytes();
         java.io.Closeable underlyingResponse = mock(java.io.Closeable.class);
@@ -137,7 +166,7 @@ class ProxyControllerTest {
     void shouldBlockPackageAndReturnRfc7807() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
         when(securityService.getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString())).thenReturn(blocked);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.20", "npm"));
+        evaluate("lodash", "4.17.20", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"))
                 .andExpect(status().isForbidden())
@@ -159,7 +188,7 @@ class ProxyControllerTest {
     void shouldStripPortWhenUpgradingToHttps() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         
         byte[] fakeTarball = "fake-tarball-content".getBytes();
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
@@ -189,7 +218,7 @@ class ProxyControllerTest {
         // genuinely differs from the connector's own local port (8080, request.getLocalPort()):
         // it is part of the original request (e.g. a private mirror on a non-standard port) and
         // must be preserved rather than silently dropped (spec bug: previously always stripped).
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        bypass("unknown");
 
         byte[] fakeContent = "mirror-content".getBytes();
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
@@ -212,7 +241,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldNotUpgradeOrStripPortForLocalhost() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        bypass("unknown");
         
         byte[] fakeContent = "local-content".getBytes();
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
@@ -231,7 +260,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldBypassSecurityCheckForUnknownPackages() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "maven"));
+        bypass("maven");
 
         byte[] fakeContent = "system-version-info".getBytes();
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
@@ -254,7 +283,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldIncrementBypassMetricForFullyUnrecognizedUrl() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        bypass("unknown");
         stubStreaming("some-content".getBytes());
 
         double before = meterRegistry.find(Metrics.BYPASS_METRIC)
@@ -282,7 +311,7 @@ class ProxyControllerTest {
     void shouldStreamWhenDecisionIsWhitelist() throws Exception {
         DecisionResult whitelisted = new DecisionResult("COMPANY_POLICY", "WHITELIST", "Approved by security team");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         stubStreaming("whitelisted-content".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
@@ -295,7 +324,7 @@ class ProxyControllerTest {
     void shouldBlockAndReturnRfc7807WhenDecisionIsBlacklist() throws Exception {
         DecisionResult blacklisted = new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Banned by security team");
         when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("shelljs", "0.8.5", "npm"));
+        evaluate("shelljs", "0.8.5", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/shelljs/-/shelljs-0.8.5.tgz"))
                 .andExpect(status().isForbidden())
@@ -311,7 +340,7 @@ class ProxyControllerTest {
     void shouldUseQuarantineBlockedErrorCodeForQuarantineStep() throws Exception {
         DecisionResult quarantined = new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", "Published less than 7 days ago");
         when(securityService.getDecision(eq("new-pkg"), eq("0.0.1"), eq("npm"), anyString())).thenReturn(quarantined);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("new-pkg", "0.0.1", "npm"));
+        evaluate("new-pkg", "0.0.1", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/new-pkg/-/new-pkg-0.0.1.tgz"))
                 .andExpect(status().isForbidden())
@@ -326,7 +355,7 @@ class ProxyControllerTest {
     void shouldUseSecurityBlockedErrorCodeForEveryNonQuarantineBlockingStep(String sourceType) throws Exception {
         DecisionResult blocked = new DecisionResult(sourceType, "BLOCK", "Blocked for test reasons");
         when(securityService.getDecision(eq("some-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("some-pkg", "1.0.0", "npm"));
+        evaluate("some-pkg", "1.0.0", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/some-pkg/-/some-pkg-1.0.0.tgz"))
                 .andExpect(status().isForbidden())
@@ -340,7 +369,7 @@ class ProxyControllerTest {
     void shouldAllowWhenApiCacheDecisionIsAllow() throws Exception {
         DecisionResult cached = new DecisionResult("API_CACHE", "ALLOW", "Validated via API cache");
         when(securityService.getDecision(eq("safe-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(cached);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("safe-pkg", "1.0.0", "npm"));
+        evaluate("safe-pkg", "1.0.0", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/safe-pkg/-/safe-pkg-1.0.0.tgz"))
@@ -351,7 +380,7 @@ class ProxyControllerTest {
     void shouldAllowWhenDecisionIsDefault() throws Exception {
         DecisionResult defaultAllow = new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
         when(securityService.getDecision(eq("unrated-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(defaultAllow);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unrated-pkg", "1.0.0", "npm"));
+        evaluate("unrated-pkg", "1.0.0", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/unrated-pkg/-/unrated-pkg-1.0.0.tgz"))
@@ -362,7 +391,7 @@ class ProxyControllerTest {
     void shouldReturnBadGatewayWhenUpstreamRegistryFailsAfterAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
                 .thenThrow(new IOException("Connection refused"));
 
@@ -377,7 +406,7 @@ class ProxyControllerTest {
     void shouldLogAuditWithExactReasonAndNonNegativeExecutionTime() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-9999");
         when(securityService.getDecision(eq("vuln-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("vuln-pkg", "1.0.0", "npm"));
+        evaluate("vuln-pkg", "1.0.0", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/vuln-pkg/-/vuln-pkg-1.0.0.tgz"))
                 .andExpect(status().isForbidden());
@@ -396,7 +425,7 @@ class ProxyControllerTest {
     void shouldPropagateMultipleRequestHeadersToUpstreamOnAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
@@ -416,7 +445,7 @@ class ProxyControllerTest {
     void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnAllow() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
@@ -433,7 +462,7 @@ class ProxyControllerTest {
     void shouldIncrementDecisionCounterTaggedByVerdictSourceAndEcosystemOnBlock() throws Exception {
         DecisionResult blocked = new DecisionResult("PUBLIC_VULN", "BLOCK", "Known vulnerability CVE-1234");
         when(securityService.getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString())).thenReturn(blocked);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.20", "npm"));
+        evaluate("lodash", "4.17.20", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"))
                 .andExpect(status().isForbidden());
@@ -449,7 +478,7 @@ class ProxyControllerTest {
     void shouldIncrementDecisionCounterForWhitelistAndBlacklistVerdicts() throws Exception {
         DecisionResult whitelisted = new DecisionResult("COMPANY_POLICY", "WHITELIST", "Approved by security team");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         stubStreaming("whitelisted-content".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
@@ -457,7 +486,7 @@ class ProxyControllerTest {
 
         DecisionResult blacklisted = new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Banned by security team");
         when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("shelljs", "0.8.5", "npm"));
+        evaluate("shelljs", "0.8.5", "npm");
 
         mockMvc.perform(get("http://registry.npmjs.org/shelljs/-/shelljs-0.8.5.tgz"))
                 .andExpect(status().isForbidden());
@@ -474,7 +503,7 @@ class ProxyControllerTest {
     void shouldAccumulateDecisionCounterAcrossRepeatedRequestsForSameTags() throws Exception {
         DecisionResult allowed = new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
         when(securityService.getDecision(eq("unrated-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unrated-pkg", "1.0.0", "npm"));
+        evaluate("unrated-pkg", "1.0.0", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/unrated-pkg/-/unrated-pkg-1.0.0.tgz")).andExpect(status().isOk());
@@ -492,7 +521,7 @@ class ProxyControllerTest {
     void shouldForwardQueryStringToUpstreamUrl() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
         stubStreaming("ok".getBytes());
 
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz?cache=false"))
@@ -510,7 +539,7 @@ class ProxyControllerTest {
     void shouldNotForwardHttp2PseudoHeadersToDownstreamClient() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
 
         HttpHeaders upstreamHeaders = new HttpHeaders();
         upstreamHeaders.add(":status", "200");
@@ -533,7 +562,7 @@ class ProxyControllerTest {
     void shouldForwardNormalHeadersWhenUpstreamAlsoSendsPseudoHeaders() throws Exception {
         DecisionResult allowed = new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(allowed);
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("lodash", "4.17.21", "npm"));
+        evaluate("lodash", "4.17.21", "npm");
 
         HttpHeaders upstreamHeaders = new HttpHeaders();
         upstreamHeaders.add(":status", "200");
@@ -552,9 +581,9 @@ class ProxyControllerTest {
 
     @Test
     void shouldTagBypassWithNpmWhenMetadataDetectorRecognisesUnknownHost() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
-        when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
-                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("@jsr/zerun__group-deps", "unknown", "npm")));
+        when(packageIdentification.identify(anyString(), anyString(), any(HttpHeaders.class)))
+                .thenReturn(new Identification(new ParsedPackage("@jsr/zerun__group-deps", ParsedPackage.UNKNOWN, "npm"),
+                        Outcome.BYPASS, true));
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream("{}".getBytes())));
 
@@ -562,7 +591,9 @@ class ProxyControllerTest {
                         .header("Accept", "application/vnd.npm.install-v1+json"))
                 .andExpect(status().isOk());
 
-        verify(urlParserService).detectNpmMetadata(eq("http://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class));
+        // Intercepted URL for the parser/detector, https-upgraded one for the packument index.
+        verify(packageIdentification).identify(eq("http://npm.jsr.io/@jsr/zerun__group-deps"),
+                eq("https://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class));
         verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
         verify(proxyStreamClient).streamContent(eq("https://npm.jsr.io/@jsr/zerun__group-deps"), any(HttpHeaders.class));
         assertThat(meterRegistry.get(Metrics.BYPASS_METRIC)
@@ -572,9 +603,9 @@ class ProxyControllerTest {
     @Test
     void shouldIdentifyTarballFromRelayedPackumentWhateverTheUrlLayout() throws Exception {
         // 1. Packument on an unknown host : bypassed, but its dist.tarball URLs get indexed.
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "unknown"));
         when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
-                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("@jsr/zerun__group-deps", "unknown", "npm")));
+                .thenReturn(Optional.of(new ParsedPackage("@jsr/zerun__group-deps", "unknown", "npm")));
         String packument = """
                 {"name":"@jsr/zerun__group-deps","versions":{"0.1.5":{"version":"0.1.5",
                  "dist":{"tarball":"https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"}}}}
@@ -585,7 +616,7 @@ class ProxyControllerTest {
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, jsonHeaders,
                         new ByteArrayInputStream(packument.getBytes())));
 
-        mockMvc.perform(get("http://npm.jsr.io/@jsr/zerun__group-deps"))
+        endToEndMockMvc.perform(get("http://npm.jsr.io/@jsr/zerun__group-deps"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(packument));
         verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
@@ -597,7 +628,7 @@ class ProxyControllerTest {
         when(proxyStreamClient.streamContent(eq("https://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream(tarball)));
 
-        mockMvc.perform(get("http://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"))
+        endToEndMockMvc.perform(get("http://npm.jsr.io/~/11/@jsr/zerun__group-deps/0.1.5.tgz"))
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(tarball));
 
@@ -608,20 +639,20 @@ class ProxyControllerTest {
 
     @Test
     void shouldBlockTarballIdentifiedThroughPackumentIndex() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "unknown"));
+        when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "unknown"));
         when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
-                .thenReturn(Optional.of(new UrlParserService.ParsedPackage("unknown", "unknown", "npm")));
+                .thenReturn(Optional.of(new ParsedPackage("unknown", "unknown", "npm")));
         HttpHeaders jsonHeaders = new HttpHeaders();
         jsonHeaders.add("Content-Type", "application/json; charset=utf-8");
         String packument = "{\"name\":\"evil\",\"versions\":{\"1.0.0\":{\"dist\":{\"tarball\":\"https://mirror.internal/blobs/abc.tgz\"}}}}";
         when(proxyStreamClient.streamContent(eq("https://mirror.internal/evil"), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, jsonHeaders, new ByteArrayInputStream(packument.getBytes())));
-        mockMvc.perform(get("http://mirror.internal/evil")).andExpect(status().isOk());
+        endToEndMockMvc.perform(get("http://mirror.internal/evil")).andExpect(status().isOk());
 
         when(securityService.getDecision(eq("evil"), eq("1.0.0"), eq("npm"), anyString()))
                 .thenReturn(new DecisionResult("BLACKLIST", "BLOCK", "Known malware"));
 
-        mockMvc.perform(get("http://mirror.internal/blobs/abc.tgz"))
+        endToEndMockMvc.perform(get("http://mirror.internal/blobs/abc.tgz"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.package").value("evil"))
                 .andExpect(jsonPath("$.version").value("1.0.0"));
@@ -630,7 +661,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldNotIndexNonJsonOrNonOkMetadataResponses() throws Exception {
-        when(urlParserService.parseUrl(anyString())).thenReturn(new UrlParserService.ParsedPackage("unknown", "unknown", "npm"));
+        when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "npm"));
         HttpHeaders html = new HttpHeaders();
         html.add("Content-Type", "text/html");
         String body = "{\"name\":\"x\",\"versions\":{\"1.0.0\":{\"dist\":{\"tarball\":\"https://r.internal/x.tgz\"}}}}";
@@ -643,9 +674,9 @@ class ProxyControllerTest {
         when(proxyStreamClient.streamContent(eq("https://r.internal/x.tgz"), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream(new byte[0])));
 
-        mockMvc.perform(get("http://r.internal/x")).andExpect(status().isOk()).andExpect(content().string(body));
-        mockMvc.perform(get("http://r.internal/y")).andExpect(status().isNotFound());
-        mockMvc.perform(get("http://r.internal/x.tgz")).andExpect(status().isOk());
+        endToEndMockMvc.perform(get("http://r.internal/x")).andExpect(status().isOk()).andExpect(content().string(body));
+        endToEndMockMvc.perform(get("http://r.internal/y")).andExpect(status().isNotFound());
+        endToEndMockMvc.perform(get("http://r.internal/x.tgz")).andExpect(status().isOk());
 
         verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
     }

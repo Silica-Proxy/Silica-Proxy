@@ -52,9 +52,5 @@ public record NpmPackumentIndexProperties(
         // canonical constructor, the one bound by Spring
     }
 
-    public NpmPackumentIndexProperties(boolean enabled, int maxEntries, int ttlMinutes, long maxBodyBytes) {
-        this(enabled, maxEntries, ttlMinutes, maxBodyBytes, UnidentifiedTarballAction.ALLOW);
-    }
-
     public enum UnidentifiedTarballAction { ALLOW, BLOCK }
 }

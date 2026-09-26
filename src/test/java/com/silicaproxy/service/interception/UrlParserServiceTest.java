@@ -17,7 +17,6 @@
 
 package com.silicaproxy.service.interception;
 
-import com.silicaproxy.service.interception.UrlParserService.ParsedPackage;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 
