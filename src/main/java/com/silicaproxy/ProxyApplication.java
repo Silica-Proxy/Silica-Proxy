@@ -21,6 +21,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
+import com.silicaproxy.properties.ResponseIdentificationProperties;
 import com.silicaproxy.properties.SilicaProxyProperties;
 
 /**
@@ -29,7 +30,8 @@ import com.silicaproxy.properties.SilicaProxyProperties;
  * (internal port) and, via {@code LoomProxyServer}, the TCP server of the external public port.
  */
 @SpringBootApplication
-@EnableConfigurationProperties({SilicaProxyProperties.class, NpmPackumentIndexProperties.class})
+@EnableConfigurationProperties({SilicaProxyProperties.class, NpmPackumentIndexProperties.class,
+        ResponseIdentificationProperties.class})
 public class ProxyApplication {
 
     public static void main(String[] args) {

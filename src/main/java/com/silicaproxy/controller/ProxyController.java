@@ -26,10 +26,16 @@ import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.PackageIdentificationService;
 import com.silicaproxy.service.interception.PackageIdentificationService.Identification;
 import com.silicaproxy.service.interception.PackageIdentificationService.Outcome;
+import com.silicaproxy.service.interception.ChecksumVerifyingRelay;
+import com.silicaproxy.service.interception.ChecksumVerifyingRelay.ChecksumMismatchException;
 import com.silicaproxy.service.interception.ParsedPackage;
+import com.silicaproxy.service.interception.ResponseIdentificationService;
+import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -47,6 +53,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.net.URI;
@@ -60,7 +67,9 @@ import java.util.Enumeration;
  * {@link SecurityService} for the decision, 
  * then either streams the download (ALLOW/WHITELIST) or returns a detailed 403 RFC 7807 
  * response (BLOCK/BLACKLIST). Called at each dependency resolution by package managers 
- * (npm, pip, Maven) ; each call also triggers an asynchronous audit.
+ * (npm, pip, Maven) ; each call also triggers an asynchronous audit. A request its URL does not
+ * identify gets a last chance from the upstream response ({@link ResponseIdentificationService}),
+ * before its body is relayed.
  */
 @RestController
 @NullMarked
@@ -75,6 +84,8 @@ public class ProxyController {
     private final ProxyStreamClient proxyStreamClient;
     private final PackageIdentificationService packageIdentification;
     private final NpmPackumentIndex npmPackumentIndex;
+    // null : identification from the upstream response disabled (not injected).
+    private @Nullable ResponseIdentificationService responseIdentification;
     private final ObjectMapper objectMapper;
     // Pre-built once at startup (like LoomProxyServer.sslHandshakeTimer) instead of calling
     // Timer.builder(...).register(...) on every request: register() still does a registry
@@ -100,6 +111,16 @@ public class ProxyController {
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
+    }
+
+    /**
+     * Enables identification from the upstream response. Setter-injected (optional collaborator) so
+     * the constructor, used as-is by the existing tests, stays unchanged : without it, requests the
+     * URL does not identify are relayed unchecked.
+     */
+    @Autowired(required = false)
+    public void setResponseIdentification(ResponseIdentificationService responseIdentification) {
+        this.responseIdentification = responseIdentification;
     }
 
     private static Timer buildSecurityOverheadTimer(MeterRegistry meterRegistry, String decisionTag) {
@@ -169,22 +190,52 @@ public class ProxyController {
         String ecosystem = parsed.ecosystem();
 
         if (identification.outcome() == Outcome.BYPASS) {
-            recordBypassMetric(ecosystem);
-            if (parsed.hasEcosystem()) {
-                // Metadata/index traffic (packuments, dist-tags, search…) is expected on every
-                // install and carries nothing to vet : not a warning.
-                LOG.info("Non-package resource (metadata/index) for ecosystem {}. Bypassing security control for : {}",
-                        ecosystem, forwardUrl);
+            ResponseIdentificationService identifier = responseIdentification;
+            if (identifier != null && identifier.isEnabled()) {
+                forwardIdentifyingResponse(identifier, fullUrl, forwardUrl, headers, response, identification,
+                        startTime);
             } else {
-                LOG.warn("Unknown ecosystem. Bypassing security control for : {}", forwardUrl);
+                recordBypass(parsed, forwardUrl);
+                forwardRequest(forwardUrl, headers, response, identification.learnPackument());
             }
-            forwardRequest(forwardUrl, headers, response, identification.learnPackument());
             return;
         }
 
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
                 : securityService.getDecision(packageName, version, ecosystem, fullUrl);
+        if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
+            return;
+        }
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Request ALLOWED : Forwarding to {}", forwardUrl);
+        }
+        forwardRequest(forwardUrl, headers, response, false);
+    }
+
+    private void recordBypass(ParsedPackage parsed, String forwardUrl) {
+        recordBypassMetric(parsed.ecosystem());
+        if (parsed.hasEcosystem()) {
+            // Metadata/index traffic (packuments, dist-tags, search…) is expected on every
+            // install and carries nothing to vet : not a warning.
+            LOG.info("Non-package resource (metadata/index) for ecosystem {}. Bypassing security control for : {}",
+                    parsed.ecosystem(), forwardUrl);
+        } else {
+            LOG.warn("Unknown ecosystem. Bypassing security control for : {}", forwardUrl);
+        }
+    }
+
+    /**
+     * Records, audits and, when blocked, answers the 403 for a decision on {@code pkg}.
+     *
+     * @return whether the request was blocked (the response is then already written)
+     */
+    private boolean applyDecision(DecisionResult decision, ParsedPackage pkg, String fullUrl, long startTime,
+            HttpServletResponse response) throws IOException {
+        String packageName = pkg.packageName();
+        String version = pkg.version();
+        String ecosystem = pkg.ecosystem();
         long executionTimeMs = System.currentTimeMillis() - startTime;
         boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
         (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));
@@ -210,13 +261,59 @@ public class ProxyController {
             LOG.warn("Request BLOCKED for {}/{} (ecosystem={}, step={}) : {}",
                     packageName, version, ecosystem, decision.sourceType(), decision.reason());
             sendProblemDetail(response, packageName, version, ecosystem, decision);
-            return;
+            return true;
         }
+        return false;
+    }
 
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Request ALLOWED : Forwarding to {}", forwardUrl);
+    /**
+     * Relays an unidentified request, unless the upstream response identifies the package : its
+     * announced file digest is looked up before the body is relayed, and a package found that way
+     * goes through the security decision like one identified from its URL. A blocked body is never
+     * relayed ; an allowed one is relayed while its digest is recomputed, and the connection is
+     * cut if it does not match the announced one.
+     */
+    private void forwardIdentifyingResponse(ResponseIdentificationService identifier, String fullUrl,
+            String forwardUrl, HttpHeaders headers, HttpServletResponse response, Identification identification,
+            long startTime) throws IOException {
+        String ecosystem = identification.pkg().ecosystem();
+        try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(forwardUrl, headers)) {
+            Optional<ResponseIdentification> found = identifier.identify(streamResponse.status(), streamResponse.headers());
+            if (found.isEmpty()) {
+                recordBypass(identification.pkg(), forwardUrl);
+                relay(streamResponse, forwardUrl, response, identification.learnPackument());
+                return;
+            }
+            ParsedPackage pkg = found.get().pkg();
+            ecosystem = pkg.ecosystem();
+            DecisionResult decision = securityService.getDecision(pkg.packageName(), pkg.version(), ecosystem, fullUrl);
+            if (applyDecision(decision, pkg, fullUrl, startTime, response)) {
+                // The upstream body is dropped unread : try-with-resources releases the connection.
+                return;
+            }
+            copyStatusAndHeaders(streamResponse, response);
+            ChecksumVerifyingRelay.relay(streamResponse.body(), response.getOutputStream(), found.get().digest());
+        } catch (ChecksumMismatchException e) {
+            LOG.error("Upstream body digest does not match the announced one, download aborted for {} : {}",
+                    forwardUrl, e.getMessage());
+            Counter.builder(Metrics.CHECKSUM_MISMATCH_METRIC)
+                    .description("Downloads identified from their announced digest whose body did not match it")
+                    .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                    .register(meterRegistry)
+                    .increment();
+            if (!response.isCommitted()) {
+                // Nothing reached the client yet (small body) : a clean error instead of a cut.
+                response.reset();
+                response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Upstream body does not match its checksum.");
+                return;
+            }
+            // Part of the body is already on the wire : rethrown so the servlet container aborts
+            // the connection and the client never takes the truncated body for a complete one.
+            throw e;
+        } catch (Exception e) {
+            LOG.error("Proxy error to upstream registry when forwarding request {}", forwardUrl, e);
+            response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
         }
-        forwardRequest(forwardUrl, headers, response, false);
     }
 
     private void forwardRequest(String fullUrl, HttpHeaders headers, HttpServletResponse response,
@@ -226,34 +323,42 @@ public class ProxyController {
         // response) -- every proxied request used to leak a connection, including on partial
         // copies or bodyless responses.
         try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(fullUrl, headers)) {
-            response.setStatus(streamResponse.status().value());
-
-            streamResponse.headers().forEach((headerName, headerValues) -> {
-                // JdkClientHttpRequestFactory (Java HttpClient) exposes HTTP/2 pseudo-headers
-                // (ex: ":status: 200") in the response map. Passing them as-is in
-                // an HTTP/1.1 response causes "Invalid header: :status" for downstream
-                // HTTP/1.1 clients (Apache HttpClient used by artifacts repositories).
-                if (!headerName.equalsIgnoreCase("Transfer-Encoding") && !headerName.startsWith(":")) {
-                    for (String headerValue : headerValues) {
-                        response.addHeader(headerName, headerValue);
-                    }
-                }
-            });
-
-            if (streamResponse.body() != null) {
-                if (learnPackument && isJsonOk(streamResponse)) {
-                    npmPackumentIndex.relayAndIndex(streamResponse.body(),
-                            streamResponse.headers().getFirst(HttpHeaders.CONTENT_ENCODING), fullUrl,
-                            response.getOutputStream());
-                } else {
-                    // Buffer of 16 KB (default in StreamUtils.copy)
-                    StreamUtils.copy(streamResponse.body(), response.getOutputStream());
-                }
-            }
+            relay(streamResponse, fullUrl, response, learnPackument);
         } catch (Exception e) {
             LOG.error("Proxy error to upstream registry when forwarding request {}", fullUrl, e);
             response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
         }
+    }
+
+    private void relay(ProxyStreamClient.StreamResponse streamResponse, String fullUrl, HttpServletResponse response,
+            boolean learnPackument) throws IOException {
+        copyStatusAndHeaders(streamResponse, response);
+        if (streamResponse.body() != null) {
+            if (learnPackument && isJsonOk(streamResponse)) {
+                npmPackumentIndex.relayAndIndex(streamResponse.body(),
+                        streamResponse.headers().getFirst(HttpHeaders.CONTENT_ENCODING), fullUrl,
+                        response.getOutputStream());
+            } else {
+                // Buffer of 16 KB (default in StreamUtils.copy)
+                StreamUtils.copy(streamResponse.body(), response.getOutputStream());
+            }
+        }
+    }
+
+    private static void copyStatusAndHeaders(ProxyStreamClient.StreamResponse streamResponse,
+            HttpServletResponse response) {
+        response.setStatus(streamResponse.status().value());
+        streamResponse.headers().forEach((headerName, headerValues) -> {
+            // JdkClientHttpRequestFactory (Java HttpClient) exposes HTTP/2 pseudo-headers
+            // (ex: ":status: 200") in the response map. Passing them as-is in
+            // an HTTP/1.1 response causes "Invalid header: :status" for downstream
+            // HTTP/1.1 clients (Apache HttpClient used by artifacts repositories).
+            if (!headerName.equalsIgnoreCase("Transfer-Encoding") && !headerName.startsWith(":")) {
+                for (String headerValue : headerValues) {
+                    response.addHeader(headerName, headerValue);
+                }
+            }
+        });
     }
 
     private static boolean isJsonOk(ProxyStreamClient.StreamResponse streamResponse) {

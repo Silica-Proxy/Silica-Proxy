@@ -46,6 +46,10 @@ public final class Metrics {
     public static final String DECISIONS_METRIC = "silicaproxy.controller.decisions";
     public static final String BYPASS_METRIC = "silicaproxy.controller.security.bypass";
 
+    // ---- ResponseIdentificationService / ProxyController (identification from the response) ----
+    public static final String RESPONSE_IDENTIFICATION_METRIC = "silicaproxy.identification.response";
+    public static final String CHECKSUM_MISMATCH_METRIC = "silicaproxy.identification.checksum.mismatch";
+
     // ---- SecurityService ----
     public static final String EXTERNAL_API_CALLS_METRIC = "silicaproxy.external.api.calls";
     public static final String OSV_LIVE = "OSV_LIVE";

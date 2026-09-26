@@ -226,6 +226,15 @@ silicaproxy:
     # check (bypass) ; BLOCK = 403 (UNIDENTIFIED_ARTIFACT)
     unidentified-tarball-action: ALLOW
 
+  # 8c. Last-resort identification from the upstream response, for requests whose URL names no
+  # package version : the file digest announced by the upstream (X-Checksum-Sha256/Sha1 on
+  # Artifactory and Maven Central, ETag on Nexus 3) is looked up on deps.dev, and recomputed
+  # while the body is relayed (connection cut on mismatch). Only the digest is sent to deps.dev.
+  # Identified digests are stored in the file_digest_index table and looked up there first.
+  # Requires silicaproxy.api-fallback.deps-dev.enabled ; false = no lookup at all.
+  response-identification:
+    enabled: true
+
   # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
   # shared API key protection on internal admin/API endpoints)
   security:

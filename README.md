@@ -307,6 +307,40 @@ described in [Deployment](#deployment)), the proxy sees the repository's own
 `User-Agent` (`Artifactory/…`, `Nexus/…`), so these hints only help clients that use the proxy
 directly.
 
+#### Identification from the upstream response
+
+When nothing above identifies a request (unknown layout, opaque download URL, `npm ci` on an
+unknown registry…), the proxy gets a last chance from the upstream response itself, before
+relaying its body and without any extra upstream call :
+
+- **Source** : the file digest the upstream announces — `X-Checksum-Sha256`, else
+  `X-Checksum-Sha1` (Artifactory, Maven Central), else an `ETag` that is exactly a quoted SHA-1
+  (Nexus 3) — is looked up on deps.dev (`/v3/query?hash.type=…&hash.value=…`), which indexes npm,
+  PyPI and Maven files. A digest matching one package version identifies it ; the request then
+  goes through the full security decision like one identified from its URL (a BLOCK answers the
+  usual 403 and the body is never relayed). Only `200` responses that are neither re-encoded
+  (`Content-Encoding`) nor metadata (JSON, HTML, XML, text) are considered. The announced file
+  name (`Content-Disposition`) is not used, as nothing can verify it.
+- **Verification** : the announced digest is not trusted as-is — a malicious upstream could
+  announce the digest of a harmless package. The proxy recomputes it while streaming and holds back
+  the tail of the body (at least 16 KiB) until the end : on a mismatch the tail is never sent and
+  the connection is cut (or a `502` is answered when nothing was sent yet), so the client's
+  download fails. Logged as `ERROR` and counted in `silicaproxy.identification.checksum.mismatch`.
+- **Storage** : identified digests are stored in the `file_digest_index` table (shared by all
+  instances, never expired : a digest always designates the same file) and looked up there before
+  deps.dev. Digests deps.dev does not identify (unknown, ambiguous) are not stored and are queried
+  again on every download. A deps.dev outage leaves the request relayed unchecked, as without this
+  feature ; a database failure only skips the table.
+- **Configuration** : requires `silicaproxy.api-fallback.deps-dev.enabled`. To turn the whole
+  feature off (no table read, no deps.dev call, unidentified requests relayed unchecked as before),
+  set `silicaproxy.response-identification.enabled=false`
+  (`SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED=false`).
+- **Limits** : deps.dev only knows files of public packages — internal packages stay unidentified.
+  A digest shared by several package versions is not used. Upstreams announcing no digest (plain
+  registry.npmjs.org, files.pythonhosted.org) gain nothing.
+- **Privacy** : only the digest is sent to deps.dev, never the URL, the package name or client
+  headers.
+
 ### 4. External Validation Services — on-demand, sync or async
 
 SilicaProxy can call any number of external HTTP services to validate a package before reaching the live API fallback. This is designed for deep scanners that are too slow to block a build synchronously, or for proprietary tools with custom scoring.
@@ -616,6 +650,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.npm-packument-index.ttl-minutes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_TTL_MINUTES`                     | `60` | Lifetime of an entry, in memory and in `npm_tarball_index` |
 | | `silicaproxy.npm-packument-index.max-body-bytes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_BODY_BYTES`                  | `33554432` | Larger packuments are relayed without being indexed |
 | | `silicaproxy.npm-packument-index.unidentified-tarball-action` | `SILICAPROXY_NPM_PACKUMENT_INDEX_UNIDENTIFIED_TARBALL_ACTION`     | `ALLOW` | npm `.tgz` identified neither by URL nor by index : `ALLOW` = relayed unchecked, `BLOCK` = 403 (`UNIDENTIFIED_ARTIFACT`) |
+| **Response identification** | `silicaproxy.response-identification.enabled` | `SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED`                     | `true` | Identify unidentified downloads from the digest the upstream announces, via `file_digest_index` then deps.dev ([details](#identification-from-the-upstream-response)). `false` turns the feature off entirely |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED`                             | `false` | Route outbound traffic through a corporate proxy |
 | | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST`                                | — | |
 | | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT`                                | — | |
@@ -894,6 +929,8 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 |---|---|---|---|
 | `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
+| `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
+| `silicaproxy.identification.checksum.mismatch` | Counter | `ecosystem` | Downloads identified from their announced digest whose body did not match it — the download was cut. Any increase deserves an investigation of the upstream. |
 | `silicaproxy.controller.security.overhead` | Timer | `decision` (`block`/`allow`) | Duration of the security check only, excluding binary streaming. |
 | `silicaproxy.decision.local_evaluation` | Counter | `outcome` (`HIT`/`MISS`) | Whether `DecisionDao`'s single SQL query (company policy / public vulnerability / `api_cache`) resolved the verdict without an external call (`HIT`), or a registry/OSV/deps.dev round trip was required (`MISS`). |
 

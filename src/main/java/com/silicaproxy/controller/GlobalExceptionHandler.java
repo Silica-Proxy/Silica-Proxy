@@ -17,6 +17,7 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.service.interception.ChecksumVerifyingRelay.ChecksumMismatchException;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +48,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ProblemDetail handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.METHOD_NOT_ALLOWED, e.getMessage());
+    }
+
+    // Thrown by ProxyController once part of a body whose digest does not match is already on the
+    // wire : rethrown (left unresolved) so the servlet container aborts the connection. Answering
+    // a ProblemDetail here would append it to the truncated body and end the response normally.
+    @ExceptionHandler(ChecksumMismatchException.class)
+    public void handleChecksumMismatch(ChecksumMismatchException e) throws ChecksumMismatchException {
+        throw e;
     }
 
     @ExceptionHandler(Exception.class)
