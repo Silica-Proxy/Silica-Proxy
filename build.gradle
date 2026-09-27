@@ -23,6 +23,10 @@ repositories {
 	mavenCentral()
 }
 
+// Override the Tomcat version managed by Spring Boot 4.1.1 to pick up security fixes.
+// Remove once Spring Boot ships Tomcat >= 11.0.26.
+ext['tomcat.version'] = '11.0.26'
+
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-jdbc'
