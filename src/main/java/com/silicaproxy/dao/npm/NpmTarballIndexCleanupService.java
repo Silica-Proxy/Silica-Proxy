@@ -46,7 +46,7 @@ public class NpmTarballIndexCleanupService {
      * via ShedLock, since the table is shared across all instances.
      */
     @Scheduled(fixedRate = 300_000)
-    @SchedulerLock(name = "evictExpiredNpmTarballs", lockAtMostFor = "4m59s", lockAtLeastFor = "30s")
+    @SchedulerLock(name = "evictExpiredNpmTarballs", lockAtMostFor = "PT4M59S", lockAtLeastFor = "30s")
     void evictExpiredTarballs() {
         int evicted = npmTarballIndexDao.evictExpired();
         if (evicted > 0) {
