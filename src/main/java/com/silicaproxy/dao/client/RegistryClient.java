@@ -23,7 +23,6 @@ import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -86,7 +85,7 @@ public class RegistryClient {
      * Setter-injected (optional collaborator) so the constructor, used as-is by the existing
      * tests, stays unchanged.
      */
-    @Autowired(required = false)
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
         this.httpsUpgradePolicy = httpsUpgradePolicy;
     }
