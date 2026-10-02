@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
 @NullMarked
 final class PypiUrlParser {
 
-    private static final String ECOSYSTEM = "pypi";
+    private static final String ECOSYSTEM = ParsedPackage.PYPI;
 
     // Version group is [^-/]* (not .*): compiled-wheel filenames repeat the ABI tag
     // (e.g. "tensorflow-1.6.0-cp27-cp27m-macosx_10_11_x86_64.whl"), and a greedy ".*" backtracks

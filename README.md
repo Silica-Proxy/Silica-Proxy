@@ -216,130 +216,13 @@ How the publication date is resolved :
 
 The publication date is **stored permanently** in the `package_metadata` table — it never changes, so no subsequent network call is needed for a version already seen. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
 
-#### npm tarball identification
+#### Package identification
 
-A request is only checked if its package and version can be identified ; otherwise it is relayed
-**without any security check** (counted in `silicaproxy.controller.security.bypass`). For npm, the
-tarball is identified in two ways :
-
-1. **From its URL**, whatever the host :
-   - npmjs layout `/{name}/-/{name}-{version}.tgz` and `/@{scope}/{name}/-/{name}-{version}.tgz`,
-     optionally behind a repository prefix (Artifactory `/artifactory/api/npm/{repo}`, Nexus
-     `/repository/{repo}`, CodeArtifact…) — Artifactory's scoped form `-/@{scope}/{name}-{version}.tgz`
-     is accepted too. The file name must repeat the package name ;
-   - npm.jsr.io `/~/{rev}/@jsr/{scope}__{name}/{version}.tgz` ;
-   - GitHub Packages `/download/@{owner}/{name}/{version}/{sha}`.
-2. **From the packuments relayed earlier** (`silicaproxy.npm-packument-index.*`) : the proxy
-   remembers every `dist.tarball` URL of the packuments it relays, for any other layout. Entries
-   live in memory for `ttl-minutes` and are shared with the other instances through the
-   `npm_tarball_index` table when they carry a publish date **or** when their URL cannot be
-   identified by the patterns above (so a tarball request landing on another instance is still
-   identified).
-
-**Known limit** : a client that does not request the packument (e.g. `npm ci` with a lockfile)
-on a registry whose layout matches none of the patterns cannot be identified. By default such a
-tarball is relayed unchecked ; set `silicaproxy.npm-packument-index.unidentified-tarball-action`
-to `BLOCK` to answer 403 (`step: UNIDENTIFIED_ARTIFACT`) instead. Metadata requests (packuments,
-dist-tags, search) are never blocked by this option.
-
-#### Maven artifact identification
-
-On `maven.org` / `maven.apache.org` the `/maven2/{group}/{artifact}/{version}/{file}` layout is
-parsed directly. On any other host, the repository prefix is stripped before the rest is read as
-`{group path}/{artifactId}/{version}/{file}` :
-
-| Repository | Prefix stripped |
-|---|---|
-| Nexus 3 | `/repository/{repo}/`, optionally under `/nexus` |
-| Nexus 2 (incl. `oss.sonatype.org`) | `/content/repositories/{repo}/`, `/content/groups/{repo}/`, optionally under `/nexus` |
-| Artifactory | `/artifactory/{repo}/` |
-| GitLab | `/api/v4/projects/{id}/packages/maven/`, `/api/v4/groups/{id}/-/packages/maven/` |
-| AWS CodeArtifact (`*.amazonaws.com` only) | `/maven/{repo}/` |
-| Azure Artifacts (`pkgs.dev.azure.com` only) | `/{org}/[{project}/]_packaging/{feed}/maven/v1/` |
-| GitHub Packages (`maven.pkg.github.com` only) | `/{owner}/{repo}/` |
-| Google Maven (`dl.google.com` / `maven.google.com` only) | `/dl/android/maven2/` / none |
-| JitPack (`jitpack.io` only) | none |
-| anything else | exactly one segment (repo.spring.io `/release/`, plugins.gradle.org `/m2/`…) |
-
-Only artifact files are identified (`.jar`, `.pom`, `.aar`, `.war`, `.ear`, `.zip`, `.module` ;
-never checksums or `maven-metadata.xml`), and the file name must repeat the coordinates :
-`{artifactId}-{version}` followed by the extension or a `-{classifier}` (`{artifactId}-X-…` for a
-`X-SNAPSHOT` version). Anything else is relayed without a security check.
-
-**Known limit** : a custom layout with a multi-segment prefix that is not in the table above is
-read with a one-segment prefix, so the remaining segments end up in the groupId and the package
-is checked under a wrong name.
-
-#### PyPI file identification
-
-A **wheel** is identified by its file name alone, whatever the host and path : its name is fully
-self-describing (`{name}-{version}(-{build})?-{python tag}-{abi tag}-{platform}.whl`, PEP 427).
-An **sdist** (`{name}-{version}.tar.gz`) is not — any tarball has that shape — so it is only
-identified behind a known PyPI prefix :
-
-| Repository | Prefix |
-|---|---|
-| pypi.org, files.pythonhosted.org and mirrors of that layout | `/packages/` |
-| Nexus 3 | `/repository/{repo}/packages/`, optionally under `/nexus` |
-| Artifactory | `/artifactory/api/pypi/{repo}/packages/` |
-| devpi | `/{user}/{index}/+f/` |
-| GitLab | `/api/v4/projects/{id}/packages/pypi/files/` |
-
-or when the request comes from a PyPI client (see below). Wheels and sdists served by a private
-repository are therefore **checked** : an internal package unknown to pypi.org gets `NOT_FOUND`
-from the quarantine lookup, so it is blocked when `quarantine.unknown-version-action` is `BLOCK`
-(otherwise [`quarantine.fail-open`](#what-fail-open--fail-closed-means) decides) — as for npm and
-Maven on private repositories.
-
-#### Client header hints
-
-When the URL alone names no ecosystem, the client headers are read :
-
-| Ecosystem | Recognised headers | Effect |
-|---|---|---|
-| npm | `User-Agent` `npm/`, `pnpm/`, `yarn/`, `bun/` ; `Accept: application/vnd.npm.install-v1+json` ; `npm-*` / `pacote-*` headers | metadata tagged `npm` (and learned by the packument index) |
-| PyPI | `User-Agent` `pip/`, `uv/`, `poetry/`, `pdm/` ; `Accept: application/vnd.pypi.simple.v1+json` (PEP 691) | an sdist on any layout is identified and **checked** ; other requests tagged `pypi` |
-| Maven | `User-Agent` `Apache-Maven/`, `Gradle/`, `Apache Ivy/`, `Coursier/` | requests tagged `maven` (the groupId/prefix split stays ambiguous, so no version) |
-
-Headers can only add an identification the URL did not give, never remove one : a forged
-`User-Agent` cannot bypass the check. **Limit** : behind an artifact repository (the deployment
-described in [Deployment](#deployment)), the proxy sees the repository's own
-`User-Agent` (`Artifactory/…`, `Nexus/…`), so these hints only help clients that use the proxy
-directly.
-
-#### Identification from the upstream response
-
-When nothing above identifies a request (unknown layout, opaque download URL, `npm ci` on an
-unknown registry…), the proxy gets a last chance from the upstream response itself, before
-relaying its body and without any extra upstream call :
-
-- **Source** : the file digest the upstream announces — `X-Checksum-Sha256`, else
-  `X-Checksum-Sha1` (Artifactory, Maven Central), else an `ETag` that is exactly a quoted SHA-1
-  (Nexus 3) — is looked up on deps.dev (`/v3/query?hash.type=…&hash.value=…`), which indexes npm,
-  PyPI and Maven files. A digest matching one package version identifies it ; the request then
-  goes through the full security decision like one identified from its URL (a BLOCK answers the
-  usual 403 and the body is never relayed). Only `200` responses that are neither re-encoded
-  (`Content-Encoding`) nor metadata (JSON, HTML, XML, text) are considered. The announced file
-  name (`Content-Disposition`) is not used, as nothing can verify it.
-- **Verification** : the announced digest is not trusted as-is — a malicious upstream could
-  announce the digest of a harmless package. The proxy recomputes it while streaming and holds back
-  the tail of the body (at least 16 KiB) until the end : on a mismatch the tail is never sent and
-  the connection is cut (or a `502` is answered when nothing was sent yet), so the client's
-  download fails. Logged as `ERROR` and counted in `silicaproxy.identification.checksum.mismatch`.
-- **Storage** : identified digests are stored in the `file_digest_index` table (shared by all
-  instances, never expired : a digest always designates the same file) and looked up there before
-  deps.dev. Digests deps.dev does not identify (unknown, ambiguous) are not stored and are queried
-  again on every download. A deps.dev outage leaves the request relayed unchecked, as without this
-  feature ; a database failure only skips the table.
-- **Configuration** : requires `silicaproxy.api-fallback.deps-dev.enabled`. To turn the whole
-  feature off (no table read, no deps.dev call, unidentified requests relayed unchecked as before),
-  set `silicaproxy.response-identification.enabled=false`
-  (`SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED=false`).
-- **Limits** : deps.dev only knows files of public packages — internal packages stay unidentified.
-  A digest shared by several package versions is not used. Upstreams announcing no digest (plain
-  registry.npmjs.org, files.pythonhosted.org) gain nothing.
-- **Privacy** : only the digest is sent to deps.dev, never the URL, the package name or client
-  headers.
+Registry metadata, like every other check, is only looked up once the request's ecosystem, package
+name and version are identified — otherwise the request is relayed **without any security check**.
+How each ecosystem is identified (npm tarballs, Maven artifacts, PyPI files, client header hints,
+identification from the upstream response digest) and the known limits are described in
+[PACKAGE_IDENTIFICATION.md](PACKAGE_IDENTIFICATION.md).
 
 ### 4. External Validation Services — on-demand, sync or async
 
@@ -645,12 +528,12 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.ssl-mitm.ca-keystore-password` | `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD`                       | _(empty)_ | Keystore password for encryption |
 | | `silicaproxy.ssl-mitm.ca-cert-export-path` | `SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH`                        | `/tmp/silicaproxy-ca.crt` | Public CA certificate export path (PEM) |
 | | `silicaproxy.ssl-mitm.context-cache-max-entries` | `SILICAPROXY_SSL_MITM_CONTEXT_CACHE_MAX_ENTRIES`                  | `2000` | Hard cap on the per-host SSLContext cache, on top of its 24h inactivity TTL — bounds the CPU/memory cost of CONNECT requests to many distinct hostnames |
-| **npm tarball index** | `silicaproxy.npm-packument-index.enabled` | `SILICAPROXY_NPM_PACKUMENT_INDEX_ENABLED`                         | `true` | Learn tarball URLs from relayed packuments ([npm tarball identification](#npm-tarball-identification)) |
+| **npm tarball index** | `silicaproxy.npm-packument-index.enabled` | `SILICAPROXY_NPM_PACKUMENT_INDEX_ENABLED`                         | `true` | Learn tarball URLs from relayed packuments ([npm tarball identification](PACKAGE_IDENTIFICATION.md#npm-tarball-identification)) |
 | | `silicaproxy.npm-packument-index.max-entries` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_ENTRIES`                     | `200000` | Hard cap on in-memory entries |
 | | `silicaproxy.npm-packument-index.ttl-minutes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_TTL_MINUTES`                     | `60` | Lifetime of an entry, in memory and in `npm_tarball_index` |
 | | `silicaproxy.npm-packument-index.max-body-bytes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_BODY_BYTES`                  | `33554432` | Larger packuments are relayed without being indexed |
 | | `silicaproxy.npm-packument-index.unidentified-tarball-action` | `SILICAPROXY_NPM_PACKUMENT_INDEX_UNIDENTIFIED_TARBALL_ACTION`     | `ALLOW` | npm `.tgz` identified neither by URL nor by index : `ALLOW` = relayed unchecked, `BLOCK` = 403 (`UNIDENTIFIED_ARTIFACT`) |
-| **Response identification** | `silicaproxy.response-identification.enabled` | `SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED`                     | `true` | Identify unidentified downloads from the digest the upstream announces, via `file_digest_index` then deps.dev ([details](#identification-from-the-upstream-response)). `false` turns the feature off entirely |
+| **Response identification** | `silicaproxy.response-identification.enabled` | `SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED`                     | `true` | Identify unidentified downloads from the digest the upstream announces, via `file_digest_index` then deps.dev ([details](PACKAGE_IDENTIFICATION.md#identification-from-the-upstream-response)). `false` turns the feature off entirely |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED`                             | `false` | Route outbound traffic through a corporate proxy |
 | | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST`                                | — | |
 | | `silicaproxy.corporate-proxy.port` | `SILICAPROXY_CORPORATE_PROXY_PORT`                                | — | |
@@ -860,7 +743,7 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `REGISTRY_DEPRECATION` | Package deprecated or yanked from its registry — checked before quarantine |
 | `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
 | `REGISTRY_NOT_FOUND` | Version unknown to every registry consulted, with `quarantine.unknown-version-action: BLOCK` — never cached |
-| `UNIDENTIFIED_ARTIFACT` | npm tarball identified neither by its URL nor by a relayed packument, with `npm-packument-index.unidentified-tarball-action: BLOCK` ([details](#npm-tarball-identification)) |
+| `UNIDENTIFIED_ARTIFACT` | npm tarball identified neither by its URL nor by a relayed packument, with `npm-packument-index.unidentified-tarball-action: BLOCK` ([details](PACKAGE_IDENTIFICATION.md#npm-tarball-identification)) |
 | `EXTERNAL_VALIDATION` | External validation service (sync or async) |
 | `OSV_LIVE` | Google OSV live API — first fallback |
 | `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
@@ -929,7 +812,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 |---|---|---|---|
 | `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
-| `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
+| `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](PACKAGE_IDENTIFICATION.md#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
 | `silicaproxy.identification.checksum.mismatch` | Counter | `ecosystem` | Downloads identified from their announced digest whose body did not match it — the download was cut. Any increase deserves an investigation of the upstream. |
 | `silicaproxy.controller.security.overhead` | Timer | `decision` (`block`/`allow`) | Duration of the security check only, excluding binary streaming. |
 | `silicaproxy.decision.local_evaluation` | Counter | `outcome` (`HIT`/`MISS`) | Whether `DecisionDao`'s single SQL query (company policy / public vulnerability / `api_cache`) resolved the verdict without an external call (`HIT`), or a registry/OSV/deps.dev round trip was required (`MISS`). |

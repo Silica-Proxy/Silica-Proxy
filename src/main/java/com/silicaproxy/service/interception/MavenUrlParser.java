@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
 @NullMarked
 final class MavenUrlParser {
 
-    private static final String ECOSYSTEM = "maven";
+    private static final String ECOSYSTEM = ParsedPackage.MAVEN;
 
     // Excludes maven-metadata.xml and checksum files (.sha1/.sha256/.sha512/.md5/.asc): those
     // have no version segment, and without this exclusion the pattern misreads the artifactId
@@ -44,7 +44,7 @@ final class MavenUrlParser {
 
     private record RepositoryLayout(@Nullable String hostSuffix, Pattern prefix) {
         boolean matchesHost(String host) {
-            return hostSuffix == null || host.equals(hostSuffix) || host.endsWith("." + hostSuffix);
+            return hostSuffix == null || Hosts.isDomainOrSubdomain(host, hostSuffix);
         }
     }
 
@@ -123,10 +123,6 @@ final class MavenUrlParser {
         return ClientHeaders.userAgentStartsWith(headers, USER_AGENT_PREFIXES);
     }
 
-    static ParsedPackage clientTraffic() {
-        return ParsedPackage.unknown(ECOSYSTEM);
-    }
-
     // "{g1}/…/{gn}/{artifactId}/{version}/{file}", parsed by string splitting like the npmjs
     // tarball layout. At least one groupId segment is required, and the file must repeat
     // "{artifactId}-{version}" : this rejects any non-Maven resource that merely has the shape.
@@ -152,12 +148,7 @@ final class MavenUrlParser {
     }
 
     private static boolean hasArtifactExtension(String path) {
-        for (String extension : ARTIFACT_EXTENSIONS) {
-            if (path.endsWith(extension)) {
-                return true;
-            }
-        }
-        return false;
+        return ARTIFACT_EXTENSIONS.stream().anyMatch(path::endsWith);
     }
 
     // "{artifactId}-{version}" followed by the extension or a "-{classifier}" ("-sources.jar"). A

@@ -29,6 +29,10 @@ public record ParsedPackage(String packageName, String version, String ecosystem
     /** Placeholder for any part (ecosystem, name, version) the URL does not reveal. */
     public static final String UNKNOWN = "unknown";
 
+    public static final String NPM = "npm";
+    public static final String PYPI = "pypi";
+    public static final String MAVEN = "maven";
+
     /** A resource of {@code ecosystem} (possibly {@link #UNKNOWN}) naming no package version. */
     public static ParsedPackage unknown(String ecosystem) {
         return new ParsedPackage(UNKNOWN, UNKNOWN, ecosystem);
