@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
 @NullMarked
 final class NpmUrlParser {
 
-    private static final String ECOSYSTEM = "npm";
+    private static final String ECOSYSTEM = ParsedPackage.NPM;
 
     // npmjs layout "/{name}/-/{name}-{version}.tgz" (optionally scoped) is parsed by string
     // splitting in parseNpmjsLayoutTarball rather than by a regex : accepting any repository
@@ -45,6 +45,7 @@ final class NpmUrlParser {
     // npm.pkg.github.com : "/download/@{owner}/{name}/{version}/{sha}".
     private static final Pattern GITHUB_TARBALL_PATTERN =
             Pattern.compile("^/download/(@[^/]+/[^/]+)/(\\d[^/]*)/[0-9a-f]+$");
+    private static final List<Pattern> OTHER_TARBALL_PATTERNS = List.of(JSR_TARBALL_PATTERN, GITHUB_TARBALL_PATTERN);
 
     // Layer 3 (npm metadata) path shapes that cannot reasonably be anything but an npm registry.
     // A bare "/{name}" is deliberately NOT here : it is too ambiguous without a client header.
@@ -52,6 +53,7 @@ final class NpmUrlParser {
     private static final Pattern SCOPED_PACKUMENT_PATTERN =
             Pattern.compile("^/(@[^/@]+/[^/@]+)(?:/[^/]+)?$");
     private static final Pattern UNSCOPED_PACKUMENT_PATTERN = Pattern.compile("^/([^/@-][^/]*)(?:/[^/]+)?$");
+    private static final List<Pattern> PACKUMENT_PATTERNS = List.of(SCOPED_PACKUMENT_PATTERN, UNSCOPED_PACKUMENT_PATTERN);
     private static final Pattern REGISTRY_API_PATTERN =
             Pattern.compile("^/-/(?:v1/|npm/|package/|user/|ping|whoami).*$");
     private static final Pattern DASH_SEGMENT_PATTERN = Pattern.compile("^/(?:@[^/]+/)?[^/@-][^/]*/-/.*$");
@@ -74,17 +76,7 @@ final class NpmUrlParser {
 
     /** See {@link UrlParserService#parseNpmTarball(String)}. */
     static Optional<ParsedPackage> parseTarball(String path) {
-        Optional<ParsedPackage> npmjsLayout = parseNpmjsLayoutTarball(path);
-        if (npmjsLayout.isPresent()) {
-            return npmjsLayout;
-        }
-        for (Pattern pattern : List.of(JSR_TARBALL_PATTERN, GITHUB_TARBALL_PATTERN)) {
-            Matcher m = pattern.matcher(path);
-            if (m.matches()) {
-                return Optional.of(new ParsedPackage(m.group(1), m.group(2), ECOSYSTEM));
-            }
-        }
-        return Optional.empty();
+        return parseNpmjsLayoutTarball(path).or(() -> firstMatch(OTHER_TARBALL_PATTERNS, path));
     }
 
     /** See {@link UrlParserService#detectNpmMetadata(String, HttpHeaders)}. */
@@ -92,15 +84,19 @@ final class NpmUrlParser {
         if (!(isClient(headers) || isUnambiguousPath(path))) {
             return Optional.empty();
         }
-        Matcher scoped = SCOPED_PACKUMENT_PATTERN.matcher(path);
-        if (scoped.matches()) {
-            return Optional.of(new ParsedPackage(scoped.group(1), ParsedPackage.UNKNOWN, ECOSYSTEM));
+        return firstMatch(PACKUMENT_PATTERNS, path).or(() -> Optional.of(ParsedPackage.unknown(ECOSYSTEM)));
+    }
+
+    // Groups : (1) name, (2) version if the pattern captures one (unknown otherwise).
+    private static Optional<ParsedPackage> firstMatch(List<Pattern> patterns, String path) {
+        for (Pattern pattern : patterns) {
+            Matcher m = pattern.matcher(path);
+            if (m.matches()) {
+                String version = m.groupCount() >= 2 ? m.group(2) : ParsedPackage.UNKNOWN;
+                return Optional.of(new ParsedPackage(m.group(1), version, ECOSYSTEM));
+            }
         }
-        Matcher unscoped = UNSCOPED_PACKUMENT_PATTERN.matcher(path);
-        if (unscoped.matches()) {
-            return Optional.of(new ParsedPackage(unscoped.group(1), ParsedPackage.UNKNOWN, ECOSYSTEM));
-        }
-        return Optional.of(ParsedPackage.unknown(ECOSYSTEM));
+        return Optional.empty();
     }
 
     // "{prefix}/{name}/-/{name}-{version}.tgz" or "{prefix}/@{scope}/{name}/-/{name}-{version}.tgz",

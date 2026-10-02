@@ -25,6 +25,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
+import java.util.Optional;
+
 /**
  * Answers "which package is this request for, and must it be evaluated ?" for {@code ProxyController},
  * before any security decision.
@@ -87,14 +89,12 @@ public class PackageIdentificationService {
      * @param headers    client request headers, read by the npm metadata detector
      */
     public Identification identify(String fullUrl, String forwardUrl, HttpHeaders headers) {
-        ParsedPackage parsed = urlParserService.parseUrl(fullUrl);
-        if (!parsed.hasEcosystem()) {
-            parsed = urlParserService.detectNpmMetadata(fullUrl, headers).orElse(parsed);
-        }
-        if (!parsed.hasEcosystem()) {
-            parsed = urlParserService.detectClientEcosystem(fullUrl, headers).orElse(parsed);
-        }
-        boolean npm = "npm".equals(parsed.ecosystem());
+        ParsedPackage fromUrl = urlParserService.parseUrl(fullUrl);
+        ParsedPackage parsed = Optional.of(fromUrl).filter(ParsedPackage::hasEcosystem)
+                .or(() -> urlParserService.detectNpmMetadata(fullUrl, headers))
+                .or(() -> urlParserService.detectClientEcosystem(fullUrl, headers))
+                .orElse(fromUrl);
+        boolean npm = ParsedPackage.NPM.equals(parsed.ecosystem());
         if (npm && ParsedPackage.UNKNOWN.equals(parsed.version())) {
             parsed = npmPackumentIndex.lookup(forwardUrl).orElse(parsed);
         }

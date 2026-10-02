@@ -45,20 +45,11 @@ final class ClientHeaders {
     }
 
     static boolean hasHeaderNameStartingWith(HttpHeaders headers, List<String> prefixes) {
-        for (String name : headers.headerNames()) {
-            if (startsWithAny(name.toLowerCase(Locale.ROOT), prefixes)) {
-                return true;
-            }
-        }
-        return false;
+        return headers.headerNames().stream()
+                .anyMatch(name -> startsWithAny(name.toLowerCase(Locale.ROOT), prefixes));
     }
 
     private static boolean startsWithAny(String value, List<String> prefixes) {
-        for (String prefix : prefixes) {
-            if (value.startsWith(prefix)) {
-                return true;
-            }
-        }
-        return false;
+        return prefixes.stream().anyMatch(value::startsWith);
     }
 }

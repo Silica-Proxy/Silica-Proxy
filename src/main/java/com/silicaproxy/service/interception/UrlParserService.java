@@ -43,12 +43,7 @@ public class UrlParserService {
 
     private record EcosystemRouter(List<String> hostPatterns, Function<String, ParsedPackage> parser) {
         boolean matches(String host) {
-            for (String p : hostPatterns) {
-                if (host.equals(p) || host.endsWith("." + p)) {
-                    return true;
-                }
-            }
-            return false;
+            return hostPatterns.stream().anyMatch(domain -> Hosts.isDomainOrSubdomain(host, domain));
         }
     }
 
@@ -115,7 +110,7 @@ public class UrlParserService {
                     .orElseGet(() -> ParsedPackage.unknown("pypi")));
         }
         if (MavenUrlParser.isClient(headers)) {
-            return Optional.of(MavenUrlParser.clientTraffic());
+            return Optional.of(ParsedPackage.unknown(ParsedPackage.MAVEN));
         }
         return Optional.empty();
     }
@@ -137,15 +132,9 @@ public class UrlParserService {
     }
 
     private static ParsedPackage detectFromPath(String host, String path) {
-        Optional<ParsedPackage> npmTarball = NpmUrlParser.parseTarball(path);
-        if (npmTarball.isPresent()) {
-            return npmTarball.get();
-        }
-        Optional<ParsedPackage> pypi = PypiUrlParser.parsePath(path);
-        if (pypi.isPresent()) {
-            return pypi.get();
-        }
-        return MavenUrlParser.parseRepositoryPath(host, path)
+        return NpmUrlParser.parseTarball(path)
+                .or(() -> PypiUrlParser.parsePath(path))
+                .or(() -> MavenUrlParser.parseRepositoryPath(host, path))
                 .orElseGet(() -> ParsedPackage.unknown(ParsedPackage.UNKNOWN));
     }
 
