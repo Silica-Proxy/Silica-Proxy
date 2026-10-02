@@ -275,7 +275,7 @@ public class SecurityService {
             logApiCall(source.apiSource(), packageName, ecosystem, version, result);
             if (!result.isError()) {
                 return resolveFallbackVerdict(packageName, version, ecosystem, source.apiSource(),
-                        source.providerLabel(), result.vulnerable(), cacheAllow);
+                        source.providerLabel(), result, cacheAllow);
             }
             anyAttempted = true;
             anyFailClosed |= !sourceProps.failOpen();
@@ -313,8 +313,8 @@ public class SecurityService {
 
     private DecisionResult resolveFallbackVerdict(
             String packageName, String version, String ecosystem, String apiSource, String providerLabel,
-            boolean isVulnerable, boolean cacheAllow) {
-        boolean isSecure = !isVulnerable;
+            ApiCheckResult result, boolean cacheAllow) {
+        boolean isSecure = !result.vulnerable();
 
         // Configurable different TTL for BLOCK and ALLOW (0 = do not cache)
         int ttlMinutes = isSecure
@@ -324,13 +324,16 @@ public class SecurityService {
         // Cache the verdict if TTL > 0 (BLOCK always, ALLOW only if configured and TTL > 0)
         if (ttlMinutes > 0 && (!isSecure || cacheAllow && properties.apiCache().cacheAllowVerdict())) {
             Instant expiresAt = Instant.now().plus(ttlMinutes, ChronoUnit.MINUTES);
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt,
+                    result.vulnerabilityIds());
         }
 
         if (isSecure) {
             return new DecisionResult(apiSource, "ALLOW", "Validated via external fallback API " + providerLabel + ".");
         }
-        return new DecisionResult(apiSource, "BLOCK", "The package contains a vulnerability reported by external API " + providerLabel + ".");
+        String ids = result.vulnerabilityIds().isEmpty() ? "" : " (" + String.join(", ", result.vulnerabilityIds()) + ")";
+        return new DecisionResult(apiSource, "BLOCK",
+                "The package contains a vulnerability reported by external API " + providerLabel + ids + ".");
     }
 
     private double computeMinCvss(String ecosystem) {

@@ -56,6 +56,9 @@ silicaproxy:
     # received for this long: a large file downloaded slowly but continuously never trips it,
     # only a truly stuck/abandoned connection does.
     relay-idle-timeout-seconds: 60
+    # Comma-separated list of hosts that must stay in HTTP (not converted to HTTPS).
+    # Use this to exclude specific registries that don't support HTTPS or have issues with it.
+    http-only-hosts: "${SILICAPROXY_HTTP_ONLY_HOSTS:}"
 
   # 1. Temporal quarantine configuration (Anti-Typosquatting)
   quarantine:

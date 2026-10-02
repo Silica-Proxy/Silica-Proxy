@@ -61,8 +61,18 @@ public record SilicaProxyProperties(
         // Idle timeout during the binary relay (LoomProxyServer.copyStream). Socket.setSoTimeout
         // only fires when read() gets zero bytes for this long -- it does not cap total transfer
         // time, so a large file downloaded slowly but continuously never trips it.
-        @DefaultValue("60") int relayIdleTimeoutSeconds
-    ) {}
+        @DefaultValue("60") int relayIdleTimeoutSeconds,
+        // Comma-separated list of hosts that should stay in HTTP (not converted to HTTPS)
+        @DefaultValue("") String httpOnlyHosts
+    ) {
+        @ConstructorBinding
+        public ProxyProperties {
+        }
+
+        public ProxyProperties(int port, int headerReadTimeoutSeconds, int relayIdleTimeoutSeconds) {
+            this(port, headerReadTimeoutSeconds, relayIdleTimeoutSeconds, "");
+        }
+    }
 
     // Timeouts for outgoing HTTP clients (registries, security APIs, external validation).
     // Without timeout, a silent remote server (not in error, just frozen) would block

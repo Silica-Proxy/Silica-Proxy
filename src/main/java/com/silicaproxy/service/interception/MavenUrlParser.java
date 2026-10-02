@@ -42,6 +42,9 @@ final class MavenUrlParser {
             "^/maven2/(.+)/([^/]+)/([^/]+)/(?!maven-metadata\\.xml$)"
                     + "(?!.+\\.(?:sha1|sha256|sha512|md5|asc)$)[^/]+$");
 
+    private static final Pattern GRADLE_PORTAL_PATTERN =
+            Pattern.compile("^/([^/]+)/([^/]+)/([^/]+)/[0-9a-f]{64}/([^/]+)$");
+
     private record RepositoryLayout(@Nullable String hostSuffix, Pattern prefix) {
         boolean matchesHost(String host) {
             return hostSuffix == null || Hosts.isDomainOrSubdomain(host, hostSuffix);
@@ -108,6 +111,10 @@ final class MavenUrlParser {
 
     /** Any other host : the first layout matching the host and the path decides, see {@link #LAYOUTS}. */
     static Optional<ParsedPackage> parseRepositoryPath(String host, String path) {
+        return parseWithLayouts(host, path).or(() -> parseGradlePortalPath(path));
+    }
+
+    private static Optional<ParsedPackage> parseWithLayouts(String host, String path) {
         for (RepositoryLayout layout : LAYOUTS) {
             if (layout.matchesHost(host)) {
                 Matcher prefix = layout.prefix().matcher(path);
@@ -117,6 +124,22 @@ final class MavenUrlParser {
             }
         }
         return Optional.empty();
+    }
+
+    // Content-addressed layout of the Gradle plugin portal downloads (plugins.gradle.org redirects
+    // the .jar/.module files to plugins-artifacts.gradle.org) :
+    // "/{groupId}/{artifactId}/{version}/{sha256}/{file}". The groupId keeps its dots (one
+    // segment) and a 64-hex directory sits between the version and the file, so the generic
+    // layouts read the hash as the version and reject the file. Matched by shape, on any host,
+    // and only once every repository layout has failed : a URL the layouts already identify never
+    // reaches this reading.
+    private static Optional<ParsedPackage> parseGradlePortalPath(String path) {
+        Matcher m = GRADLE_PORTAL_PATTERN.matcher(path);
+        if (!m.matches() || !hasArtifactExtension(m.group(4))
+                || !fileRepeatsCoordinates(m.group(4), m.group(2), m.group(3))) {
+            return Optional.empty();
+        }
+        return Optional.of(new ParsedPackage(m.group(1) + ":" + m.group(2), m.group(3), ECOSYSTEM));
     }
 
     static boolean isClient(HttpHeaders headers) {

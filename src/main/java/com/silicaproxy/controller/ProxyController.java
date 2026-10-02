@@ -22,6 +22,7 @@ import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.PackageIdentificationService;
 import com.silicaproxy.service.interception.PackageIdentificationService.Identification;
@@ -93,6 +94,7 @@ public class ProxyController {
     private final Timer blockDecisionTimer;
     private final Timer allowDecisionTimer;
     private final MeterRegistry meterRegistry;
+    private HttpsUpgradePolicy httpsUpgradePolicy = HttpsUpgradePolicy.upgradeAll();
 
     public ProxyController(
             SecurityService securityService,
@@ -111,6 +113,16 @@ public class ProxyController {
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
+    }
+
+    /**
+     * Applies the configured {@code http-only-hosts} exemptions. Setter-injected (optional
+     * collaborator) so the constructor, used as-is by the existing tests, stays unchanged :
+     * without it, every non-local {@code http://} URL is upgraded to {@code https://}.
+     */
+    @Autowired(required = false)
+    public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
+        this.httpsUpgradePolicy = httpsUpgradePolicy;
     }
 
     /**
@@ -182,7 +194,7 @@ public class ProxyController {
         // Extracted once : the npm metadata detector reads the client hints (Accept / User-Agent /
         // npm-*) and the forwarder replays the same headers upstream.
         HttpHeaders headers = extractHeaders(request);
-        String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
+        String forwardUrl = httpsUpgradePolicy.upgrade(fullUrl, request.getLocalPort());
         Identification identification = packageIdentification.identify(fullUrl, forwardUrl, headers);
         ParsedPackage parsed = identification.pkg();
         String packageName = parsed.packageName();
@@ -426,37 +438,5 @@ public class ProxyController {
 
         objectMapper.writeValue(response.getOutputStream(), body);
         response.getOutputStream().flush();
-    }
-
-    // Ports the servlet container itself is listening on can leak into request.getRequestURL()'s
-    // reconstructed authority even when the original absolute-URI request line had no port (or a
-    // different one) -- see shouldStripPortWhenUpgradingToHttps. Comparing against localPort
-    // (the actual local socket port this connection was accepted on, immune to Host-header or
-    // request-line spoofing) distinguishes that connector artifact from a genuine port that was
-    // part of the original request (e.g. a private mirror on a non-standard port), which must be
-    // preserved rather than silently dropped.
-    private String convertToHttpsIfNeeded(String urlString, int localPort) {
-        if (urlString.startsWith("http://")) {
-            try {
-                URI uri = URI.create(urlString);
-                String host = uri.getHost();
-                if (host != null && !host.equals("localhost") && !host.equals("127.0.0.1") && !host.equals("host.docker.internal")) {
-                    int port = uri.getPort();
-                    boolean isConnectorPort = port == localPort;
-                    String path = uri.getRawPath();
-                    String query = uri.getRawQuery();
-                    String newUrl = "https://" + host
-                            + (port != -1 && !isConnectorPort ? ":" + port : "")
-                            + (path != null ? path : "");
-                    if (query != null) {
-                        newUrl += "?" + query;
-                    }
-                    return newUrl;
-                }
-            } catch (Exception e) {
-                // Ignore and return original
-            }
-        }
-        return urlString;
     }
 }

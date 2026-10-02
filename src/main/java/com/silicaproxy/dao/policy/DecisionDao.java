@@ -131,7 +131,11 @@ public class DecisionDao {
                 -- PRIORITY 3 : External API analysis cache (api_cache)
                 SELECT 3 AS priority, 0 AS specificity, 'API_CACHE' AS source_type,
                        CASE WHEN is_secure THEN 'ALLOW' ELSE 'BLOCK' END AS result,
-                       'Validated via API cache' AS reason
+                       CASE WHEN is_secure THEN 'Validated via API cache'
+                            ELSE 'Blocked by cached ' || COALESCE(api_source, 'API') || ' verdict'
+                                 || COALESCE(': ' || (SELECT string_agg(vuln_id, ', ')
+                                                      FROM jsonb_array_elements_text(scan_details -> 'vulnerabilityIds') AS vuln_id), '')
+                       END AS reason
                 FROM api_cache, checked_package
                 WHERE package_name = p_name AND ecosystem = p_ecosystem
                   AND package_version = p_version AND expires_at > CURRENT_TIMESTAMP
