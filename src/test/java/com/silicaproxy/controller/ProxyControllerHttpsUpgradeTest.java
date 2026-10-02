@@ -47,7 +47,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 
-/** The security decision must see the same https:// URL the proxy relays upstream (Cloudflare 403 on plain HTTP). */
+/** The upstream relay goes out in https:// (Cloudflare 403 on plain HTTP) while the decision keeps the URL as requested. */
 class ProxyControllerHttpsUpgradeTest {
 
     private static final String POM_PATH = "/m2/com/acme/lib/1.0/lib-1.0.pom";
@@ -88,32 +88,29 @@ class ProxyControllerHttpsUpgradeTest {
     }
 
     @Test
-    void securityDecisionReceivesTheHttpsUrlByDefault() throws Exception {
-        mockMvc().perform(get("http://plugins.gradle.org" + POM_PATH));
-
-        verify(securityService).getDecision(eq("com.acme:lib"), eq("1.0"), eq("maven"),
-                eq("https://plugins.gradle.org" + POM_PATH));
-        verify(proxyStreamClient).streamContent(eq("https://plugins.gradle.org" + POM_PATH), any(HttpHeaders.class));
-    }
-
-    @Test
-    void httpOnlyHostKeepsItsHttpUrlForDecisionAndRelay() throws Exception {
-        controller.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
-
+    void relayIsUpgradedToHttpsByDefaultAndDecisionKeepsTheRequestedUrl() throws Exception {
         mockMvc().perform(get("http://plugins.gradle.org" + POM_PATH));
 
         verify(securityService).getDecision(eq("com.acme:lib"), eq("1.0"), eq("maven"),
                 eq("http://plugins.gradle.org" + POM_PATH));
+        verify(proxyStreamClient).streamContent(eq("https://plugins.gradle.org" + POM_PATH), any(HttpHeaders.class));
+    }
+
+    @Test
+    void httpOnlyHostIsRelayedInHttp() throws Exception {
+        controller.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
+
+        mockMvc().perform(get("http://plugins.gradle.org" + POM_PATH));
+
         verify(proxyStreamClient).streamContent(eq("http://plugins.gradle.org" + POM_PATH), any(HttpHeaders.class));
     }
 
     @Test
-    void otherHostsAreStillUpgradedWhenAnotherHostIsHttpOnly() throws Exception {
+    void otherHostsAreStillRelayedInHttpsWhenAnotherHostIsHttpOnly() throws Exception {
         controller.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("internal.registry"));
 
         mockMvc().perform(get("http://repo1.maven.org" + POM_PATH));
 
-        verify(securityService).getDecision(eq("com.acme:lib"), eq("1.0"), eq("maven"),
-                eq("https://repo1.maven.org" + POM_PATH));
+        verify(proxyStreamClient).streamContent(eq("https://repo1.maven.org" + POM_PATH), any(HttpHeaders.class));
     }
 }

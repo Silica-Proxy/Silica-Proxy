@@ -20,8 +20,10 @@ package com.silicaproxy.dao.client;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.dto.RegistryLookup;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -63,6 +65,7 @@ public class RegistryClient {
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
     private final ObjectMapper objectMapper;
+    private HttpsUpgradePolicy httpsUpgradePolicy = HttpsUpgradePolicy.upgradeAll();
 
     public RegistryClient(
             SilicaProxyProperties properties,
@@ -76,6 +79,16 @@ public class RegistryClient {
                 .requestFactory(registriesRequestFactory)
                 .requestInterceptor(ssrfInterceptor)
                 .build();
+    }
+
+    /**
+     * Applies the configured {@code http-only-hosts} exemptions to the intercepted-URL fallback.
+     * Setter-injected (optional collaborator) so the constructor, used as-is by the existing
+     * tests, stays unchanged.
+     */
+    @Autowired(required = false)
+    public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
+        this.httpsUpgradePolicy = httpsUpgradePolicy;
     }
 
     public Optional<PackageMetadataResult> fetchMetadata(String packageName, String version, String ecosystem) {
@@ -353,7 +366,9 @@ public class RegistryClient {
         // above (unlike npm/PyPI, where the same header on a tarball/CDN URL reflects cache
         // freshness rather than publish date -- see lookupNpmPublic's comment).
         LOG.debug("Maven Central metadata lookup failed for {}/{}, falling back to intercepted URL", packageName, version);
-        RegistryLookup intercepted = headLastModified(fullUrl);
+        // The client may have asked in plain HTTP (Nexus does) : registries such as
+        // plugins.gradle.org answer 403 to it, so the lookup goes through the same upgrade as the relay.
+        RegistryLookup intercepted = headLastModified(httpsUpgradePolicy.upgrade(fullUrl));
         if (intercepted.status() == RegistryLookup.Status.FOUND) {
             return intercepted;
         }

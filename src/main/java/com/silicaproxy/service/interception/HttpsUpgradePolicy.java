@@ -20,6 +20,7 @@ package com.silicaproxy.service.interception;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -41,24 +42,36 @@ public class HttpsUpgradePolicy {
     private static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "host.docker.internal");
 
     private final Set<String> httpOnlyHosts;
+    private final int serverPort;
 
     @Autowired
-    public HttpsUpgradePolicy(SilicaProxyProperties properties) {
-        this(parseHosts(properties.proxy().httpOnlyHosts()));
+    public HttpsUpgradePolicy(SilicaProxyProperties properties, @Value("${server.port:-1}") int serverPort) {
+        this(parseHosts(properties.proxy().httpOnlyHosts()), serverPort);
     }
 
-    private HttpsUpgradePolicy(Set<String> httpOnlyHosts) {
+    private HttpsUpgradePolicy(Set<String> httpOnlyHosts, int serverPort) {
         this.httpOnlyHosts = httpOnlyHosts;
+        this.serverPort = serverPort;
     }
 
     /** Policy upgrading every non-local host, used when no configuration is injected. */
     public static HttpsUpgradePolicy upgradeAll() {
-        return new HttpsUpgradePolicy(Set.of());
+        return new HttpsUpgradePolicy(Set.of(), -1);
     }
 
     /** Policy leaving the comma-separated, case-insensitive {@code csvHosts} on plain HTTP. */
     public static HttpsUpgradePolicy fromCsv(String csvHosts) {
-        return new HttpsUpgradePolicy(parseHosts(csvHosts));
+        return new HttpsUpgradePolicy(parseHosts(csvHosts), -1);
+    }
+
+    /** Same as {@link #fromCsv(String)}, dropping {@code serverPort} when it leaks into a URL authority. */
+    public static HttpsUpgradePolicy fromCsv(String csvHosts, int serverPort) {
+        return new HttpsUpgradePolicy(parseHosts(csvHosts), serverPort);
+    }
+
+    /** Upgrades {@code urlString} for callers that have no request, using the configured server port. */
+    public String upgrade(String urlString) {
+        return upgrade(urlString, serverPort);
     }
 
     private static Set<String> parseHosts(String csvHosts) {

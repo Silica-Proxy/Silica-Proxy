@@ -215,7 +215,7 @@ public class ProxyController {
 
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
-                : securityService.getDecision(packageName, version, ecosystem, forwardUrl);
+                : securityService.getDecision(packageName, version, ecosystem, fullUrl);
         if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
             return;
         }
