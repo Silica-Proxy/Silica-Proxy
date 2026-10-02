@@ -20,6 +20,8 @@ package com.silicaproxy.model.dto;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
+import java.util.List;
+
 /**
  * Enriched result of a call to an external security API (OSV Live, deps.dev),
  * including timing and vulnerability count for audit in {@code api_call_log}.
@@ -30,7 +32,13 @@ public record ApiCheckResult(
         int vulnerabilitiesCount,
         int httpStatus,
         long responseTimeMs,
-        @Nullable String errorMessage) {
+        @Nullable String errorMessage,
+        List<String> vulnerabilityIds) {
+
+    public ApiCheckResult(boolean vulnerable, int vulnerabilitiesCount, int httpStatus, long responseTimeMs,
+            @Nullable String errorMessage) {
+        this(vulnerable, vulnerabilitiesCount, httpStatus, responseTimeMs, errorMessage, List.of());
+    }
 
     // The clients (OsvClient, DepsDevClient) set errorMessage on exactly their two failure
     // paths (HTTP non-2xx and transport exception), and on those paths vulnerable() is a

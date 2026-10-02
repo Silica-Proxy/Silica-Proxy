@@ -64,7 +64,15 @@ public record SilicaProxyProperties(
         @DefaultValue("60") int relayIdleTimeoutSeconds,
         // Comma-separated list of hosts that should stay in HTTP (not converted to HTTPS)
         @DefaultValue("") String httpOnlyHosts
-    ) {}
+    ) {
+        @ConstructorBinding
+        public ProxyProperties {
+        }
+
+        public ProxyProperties(int port, int headerReadTimeoutSeconds, int relayIdleTimeoutSeconds) {
+            this(port, headerReadTimeoutSeconds, relayIdleTimeoutSeconds, "");
+        }
+    }
 
     // Timeouts for outgoing HTTP clients (registries, security APIs, external validation).
     // Without timeout, a silent remote server (not in error, just frozen) would block

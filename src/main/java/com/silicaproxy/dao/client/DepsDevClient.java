@@ -22,6 +22,7 @@ import com.silicaproxy.model.dto.HashLookup;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -69,6 +70,18 @@ public class DepsDevClient {
                 .build();
     }
 
+    private static List<String> extractAdvisoryIds(@Nullable List<?> advisoryKeys) {
+        if (advisoryKeys == null) {
+            return List.of();
+        }
+        return advisoryKeys.stream()
+                .filter(Map.class::isInstance)
+                .map(entry -> ((Map<?, ?>) entry).get("id"))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .toList();
+    }
+
     @SuppressWarnings("unchecked")
     public ApiCheckResult checkVulnerability(String packageName, String version, String ecosystem) {
         SilicaProxyProperties.ApiFallbackProperties depsDevProps = properties.apiFallback().get("deps-dev");
@@ -96,7 +109,8 @@ public class DepsDevClient {
             }
             List<?> advisoryKeys = (List<?>) response.get("advisoryKeys");
             int vulnCount = advisoryKeys != null ? advisoryKeys.size() : 0;
-            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null);
+            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null,
+                    extractAdvisoryIds(advisoryKeys));
         } catch (HttpStatusCodeException e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from deps.dev API for {}/{} ({})", e.getStatusCode().value(),

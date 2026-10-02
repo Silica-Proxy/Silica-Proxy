@@ -22,6 +22,7 @@ import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.interception.PackageIdentificationService;
 import com.silicaproxy.service.interception.PackageIdentificationService.Identification;
@@ -54,15 +55,11 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.util.Collections;
 import java.util.Enumeration;
-import java.util.Arrays;
-import java.util.HashSet;
-import com.silicaproxy.properties.SilicaProxyProperties;
 
 /**
  * Main entry point of the proxy  : intercepts all {@code GET /**} requests
@@ -97,7 +94,7 @@ public class ProxyController {
     private final Timer blockDecisionTimer;
     private final Timer allowDecisionTimer;
     private final MeterRegistry meterRegistry;
-    private final Set<String> httpOnlyHosts;
+    private HttpsUpgradePolicy httpsUpgradePolicy = HttpsUpgradePolicy.upgradeAll();
 
     public ProxyController(
             SecurityService securityService,
@@ -107,19 +104,6 @@ public class ProxyController {
             NpmPackumentIndex npmPackumentIndex,
             MeterRegistry meterRegistry,
             ObjectMapper objectMapper) {
-        this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
-                meterRegistry, objectMapper, null);
-    }
-
-    public ProxyController(
-            SecurityService securityService,
-            AuditLogService auditLogService,
-            ProxyStreamClient proxyStreamClient,
-            PackageIdentificationService packageIdentification,
-            NpmPackumentIndex npmPackumentIndex,
-            MeterRegistry meterRegistry,
-            ObjectMapper objectMapper,
-            SilicaProxyProperties properties) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -129,14 +113,16 @@ public class ProxyController {
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
-        this.httpOnlyHosts = properties != null ? parseHttpOnlyHosts(properties.proxy().httpOnlyHosts()) : Set.of();
     }
 
-    private Set<String> parseHttpOnlyHosts(String csvHosts) {
-        if (csvHosts == null || csvHosts.isBlank()) {
-            return Set.of();
-        }
-        return new HashSet<>(Arrays.asList(csvHosts.split("\\s*,\\s*")));
+    /**
+     * Applies the configured {@code http-only-hosts} exemptions. Setter-injected (optional
+     * collaborator) so the constructor, used as-is by the existing tests, stays unchanged :
+     * without it, every non-local {@code http://} URL is upgraded to {@code https://}.
+     */
+    @Autowired(required = false)
+    public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
+        this.httpsUpgradePolicy = httpsUpgradePolicy;
     }
 
     /**
@@ -208,8 +194,7 @@ public class ProxyController {
         // Extracted once : the npm metadata detector reads the client hints (Accept / User-Agent /
         // npm-*) and the forwarder replays the same headers upstream.
         HttpHeaders headers = extractHeaders(request);
-        String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
-        String fullUrlHttps = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
+        String forwardUrl = httpsUpgradePolicy.upgrade(fullUrl, request.getLocalPort());
         Identification identification = packageIdentification.identify(fullUrl, forwardUrl, headers);
         ParsedPackage parsed = identification.pkg();
         String packageName = parsed.packageName();
@@ -219,7 +204,7 @@ public class ProxyController {
         if (identification.outcome() == Outcome.BYPASS) {
             ResponseIdentificationService identifier = responseIdentification;
             if (identifier != null && identifier.isEnabled()) {
-                forwardIdentifyingResponse(identifier, fullUrlHttps, forwardUrl, headers, response, identification,
+                forwardIdentifyingResponse(identifier, fullUrl, forwardUrl, headers, response, identification,
                         startTime);
             } else {
                 recordBypass(parsed, forwardUrl);
@@ -230,7 +215,7 @@ public class ProxyController {
 
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
-                : securityService.getDecision(packageName, version, ecosystem, fullUrlHttps);
+                : securityService.getDecision(packageName, version, ecosystem, forwardUrl);
         if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
             return;
         }
@@ -453,38 +438,5 @@ public class ProxyController {
 
         objectMapper.writeValue(response.getOutputStream(), body);
         response.getOutputStream().flush();
-    }
-
-    // Ports the servlet container itself is listening on can leak into request.getRequestURL()'s
-    // reconstructed authority even when the original absolute-URI request line had no port (or a
-    // different one) -- see shouldStripPortWhenUpgradingToHttps. Comparing against localPort
-    // (the actual local socket port this connection was accepted on, immune to Host-header or
-    // request-line spoofing) distinguishes that connector artifact from a genuine port that was
-    // part of the original request (e.g. a private mirror on a non-standard port), which must be
-    // preserved rather than silently dropped.
-    private String convertToHttpsIfNeeded(String urlString, int localPort) {
-        if (urlString.startsWith("http://")) {
-            try {
-                URI uri = URI.create(urlString);
-                String host = uri.getHost();
-                if (host != null && !host.equals("localhost") && !host.equals("127.0.0.1") && !host.equals("host.docker.internal")
-                        && !httpOnlyHosts.contains(host)) {
-                    int port = uri.getPort();
-                    boolean isConnectorPort = port == localPort;
-                    String path = uri.getRawPath();
-                    String query = uri.getRawQuery();
-                    String newUrl = "https://" + host
-                            + (port != -1 && !isConnectorPort ? ":" + port : "")
-                            + (path != null ? path : "");
-                    if (query != null) {
-                        newUrl += "?" + query;
-                    }
-                    return newUrl;
-                }
-            } catch (Exception e) {
-                // Ignore and return original
-            }
-        }
-        return urlString;
     }
 }

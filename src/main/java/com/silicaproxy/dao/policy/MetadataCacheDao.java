@@ -25,6 +25,7 @@ import io.micrometer.core.annotation.Timed;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -89,14 +90,31 @@ public class MetadataCacheDao {
             String ecosystem, 
             String version, 
             boolean isSecure, 
-            String apiSource, 
+            String apiSource,
             Instant expiresAt) {
+        saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt, List.of());
+    }
+
+    // vulnerabilityIds (GHSA/CVE ids reported by the API) go into scan_details so that a cached
+    // BLOCK can still tell why the package is blocked.
+    public void saveApiCache(
+            String packageName,
+            String ecosystem,
+            String version,
+            boolean isSecure,
+            String apiSource,
+            Instant expiresAt,
+            List<String> vulnerabilityIds) {
         String sql = """
-            INSERT INTO api_cache (package_name, ecosystem, package_version, is_secure, api_source, expires_at)
-            VALUES (:packageName, :ecosystem, :version, :isSecure, :apiSource, :expiresAt)
+            INSERT INTO api_cache (package_name, ecosystem, package_version, is_secure, api_source, scan_details, expires_at)
+            VALUES (:packageName, :ecosystem, :version, :isSecure, :apiSource,
+                    CASE WHEN cardinality(CAST(:vulnerabilityIds AS text[])) = 0 THEN NULL
+                         ELSE jsonb_build_object('vulnerabilityIds', to_jsonb(CAST(:vulnerabilityIds AS text[]))) END,
+                    :expiresAt)
             ON CONFLICT (package_name, ecosystem, package_version) DO UPDATE SET
                 is_secure = EXCLUDED.is_secure,
                 api_source = EXCLUDED.api_source,
+                scan_details = EXCLUDED.scan_details,
                 expires_at = EXCLUDED.expires_at
             """;
         jdbcClient.sql(sql)
@@ -105,6 +123,7 @@ public class MetadataCacheDao {
                 .param("version", version)
                 .param("isSecure", isSecure)
                 .param("apiSource", apiSource)
+                .param("vulnerabilityIds", vulnerabilityIds.toArray(new String[0]))
                 .param("expiresAt", Timestamp.from(expiresAt))
                 .update();
     }

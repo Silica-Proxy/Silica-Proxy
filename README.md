@@ -349,6 +349,8 @@ Each source can be enabled or disabled independently (see [Configuration Referen
 
 **On error, the chain hands over instead of stopping:** a source that fails (HTTP error, timeout, network issue) does not conclude the chain — the next enabled source is tried instead. Only if *every* enabled source fails does the per-source [`fail-open`](#what-fail-open--fail-closed-means) policy decide the verdict (`silicaproxy.api-fallback.<source>.fail-open`, default `true`): ALLOW if every failed source is fail-open, BLOCK if at least one is fail-closed (the most restrictive result wins). This verdict is reported with `step: API_FALLBACK_ERROR` (see [API Endpoints](#api-endpoints)).
 
+A cached BLOCK keeps the reason it was issued for: the vulnerability ids reported by the API (e.g. `GHSA-…`) are stored in `api_cache.scan_details` and returned in the 403 `detail` (`Blocked by cached OSV_LIVE verdict: GHSA-cxp5-3px4-pw24`). Entries cached before this behaviour have no ids and only name the source.
+
 This error verdict is **deliberately never cached** — caching it would keep allowing (or blocking) the package for the whole TTL window even after the failing API recovers, turning a transient outage into a security hole (fail-open) or a needless block (fail-closed) that outlives the actual incident. The next request after recovery gets a fresh, real verdict.
 
 **Next:** Configure your company-level policies in [GitOps policy files](#gitops-policy-files).
@@ -490,7 +492,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE`                                                 | `15` | Min idle connections |
 | | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
 | **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
-| | `silicaproxy.proxy.http-only-hosts` | `SILICAPROXY_PROXY_HTTP_ONLY_HOSTS`                               | _(empty)_ | Comma-separated list of hosts that must remain HTTP (not converted to HTTPS for security checks). Use when a registry has SSL/TLS issues and requires HTTP access |
+| | `silicaproxy.proxy.http-only-hosts` | `SILICAPROXY_PROXY_HTTP_ONLY_HOSTS`                               | _(empty)_ | Comma-separated, case-insensitive list of hosts that stay on plain HTTP. Every other non-local `http://` request is upgraded to `https://`, both for the upstream relay and for the registry metadata lookups (some registries, e.g. `plugins.gradle.org`, answer 403 to plain HTTP). Use it for an internal registry that has no TLS |
 | **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL`                                  | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |

@@ -21,6 +21,7 @@ import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -88,7 +89,8 @@ public class OsvClient {
             }
             List<?> vulns = (List<?>) response.get("vulns");
             int vulnCount = vulns != null ? vulns.size() : 0;
-            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null);
+            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null,
+                    extractIds(vulns, "id"));
         } catch (HttpStatusCodeException e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from OSV API for {}/{} ({})", e.getStatusCode().value(),
@@ -103,6 +105,18 @@ public class OsvClient {
             }
             return new ApiCheckResult(false, 0, 0, responseTimeMs, e.getMessage());
         }
+    }
+
+    private static List<String> extractIds(@Nullable List<?> entries, String idKey) {
+        if (entries == null) {
+            return List.of();
+        }
+        return entries.stream()
+                .filter(Map.class::isInstance)
+                .map(entry -> ((Map<?, ?>) entry).get(idKey))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .toList();
     }
 
     private String mapEcosystemToOsv(String ecosystem) {
