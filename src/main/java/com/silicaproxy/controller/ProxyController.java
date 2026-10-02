@@ -106,6 +106,18 @@ public class ProxyController {
             PackageIdentificationService packageIdentification,
             NpmPackumentIndex npmPackumentIndex,
             MeterRegistry meterRegistry,
+            ObjectMapper objectMapper) {
+        this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
+                meterRegistry, objectMapper, null);
+    }
+
+    public ProxyController(
+            SecurityService securityService,
+            AuditLogService auditLogService,
+            ProxyStreamClient proxyStreamClient,
+            PackageIdentificationService packageIdentification,
+            NpmPackumentIndex npmPackumentIndex,
+            MeterRegistry meterRegistry,
             ObjectMapper objectMapper,
             SilicaProxyProperties properties) {
         this.securityService = securityService;
@@ -117,7 +129,7 @@ public class ProxyController {
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
-        this.httpOnlyHosts = parseHttpOnlyHosts(properties.proxy().httpOnlyHosts());
+        this.httpOnlyHosts = properties != null ? parseHttpOnlyHosts(properties.proxy().httpOnlyHosts()) : Set.of();
     }
 
     private Set<String> parseHttpOnlyHosts(String csvHosts) {
