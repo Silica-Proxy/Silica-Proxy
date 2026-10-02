@@ -490,6 +490,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE`                                                 | `15` | Min idle connections |
 | | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
 | **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
+| | `silicaproxy.proxy.http-only-hosts` | `SILICAPROXY_PROXY_HTTP_ONLY_HOSTS`                               | _(empty)_ | Comma-separated list of hosts that must remain HTTP (not converted to HTTPS for security checks). Use when a registry has SSL/TLS issues and requires HTTP access |
 | **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL`                                  | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |

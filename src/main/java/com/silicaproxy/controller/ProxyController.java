@@ -54,11 +54,15 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.Arrays;
+import java.util.HashSet;
+import com.silicaproxy.properties.SilicaProxyProperties;
 
 /**
  * Main entry point of the proxy  : intercepts all {@code GET /**} requests
@@ -93,6 +97,7 @@ public class ProxyController {
     private final Timer blockDecisionTimer;
     private final Timer allowDecisionTimer;
     private final MeterRegistry meterRegistry;
+    private final Set<String> httpOnlyHosts;
 
     public ProxyController(
             SecurityService securityService,
@@ -101,7 +106,8 @@ public class ProxyController {
             PackageIdentificationService packageIdentification,
             NpmPackumentIndex npmPackumentIndex,
             MeterRegistry meterRegistry,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            SilicaProxyProperties properties) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -111,6 +117,14 @@ public class ProxyController {
         this.meterRegistry = meterRegistry;
         this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
         this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
+        this.httpOnlyHosts = parseHttpOnlyHosts(properties.proxy().httpOnlyHosts());
+    }
+
+    private Set<String> parseHttpOnlyHosts(String csvHosts) {
+        if (csvHosts == null || csvHosts.isBlank()) {
+            return Set.of();
+        }
+        return new HashSet<>(Arrays.asList(csvHosts.split("\\s*,\\s*")));
     }
 
     /**
@@ -183,6 +197,7 @@ public class ProxyController {
         // npm-*) and the forwarder replays the same headers upstream.
         HttpHeaders headers = extractHeaders(request);
         String forwardUrl = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
+        String fullUrlHttps = convertToHttpsIfNeeded(fullUrl, request.getLocalPort());
         Identification identification = packageIdentification.identify(fullUrl, forwardUrl, headers);
         ParsedPackage parsed = identification.pkg();
         String packageName = parsed.packageName();
@@ -192,7 +207,7 @@ public class ProxyController {
         if (identification.outcome() == Outcome.BYPASS) {
             ResponseIdentificationService identifier = responseIdentification;
             if (identifier != null && identifier.isEnabled()) {
-                forwardIdentifyingResponse(identifier, fullUrl, forwardUrl, headers, response, identification,
+                forwardIdentifyingResponse(identifier, fullUrlHttps, forwardUrl, headers, response, identification,
                         startTime);
             } else {
                 recordBypass(parsed, forwardUrl);
@@ -203,7 +218,7 @@ public class ProxyController {
 
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
-                : securityService.getDecision(packageName, version, ecosystem, fullUrl);
+                : securityService.getDecision(packageName, version, ecosystem, fullUrlHttps);
         if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
             return;
         }
@@ -440,7 +455,8 @@ public class ProxyController {
             try {
                 URI uri = URI.create(urlString);
                 String host = uri.getHost();
-                if (host != null && !host.equals("localhost") && !host.equals("127.0.0.1") && !host.equals("host.docker.internal")) {
+                if (host != null && !host.equals("localhost") && !host.equals("127.0.0.1") && !host.equals("host.docker.internal")
+                        && !httpOnlyHosts.contains(host)) {
                     int port = uri.getPort();
                     boolean isConnectorPort = port == localPort;
                     String path = uri.getRawPath();
