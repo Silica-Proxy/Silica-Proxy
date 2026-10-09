@@ -106,10 +106,10 @@ Several of the checks below depend on a remote call that can fail (a registry be
 unreachable, an external validation service timing out, the OSV/deps.dev live APIs returning
 an error). Each of these checks has a configurable policy for that failure case:
 
-- **`fail-open: true`** (the default almost everywhere) — if the check can't get an answer,
-  **allow** the package rather than block a build over an infrastructure hiccup.
-- **`fail-open: false`** (i.e. fail-closed) — if the check can't get an answer, **block** the
-  package instead, favoring security over availability.
+- **`fail-open: false`** (fail-closed, the default) — if the check can't get an answer, **block**
+  the package instead, favoring security over availability.
+- **`fail-open: true`** (opt-in) — if the check can't get an answer, **allow** the package
+  rather than block a build over an infrastructure hiccup.
 
 This choice is configured independently for quarantine (`silicaproxy.quarantine.fail-open`,
 [§3](#3-public-registry-metadata--on-demand-cached-permanently)), each external validation
@@ -118,7 +118,7 @@ and each live API fallback source (`silicaproxy.api-fallback.<osv|deps-dev>.fail
 [§5](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) — a hardened
 environment can flip any of them to fail-closed without affecting the others.
 
-For quarantine, `silicaproxy.quarantine.fail-open` (default `true`) decides the verdict whenever
+For quarantine, `silicaproxy.quarantine.fail-open` (default `false`) decides the verdict whenever
 the **publication date cannot be resolved** at all : registry unreachable, package/version
 unknown to the registry (and to the origin registry for npm), and no date already cached in
 `package_metadata`. Such packages skip the age check entirely, so every occurrence is counted in
@@ -347,7 +347,7 @@ Each source can be enabled or disabled independently (see [Configuration Referen
 - **ALLOW verdicts** (no vulnerability): 1,440 minutes (24 hours) — shorter TTL for safety
 - Can be independently disabled via `cache-allow-verdict: false`
 
-**On error, the chain hands over instead of stopping:** a source that fails (HTTP error, timeout, network issue) does not conclude the chain — the next enabled source is tried instead. Only if *every* enabled source fails does the per-source [`fail-open`](#what-fail-open--fail-closed-means) policy decide the verdict (`silicaproxy.api-fallback.<source>.fail-open`, default `true`): ALLOW if every failed source is fail-open, BLOCK if at least one is fail-closed (the most restrictive result wins). This verdict is reported with `step: API_FALLBACK_ERROR` (see [API Endpoints](#api-endpoints)).
+**On error, the chain hands over instead of stopping:** a source that fails (HTTP error, timeout, network issue) does not conclude the chain — the next enabled source is tried instead. Only if *every* enabled source fails does the per-source [`fail-open`](#what-fail-open--fail-closed-means) policy decide the verdict (`silicaproxy.api-fallback.<source>.fail-open`, default `false`): ALLOW if every failed source is fail-open, BLOCK if at least one is fail-closed (the most restrictive result wins). This verdict is reported with `step: API_FALLBACK_ERROR` (see [API Endpoints](#api-endpoints)).
 
 A cached BLOCK keeps the reason it was issued for: the vulnerability ids reported by the API (e.g. `GHSA-…`) are stored in `api_cache.scan_details` and returned in the 403 `detail` (`Blocked by cached OSV_LIVE verdict: GHSA-cxp5-3px4-pw24`). Entries cached before this behaviour have no ids and only name the source.
 
@@ -497,7 +497,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
 | **Quarantine** | `silicaproxy.quarantine.enabled` | `SILICAPROXY_QUARANTINE_ENABLED`                                  | `true` | Enable age-based quarantine globally |
-| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN`                                | `true` | Verdict when the publication date cannot be resolved (registry unreachable, package unknown, no cached date) : `true` = allow, `false` = block |
+| | `silicaproxy.quarantine.fail-open` | `SILICAPROXY_QUARANTINE_FAIL_OPEN`                                | `false` | Verdict when the publication date cannot be resolved (registry unreachable, package unknown, no cached date) : `true` = allow, `false` = block |
 | | `silicaproxy.quarantine.default-min-age-days` | `SILICAPROXY_QUARANTINE_DEFAULT_MIN_AGE_DAYS`                     | `7` | Fallback threshold if not set per ecosystem |
 | | `silicaproxy.quarantine.ecosystems.npm.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_ENABLED`                   | `true` | |
 | | `silicaproxy.quarantine.ecosystems.npm.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_NPM_MIN_AGE_DAYS`              | `7` | |
@@ -552,7 +552,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.external-validation.services.<name>.api-key` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_APIKEY`           | _(empty)_ | Sent as `Authorization` header on outbound calls; for async services, also required back as `Authorization: Bearer {api-key}` on the callback if set (optional otherwise) |
 | | `silicaproxy.external-validation.services.<name>.mode` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_MODE`             | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
 | | `silicaproxy.external-validation.services.<name>.timeout-seconds` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_TIMEOUTSECONDS`                                                               | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
-| | `silicaproxy.external-validation.services.<name>.fail-open` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_FAILOPEN`                                                                | `true` | `true` = allow on error/timeout/pending; `false` = block |
+| | `silicaproxy.external-validation.services.<name>.fail-open` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_FAILOPEN`                                                                | `false` | `true` = allow on error/timeout/pending; `false` = block |
 | | `silicaproxy.external-validation.services.<name>.blocking` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_BLOCKING`                                                                | `true` | `false` = verdict stored for audit but never blocks a package |
 | | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_CACHETTLMINUTES`                                                               | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
 | | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_PENDINGTTLMINUTES`                                                                | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
@@ -566,10 +566,10 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS`              | `25` | Window fetched on first run (before any watermark) |
 | **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED`                            | `true` | Enable Google OSV Live API (free) |
 | | `silicaproxy.api-fallback.osv.url` | —                                                                 | `https://api.osv.dev/v1/query` | OSV API endpoint |
-| | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN`                          | `true` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
+| | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN`                          | `false` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
 | | `silicaproxy.api-fallback.deps-dev.enabled` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_ENABLED`                       | `true` | Enable Google deps.dev API (free) |
 | | `silicaproxy.api-fallback.deps-dev.url` | —                                                                 | `https://api.deps.dev/v3/` | deps.dev API endpoint |
-| | `silicaproxy.api-fallback.deps-dev.fail-open` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_FAIL_OPEN`                     | `true` | Verdict when deps.dev fails **and** no later source in the chain concludes either |
+| | `silicaproxy.api-fallback.deps-dev.fail-open` | `SILICAPROXY_API_FALLBACK_DEPS_DEV_FAIL_OPEN`                     | `false` | Verdict when deps.dev fails **and** no later source in the chain concludes either |
 | **HTTP timeouts** | `silicaproxy.http-client.connect-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_CONNECT_TIMEOUT_SECONDS`                 | `5` | |
 | | `silicaproxy.http-client.registries-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_REGISTRIES_READ_TIMEOUT_SECONDS`         | `60` | For binary downloads |
 | | `silicaproxy.http-client.security-apis-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_SECURITY_APIS_READ_TIMEOUT_SECONDS`      | `10` | For JSON security API calls |
@@ -825,7 +825,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 | Metric | Type | Tags | Description |
 |---|---|---|---|
 | `silicaproxy.quarantine.publish_date.lookups` | Counter | `ecosystem`, `source` (`PUBLIC_REGISTRY`/`ORIGIN_REGISTRY`/`LOCAL_CACHE`/`UNRESOLVED`) | Where the publication date used by the quarantine check came from. `ORIGIN_REGISTRY` (npm only) means the public registry did not know the version and the registry the client resolved against was trusted instead ; `LOCAL_CACHE` means the registry could not answer but the date was already known. |
-| `silicaproxy.quarantine.publish_date.unresolved` | Counter | `ecosystem`, `verdict` (`ALLOW`/`BLOCK`) | Packages whose publication date could not be resolved, with the verdict applied by `silicaproxy.quarantine.fail-open`. With the default fail-open, each `ALLOW` is a package that **skipped the quarantine** : alert on it, e.g. `increase(silicaproxy_quarantine_publish_date_unresolved_total{verdict="ALLOW"}[1h]) > 0`. |
+| `silicaproxy.quarantine.publish_date.unresolved` | Counter | `ecosystem`, `verdict` (`ALLOW`/`BLOCK`) | Packages whose publication date could not be resolved, with the verdict applied by `silicaproxy.quarantine.fail-open`. With `fail-open: true`, each `ALLOW` is a package that **skipped the quarantine** : alert on it, e.g. `increase(silicaproxy_quarantine_publish_date_unresolved_total{verdict="ALLOW"}[1h]) > 0`. |
 
 **External vulnerability APIs (OSV live fallback, deps.dev)**
 

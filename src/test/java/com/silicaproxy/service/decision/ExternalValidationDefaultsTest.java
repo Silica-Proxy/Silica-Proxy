@@ -45,10 +45,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 // External validation — `blocking` and `fail-open` deliberately left unset on the
-// test-scanner service, to lock in the README-documented defaults (both `true`):
+// test-scanner service, to lock in the README-documented defaults (`blocking` true, `fail-open` false):
 // https://github.com/.../proxy/README.md "blocking" / "fail-open" rows.
 // Regression coverage for the SilicaProxyProperties @DefaultValue annotations —
-// without them, omitted properties silently bind to `false` instead.
+// without them, omitted properties silently bind to `false` instead (`blocking` must stay true).
 class ExternalValidationDefaultsTest extends BaseIntegrationTest {
 
     @LocalServerPort
@@ -121,16 +121,19 @@ class ExternalValidationDefaultsTest extends BaseIntegrationTest {
     }
 
     @Test
-    void failOpenDefaultsToTrue_networkFaultStillForwardsRequest() {
+    void failOpenDefaultsToFalse_networkFaultBlocksRequest() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse()
                         .withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
 
-        ResponseEntity<byte[]> response = proxyRestClient.get()
-                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                .retrieve()
-                .toEntity(byte[].class);
-
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve()
+                    .toBodilessEntity();
+            fail("Expected 403 — fail-open should default to false when unset");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
     }
 }

@@ -39,7 +39,7 @@ silicaproxy:
   quarantine:
     enabled: true                    # Activation globale
     default-min-age-days: 7          # Seuil par défaut si non spécifié
-    fail-open: true                  # true: ALLOW si registre indisponible | false: BLOCK
+    fail-open: false                 # true: ALLOW si registre indisponible | false: BLOCK
     ecosystems:
       npm:
         enabled: true
@@ -175,7 +175,7 @@ Raison : "Package com.example:new-library version 1.0.0 was published 3 days ago
 
 ## Gestion des Erreurs Registre
 
-### Fail-Open (Défaut : `true`)
+### Fail-Open (`true`, opt-in)
 
 Si la requête au registre échoue ET aucune date cachée disponible :
 
@@ -186,7 +186,7 @@ Raison : "Fail open due to public registry unavailability."
 
 **Usage** : Environnements où une courte indisponibilité du registre ne doit pas casser les builds.
 
-### Fail-Closed (`false`)
+### Fail-Closed (Défaut : `false`)
 
 ```
 failOpen = false → ❌ BLOCK

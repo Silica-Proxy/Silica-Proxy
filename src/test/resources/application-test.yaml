@@ -109,10 +109,12 @@ silicaproxy:
     osv:
       enabled: true
       url: "https://api.osv.dev/v1/query"
+      fail-open: true
     # Google Open Source Insights deps.dev API
     deps-dev:
       enabled: false
       url: "https://api.deps.dev/v3/"
+      fail-open: true
 
   # 6. GitOps synchronization of enterprise governance rules
   gitops:

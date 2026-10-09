@@ -66,8 +66,8 @@ silicaproxy:
     enabled: true
     # Default minimum number of days required since publication (if not specified by ecosystem)
     default-min-age-days: 7
-    # Behavior on registry error (true = allow package ; false = block for security)
-    fail-open: true
+    # Behavior on registry error (false = block for security, default ; true = allow package)
+    fail-open: false
     # Package version unknown to every registry consulted (404 / absent), as opposed to a
     # registry that could not answer : FOLLOW_FAIL_OPEN = treated like an outage (fail-open
     # decides) ; BLOCK = always blocked (REGISTRY_NOT_FOUND)
@@ -148,12 +148,12 @@ silicaproxy:
       enabled: true
       url: "https://api.osv.dev/v1/query"
       # Behavior when this source errors and no later source could conclude either
-      fail-open: true
+      fail-open: false
     # Google Open Source Insights deps.dev API
     deps-dev:
       enabled: true
       url: "https://api.deps.dev/v3/"
-      fail-open: true
+      fail-open: false
 
   # 6. GitOps synchronization of enterprise governance rules
   gitops:

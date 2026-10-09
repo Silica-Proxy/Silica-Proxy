@@ -171,7 +171,7 @@ public record SilicaProxyProperties(
         boolean enabled,
         @Nullable String apiKey,
         @NotBlank String url,
-        @DefaultValue("true") boolean failOpen
+        @DefaultValue("false") boolean failOpen
     ) {}
 
     public record GitOpsProperties(
@@ -269,7 +269,7 @@ public record SilicaProxyProperties(
         @Nullable String apiKey,
         @NotBlank String mode,
         @DefaultValue("1") int timeoutSeconds,
-        @DefaultValue("true") boolean failOpen,
+        @DefaultValue("false") boolean failOpen,
         @DefaultValue("true") boolean blocking,
         @DefaultValue("60") int cacheTtlMinutes,
         @DefaultValue("30") int pendingTtlMinutes
