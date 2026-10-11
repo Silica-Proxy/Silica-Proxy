@@ -39,7 +39,7 @@ public class ApiCacheCleanupService {
         this.metadataCacheDao = metadataCacheDao;
     }
 
-    @Scheduled(cron = "* * * * * *") // Every minute
+    @Scheduled(cron = "0 * * * * *") // Every minute
     @SchedulerLock(name = "clean_api_cache_lock", lockAtMostFor = "1m", lockAtLeastFor = "5s")
     public void cleanExpiredApiCache() {
         LOGGER.debug("Starting cleanup of expired API cache...");
