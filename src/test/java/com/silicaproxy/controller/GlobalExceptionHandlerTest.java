@@ -18,12 +18,14 @@
 package com.silicaproxy.controller;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class GlobalExceptionHandlerTest {
 
@@ -40,13 +42,23 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void shouldReturn500OnUnexpectedException() {
+    void shouldReturn500OnUnexpectedException() throws Exception {
         RuntimeException exception = new RuntimeException("Unexpected error");
         
-        ProblemDetail result = exceptionHandler.handleUnexpected(exception);
+        ProblemDetail result = exceptionHandler.handleUnexpected(exception, new MockHttpServletResponse());
         
         assertThat(result.getStatus()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR.value());
         assertThat(result.getDetail()).isEqualTo("An internal error occurred.");
+    }
+
+    @Test
+    void shouldRethrowUnexpectedExceptionOnceResponseIsCommitted() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.getWriter().flush();
+        response.setCommitted(true);
+        RuntimeException exception = new RuntimeException("Unexpected error");
+
+        assertThatThrownBy(() -> exceptionHandler.handleUnexpected(exception, response)).isSameAs(exception);
     }
 
     @Test

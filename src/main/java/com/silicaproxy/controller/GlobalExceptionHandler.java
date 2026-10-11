@@ -18,6 +18,7 @@
 package com.silicaproxy.controller;
 
 import com.silicaproxy.service.interception.ChecksumVerifyingRelay.ChecksumMismatchException;
+import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 @RestControllerAdvice
 @NullMarked
@@ -58,8 +60,20 @@ public class GlobalExceptionHandler {
         throw e;
     }
 
+    // The client hung up while the response was being written : nothing can be answered anymore.
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleClientAbort(AsyncRequestNotUsableException e) {
+        LOG.debug("Client closed the connection : {}", e.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
-    public ProblemDetail handleUnexpected(Exception e) {
+    public ProblemDetail handleUnexpected(Exception e, HttpServletResponse response) throws Exception {
+        if (response.isCommitted()) {
+            // Part of the body is already on the wire : a ProblemDetail would be appended to it and
+            // end the response normally. Rethrown so the container aborts the connection.
+            LOG.error("Application error after the response was committed", e);
+            throw e;
+        }
         LOG.error("Unhandled application error", e);
         return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "An internal error occurred.");
     }

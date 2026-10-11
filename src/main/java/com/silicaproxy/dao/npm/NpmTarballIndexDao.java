@@ -20,11 +20,13 @@ package com.silicaproxy.dao.npm;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -37,10 +39,55 @@ import java.util.Optional;
 @NullMarked
 public class NpmTarballIndexDao {
 
-    private final JdbcClient jdbcClient;
+    private static final int BATCH_SIZE = 500;
 
-    public NpmTarballIndexDao(JdbcClient jdbcClient) {
+    private static final String UPSERT_SQL =
+            "INSERT INTO npm_tarball_index " +
+            "(tarball_url, package_name, package_version, published_at, deprecated, deprecation_reason, packument_url, expires_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+            "ON CONFLICT (tarball_url) DO UPDATE SET " +
+            "  package_name = EXCLUDED.package_name, " +
+            "  published_at = EXCLUDED.published_at, " +
+            "  deprecated = EXCLUDED.deprecated, " +
+            "  deprecation_reason = EXCLUDED.deprecation_reason, " +
+            "  packument_url = EXCLUDED.packument_url, " +
+            "  indexed_at = NOW(), " +
+            "  expires_at = EXCLUDED.expires_at";
+
+    private final JdbcClient jdbcClient;
+    private final JdbcTemplate jdbcTemplate;
+
+    public NpmTarballIndexDao(JdbcClient jdbcClient, JdbcTemplate jdbcTemplate) {
         this.jdbcClient = jdbcClient;
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    /**
+     * A row to persist : the entry, the instant its row expires, and whether other instances need
+     * it to identify the tarball (its URL carries no package/version, so without the row it would
+     * go unidentified).
+     */
+    public record PendingEntry(NpmTarballEntry entry, Instant expiresAt, boolean requiredForIdentification) {}
+
+    /**
+     * Upserts many entries in JDBC batches : a large packument (thousands of versions) costs a few
+     * round trips instead of one per version.
+     */
+    public void saveAll(List<PendingEntry> entries) {
+        for (int from = 0; from < entries.size(); from += BATCH_SIZE) {
+            List<PendingEntry> chunk = entries.subList(from, Math.min(from + BATCH_SIZE, entries.size()));
+            jdbcTemplate.batchUpdate(UPSERT_SQL, chunk, chunk.size(), (ps, pending) -> {
+                NpmTarballEntry e = pending.entry();
+                ps.setString(1, e.tarballUrl());
+                ps.setString(2, e.packageName());
+                ps.setString(3, e.packageVersion());
+                ps.setTimestamp(4, e.publishedAt() != null ? Timestamp.from(e.publishedAt()) : null);
+                ps.setBoolean(5, e.deprecated());
+                ps.setString(6, e.deprecationReason());
+                ps.setString(7, e.packumentUrl());
+                ps.setTimestamp(8, Timestamp.from(pending.expiresAt()));
+            });
+        }
     }
 
     public record NpmTarballEntry(

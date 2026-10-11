@@ -20,6 +20,7 @@ package com.silicaproxy.service.interception;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
+import jakarta.annotation.PreDestroy;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -39,10 +40,15 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
@@ -77,6 +83,15 @@ public class NpmPackumentIndex {
     private final NpmTarballIndexDao tarballIndexDao;
     // Tarball URL → version ; "name@version" → metadata. Both hold the same entries, so the size
     // cap is checked on the URL map only.
+    // Persistence for other instances runs off the request thread, which only returns (and so ends
+    // the chunked response the client is waiting on) once the packument is relayed. Bounded so a
+    // burst of large packuments cannot pile up DB writers : when saturated, the request thread runs
+    // the write itself, which throttles the callers.
+    private final ThreadPoolExecutor persistExecutor = new ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(50),
+            Thread.ofPlatform().name("SilicaProxy-NpmIndex-", 0).daemon().factory(),
+            new ThreadPoolExecutor.CallerRunsPolicy());
+
     private final Map<String, IndexedTarball> index = new ConcurrentHashMap<>();
     private final Map<String, IndexedTarball> byPackage = new ConcurrentHashMap<>();
 
@@ -113,10 +128,19 @@ public class NpmPackumentIndex {
      * @return the number of tarball URLs indexed from this body
      */
     public int indexPackument(byte[] body, @Nullable String contentEncoding, String packumentUrl) {
+        List<NpmTarballIndexDao.PendingEntry> pending = new ArrayList<>();
+        int indexed = indexInMemory(body, body.length, contentEncoding, packumentUrl, pending);
+        persist(pending);
+        return indexed;
+    }
+
+    /** Indexes in memory and collects the rows to share through the DB, which the caller persists. */
+    private int indexInMemory(byte[] body, int length, @Nullable String contentEncoding, String packumentUrl,
+            List<NpmTarballIndexDao.PendingEntry> pending) {
         if (!properties.enabled()) {
             return 0;
         }
-        try (InputStream in = decode(new ByteArrayInputStream(body), contentEncoding)) {
+        try (InputStream in = decode(new ByteArrayInputStream(body, 0, length), contentEncoding)) {
             JsonNode root = objectMapper.readTree(in);
             JsonNode versions = root.path("versions");
             if (!versions.isObject()) {
@@ -159,10 +183,12 @@ public class NpmPackumentIndex {
                     // can only be identified through this index : otherwise a tarball request
                     // landing on another instance would bypass the security check. Standard
                     // layouts without a date are skipped (hundreds of versions per packument).
-                    if (publishedAt != null || !isIdentifiableWithoutIndex(tarball)) {
+                    boolean identifiableWithoutIndex = isIdentifiableWithoutIndex(tarball);
+                    if (publishedAt != null || !identifiableWithoutIndex) {
                         Instant expiresAt = now.plus(Duration.ofMinutes(properties.ttlMinutes()));
-                        tarballIndexDao.save(key, name, version, publishedAt, deprecated, deprecationReason,
-                                packumentUrl, expiresAt);
+                        pending.add(new NpmTarballIndexDao.PendingEntry(new NpmTarballIndexDao.NpmTarballEntry(
+                                key, name, version, publishedAt, deprecated, deprecationReason, packumentUrl),
+                                expiresAt, !identifiableWithoutIndex));
                     }
                     indexed++;
                 }
@@ -173,6 +199,23 @@ public class NpmPackumentIndex {
             // Not a packument, truncated body, unsupported encoding… : nothing to learn.
             LOG.debug("Packument body not indexable : {}", e.toString());
             return 0;
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        persistExecutor.shutdown();
+    }
+
+    private void persist(List<NpmTarballIndexDao.PendingEntry> pending) {
+        if (pending.isEmpty()) {
+            return;
+        }
+        try {
+            tarballIndexDao.saveAll(pending);
+        } catch (RuntimeException e) {
+            // The in-memory index already serves this instance : a DB failure only loses the sharing.
+            LOG.warn("Could not persist {} npm tarball index entries : {}", pending.size(), e.toString());
         }
     }
 
@@ -187,23 +230,42 @@ public class NpmPackumentIndex {
     public void relayAndIndex(InputStream body, @Nullable String contentEncoding, String packumentUrl,
             OutputStream out) throws IOException {
         long cap = properties.maxBodyBytes();
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        ExposedByteArrayOutputStream buffer = new ExposedByteArrayOutputStream();
         byte[] chunk = new byte[16 * 1024];
         int read;
         while (buffer.size() <= cap && (read = body.read(chunk)) != -1) {
             buffer.write(chunk, 0, read);
         }
-        byte[] bytes = buffer.toByteArray();
-        if (bytes.length <= cap) {
-            int indexed = indexPackument(bytes, contentEncoding, packumentUrl);
+        if (buffer.size() <= cap) {
+            List<NpmTarballIndexDao.PendingEntry> pending = new ArrayList<>();
+            long start = System.nanoTime();
+            int indexed = indexInMemory(buffer.array(), buffer.size(), contentEncoding, packumentUrl, pending);
             if (indexed > 0 && LOG.isDebugEnabled()) {
-                LOG.debug("Indexed {} tarball URL(s) from npm packument ({} bytes)", indexed, bytes.length);
+                LOG.debug("Indexed {} tarball URL(s) from npm packument ({} bytes) in {} ms", indexed,
+                        buffer.size(), (System.nanoTime() - start) / 1_000_000);
             }
-            out.write(bytes);
+            // Rows other instances need to identify a tarball are in the DB BEFORE the client can
+            // ask for it : the request may land on another instance. They are rare (only tarball
+            // URLs that carry no package/version), so this costs one small batch.
+            persist(pending.stream().filter(NpmTarballIndexDao.PendingEntry::requiredForIdentification).toList());
+            buffer.writeTo(out);
+            out.flush();
+            // The rest (publish dates, resolved on demand when missing) must not delay the end of
+            // the client's response.
+            List<NpmTarballIndexDao.PendingEntry> deferred = pending.stream()
+                    .filter(entry -> !entry.requiredForIdentification()).toList();
+            persistExecutor.execute(() -> persist(deferred));
         } else {
             LOG.debug("npm packument larger than {} bytes : relayed without indexing", cap);
-            out.write(bytes);
+            buffer.writeTo(out);
             StreamUtils.copy(body, out);
+        }
+    }
+
+    /** Gives access to the internal array, so the buffered body is not copied a second time. */
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        byte[] array() {
+            return buf;
         }
     }
 
