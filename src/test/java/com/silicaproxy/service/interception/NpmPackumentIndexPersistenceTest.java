@@ -21,15 +21,18 @@ import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -48,6 +51,13 @@ class NpmPackumentIndexPersistenceTest {
                 new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW), dao);
     }
 
+    @SuppressWarnings("unchecked")
+    private List<NpmTarballIndexDao.PendingEntry> savedEntries() {
+        ArgumentCaptor<List<NpmTarballIndexDao.PendingEntry>> captor = ArgumentCaptor.forClass(List.class);
+        verify(dao).saveAll(captor.capture());
+        return captor.getValue();
+    }
+
     private static byte[] abbreviatedPackument(String name, String version, String tarball) {
         return ("{\"name\":\"" + name + "\",\"versions\":{\"" + version + "\":{\"version\":\"" + version + "\","
                 + "\"dist\":{\"tarball\":\"" + tarball + "\"}}}}").getBytes(StandardCharsets.UTF_8);
@@ -60,8 +70,14 @@ class NpmPackumentIndexPersistenceTest {
         index().indexPackument(
                 abbreviatedPackument("internal-lib", "1.2.3", tarball), null, "https://private.example/internal-lib");
 
-        verify(dao).save(eq(tarball), eq("internal-lib"), eq("1.2.3"), isNull(), anyBoolean(), any(),
-                eq("https://private.example/internal-lib"), any());
+        List<NpmTarballIndexDao.PendingEntry> saved = savedEntries();
+        assertThat(saved).hasSize(1);
+        NpmTarballIndexDao.NpmTarballEntry entry = saved.get(0).entry();
+        assertThat(entry.tarballUrl()).isEqualTo(tarball);
+        assertThat(entry.packageName()).isEqualTo("internal-lib");
+        assertThat(entry.packageVersion()).isEqualTo("1.2.3");
+        assertThat(entry.publishedAt()).isNull();
+        assertThat(entry.packumentUrl()).isEqualTo("https://private.example/internal-lib");
     }
 
     @Test
@@ -70,7 +86,7 @@ class NpmPackumentIndexPersistenceTest {
                 abbreviatedPackument("lodash", "4.17.21", "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"),
                 null, "https://registry.npmjs.org/lodash");
 
-        verify(dao, never()).save(anyString(), anyString(), anyString(), any(), anyBoolean(), any(), anyString(), any());
+        verify(dao, never()).saveAll(any());
     }
 
     @Test
@@ -81,7 +97,28 @@ class NpmPackumentIndexPersistenceTest {
 
         index().indexPackument(packument.getBytes(StandardCharsets.UTF_8), null, "");
 
-        verify(dao).save(eq("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"), eq("lodash"), eq("4.17.21"),
-                any(), anyBoolean(), any(), anyString(), any());
+        List<NpmTarballIndexDao.PendingEntry> saved = savedEntries();
+        assertThat(saved).hasSize(1);
+        assertThat(saved.get(0).entry().tarballUrl()).isEqualTo("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz");
+        assertThat(saved.get(0).entry().publishedAt()).isNotNull();
+    }
+
+    @Test
+    void shouldPersistIdentificationEntryBeforeTheClientGetsTheBody() throws Exception {
+        String tarball = "https://blobs.private.example/sha256/0123abcd";
+        byte[] body = abbreviatedPackument("internal-lib", "1.2.3", tarball);
+        boolean[] persistedWhenFirstByteWritten = new boolean[1];
+        OutputStream out = new ByteArrayOutputStream() {
+            @Override
+            public synchronized void write(byte[] b, int off, int len) {
+                persistedWhenFirstByteWritten[0] = Mockito.mockingDetails(dao).getInvocations().stream()
+                        .anyMatch(invocation -> invocation.getMethod().getName().equals("saveAll"));
+                super.write(b, off, len);
+            }
+        };
+
+        index().relayAndIndex(new ByteArrayInputStream(body), null, "https://private.example/internal-lib", out);
+
+        assertThat(persistedWhenFirstByteWritten[0]).isTrue();
     }
 }

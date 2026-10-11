@@ -323,8 +323,7 @@ public class ProxyController {
             // the connection and the client never takes the truncated body for a complete one.
             throw e;
         } catch (Exception e) {
-            LOG.error("Proxy error to upstream registry when forwarding request {}", forwardUrl, e);
-            response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
+            handleForwardFailure(e, forwardUrl, response);
         }
     }
 
@@ -337,9 +336,35 @@ public class ProxyController {
         try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(fullUrl, headers)) {
             relay(streamResponse, fullUrl, response, learnPackument);
         } catch (Exception e) {
-            LOG.error("Proxy error to upstream registry when forwarding request {}", fullUrl, e);
-            response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
+            handleForwardFailure(e, fullUrl, response);
         }
+    }
+
+    /**
+     * A client that hangs up mid-relay is not an upstream failure : it is logged briefly and nothing
+     * is written back. Any other failure after the response was committed cannot become a clean
+     * error page, so it is rethrown for the servlet container to abort the connection.
+     */
+    private void handleForwardFailure(Exception e, String url, HttpServletResponse response) throws IOException {
+        if (isClientAbort(e)) {
+            LOG.debug("Client closed the connection while relaying {} : {}", url, e.getMessage());
+            return;
+        }
+        LOG.error("Proxy error to upstream registry when forwarding request {}", url, e);
+        if (response.isCommitted()) {
+            throw e instanceof IOException io ? io : new IOException(e);
+        }
+        response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "Proxy error to upstream registry.");
+    }
+
+    static boolean isClientAbort(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof org.apache.catalina.connector.ClientAbortException
+                    || t instanceof org.springframework.web.context.request.async.AsyncRequestNotUsableException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void relay(ProxyStreamClient.StreamResponse streamResponse, String fullUrl, HttpServletResponse response,
