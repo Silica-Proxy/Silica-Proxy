@@ -289,7 +289,7 @@ fr.silicaproxy
 ### Key Design Principles
 
 1. **Virtual threads (Project Loom)** — thousands of concurrent requests with minimal overhead.
-2. **Single SQL query** — one `UNION ALL` covers all local sources; priority ordering enforces policy precedence.
+2. **Local-first decision** — one `UNION ALL` covers all local sources; priority ordering enforces policy precedence. OSV version ranges (npm SemVer, Maven) are evaluated by a second indexed lookup at the public-vulnerability priority, still before the API cache.
 3. **Streaming downloads** — 16 KB buffers keep memory footprint stable regardless of artifact size.
 4. **Async audit logging** — audit writes never block package downloads.
 

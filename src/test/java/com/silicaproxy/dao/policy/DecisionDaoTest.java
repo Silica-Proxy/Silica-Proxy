@@ -18,6 +18,7 @@ package com.silicaproxy.dao.policy;/*
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.RangeCandidate;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -388,5 +389,28 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-no-match-pkg", "3.0.0", "npm", 7.0);
 
         assertThat(decision).isEmpty();
+    }
+
+    @Test
+    void shouldReturnRangeCandidatesAboveTheCvssFloorOrMalware() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score)
+            VALUES
+              ('GHSA-range-high', 'OSV', 'range-pkg', 'npm', 'High', '[]'::jsonb,
+               '[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"2.0.0"}]}]'::jsonb, 9.0),
+              ('GHSA-range-low', 'OSV', 'range-pkg', 'npm', 'Low', '[]'::jsonb,
+               '[{"type":"SEMVER","events":[{"introduced":"0"}]}]'::jsonb, 3.0),
+              ('MAL-range-0001', 'OSV', 'range-pkg', 'npm', 'Malware', '[]'::jsonb,
+               '[{"type":"SEMVER","events":[{"introduced":"0"}]}]'::jsonb, 0.0),
+              ('GHSA-range-none', 'OSV', 'range-pkg', 'npm', 'Versions only', '["1.0.0"]'::jsonb,
+               '[]'::jsonb, 9.0)
+            """).update();
+
+        List<RangeCandidate> candidates = decisionDao.findRangeCandidates("range-pkg", "npm", 7.0);
+
+        assertThat(candidates).extracting(RangeCandidate::id)
+                .containsExactlyInAnyOrder("GHSA-range-high", "MAL-range-0001");
+        assertThat(candidates).filteredOn(c -> c.id().equals("GHSA-range-high")).singleElement()
+                .satisfies(c -> assertThat(c.rangesJson()).contains("2.0.0"));
     }
 }

@@ -59,6 +59,9 @@ dependencies {
 
 	// CVSS Calculator
 	implementation 'us.springett:cvss-calculator:1.5.1'
+
+	// Maven version ordering (ComparableVersion) for OSV ECOSYSTEM ranges
+	implementation 'org.apache.maven:maven-artifact:3.9.16'
 	
 	// Git & YAML parsing for external advisories
 	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r'
