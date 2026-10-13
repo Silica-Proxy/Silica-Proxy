@@ -22,16 +22,14 @@ import org.jspecify.annotations.NullMarked;
 
 // Result of VulnerabilityIngestionService.parseOsvJson(): the upsert requests to persist
 // into public_vulnerabilities, plus any affected-version entries that were rejected as
-// implausible (see VulnerabilityVersionAnomaly), plus the ids of withdrawn advisories whose
-// rows must be deleted.
+// implausible (see VulnerabilityVersionAnomaly), plus the id of the parsed advisory (which
+// replaces all its rows for the ecosystem, even with no upsert left) or of a withdrawn advisory
+// whose rows must be deleted.
 @NullMarked
 public record OsvParseResult(
         List<VulnerabilityUpsertRequest> upserts,
         List<VulnerabilityVersionAnomaly> anomalies,
+        List<String> advisoryIds,
         List<String> withdrawnIds
 ) {
-
-    public OsvParseResult(List<VulnerabilityUpsertRequest> upserts, List<VulnerabilityVersionAnomaly> anomalies) {
-        this(upserts, anomalies, List.of());
-    }
 }
