@@ -22,6 +22,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -38,8 +39,9 @@ import java.util.Map;
  * are actually evaluated at runtime rather than where they happen to be declared, or to show
  * a clearer name than the raw property without renaming the property itself. Map entries
  * default to key order since {@code HashMap} does not preserve insertion order. Field names
- * that look like secrets (password/token/api key) are masked rather than printed in clear
- * text.
+ * that look like secrets (password/token/secret/credential, or "key" as a whole camelCase
+ * word such as {@code keyRead} or {@code apiKey}, but not {@code caKeystorePath}) are masked
+ * rather than printed in clear text.
  */
 @NullMarked
 public final class ConfigTreePrinter {
@@ -179,7 +181,13 @@ public final class ConfigTreePrinter {
 
     private static boolean isSecret(String label) {
         String lower = label.toLowerCase(Locale.ROOT);
-        return lower.contains("password") || lower.contains("token") || lower.contains("apikey");
+        if (lower.contains("password") || lower.contains("token") || lower.contains("secret")
+                || lower.contains("credential") || lower.contains("apikey")) {
+            return true;
+        }
+        // "key" only as a whole camelCase word (keyRead, apiKey), not inside e.g. caKeystorePath.
+        return Arrays.stream(label.split("(?<=[a-z0-9])(?=[A-Z])|[_.\\-]"))
+            .anyMatch(word -> word.equalsIgnoreCase("key"));
     }
 
     private static String maskSecret(String rawValue) {
