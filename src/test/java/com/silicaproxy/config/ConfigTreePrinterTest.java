@@ -17,6 +17,7 @@
 
 package com.silicaproxy.config;
 
+import com.silicaproxy.properties.SilicaProxyProperties.ApiAuthProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationServiceProperties;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,12 @@ class ConfigTreePrinterTest {
     }
 
     private record Credentials(String apiKey, String url) {
+    }
+
+    private record Keystore(String caKeystorePath, String caKeystorePassword) {
+    }
+
+    private record OAuthClient(String clientSecret, String credentials) {
     }
 
     private record Sections(String first, String second, String third, String fourth) {
@@ -86,6 +93,42 @@ class ConfigTreePrinterTest {
         assertThat(tree).contains("apiKey = ****");
         assertThat(tree).doesNotContain("super-secret-value");
         assertThat(tree).contains("url = https://example.com");
+    }
+
+    @Test
+    void shouldMaskApiAuthKeys() {
+        ApiAuthProperties apiAuth = new ApiAuthProperties(true, "read-secret-value", "action-secret-value");
+
+        String tree = ConfigTreePrinter.print("apiAuth", apiAuth);
+
+        assertThat(tree).contains("enabled = true");
+        assertThat(tree).contains("keyRead = ****");
+        assertThat(tree).contains("keyAction = ****");
+        assertThat(tree).doesNotContain("read-secret-value");
+        assertThat(tree).doesNotContain("action-secret-value");
+    }
+
+    @Test
+    void shouldNotMaskKeystorePathButMaskKeystorePassword() {
+        Keystore keystore = new Keystore("/data/ca.p12", "changeit");
+
+        String tree = ConfigTreePrinter.print("root", keystore);
+
+        assertThat(tree).contains("caKeystorePath = /data/ca.p12");
+        assertThat(tree).contains("caKeystorePassword = ****");
+        assertThat(tree).doesNotContain("changeit");
+    }
+
+    @Test
+    void shouldMaskSecretAndCredentialFields() {
+        OAuthClient client = new OAuthClient("client-secret-value", "credentials-value");
+
+        String tree = ConfigTreePrinter.print("root", client);
+
+        assertThat(tree).contains("clientSecret = ****");
+        assertThat(tree).contains("credentials = ****");
+        assertThat(tree).doesNotContain("client-secret-value");
+        assertThat(tree).doesNotContain("credentials-value");
     }
 
     @Test
