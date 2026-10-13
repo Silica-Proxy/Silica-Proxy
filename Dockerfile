@@ -53,4 +53,7 @@ USER appuser
 
 EXPOSE 8080
 
-ENTRYPOINT ["java", "-XX:+UseZGC", "-XX:MaxRAMPercentage=75.0", "-XX:+UseCompactObjectHeaders", "-XX:+UseStringDeduplication", "-Dsun.net.inetaddr.ttl=60", "-jar", "silicaproxy.jar"]
+# Default JVM flags; override the whole variable to tune them (e.g. -e JDK_JAVA_OPTIONS="...")
+ENV JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders -XX:+UseStringDeduplication -Dsun.net.inetaddr.ttl=60 -XX:ErrorFile=/app/logs/hs_err_pid%p.log"
+
+ENTRYPOINT ["java", "-jar", "silicaproxy.jar"]

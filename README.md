@@ -404,6 +404,8 @@ docker run -d \
   silicaproxy
 ```
 
+> **Memory:** allocate at least 2 GB to the container — see [Recommended JVM flags](#recommended-jvm-flags-production) to tune the JVM via `JDK_JAVA_OPTIONS`.
+
 > **CA keystore persistence:** without `-e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH`, a new CA is generated at every container restart — breaking your artifact repository's SSL trust until the certificate is re-imported. Mount a volume and set this variable in production.
 
 ---
@@ -446,7 +448,7 @@ Place an `application.yaml` next to the JAR (Spring Boot picks it up automatical
 
 ```bash
 java \
-  -XX:+UseZGC \
+  -XX:+UseG1GC \
   -XX:MaxRAMPercentage=75.0 \
   -XX:+UseCompactObjectHeaders \
   -XX:+UseStringDeduplication \
@@ -765,12 +767,23 @@ The `step` field indicates which pipeline stage made the blocking decision:
 
 ## Recommended JVM flags (production)
 
+Give the container (or host) **at least 2 GB of memory**. `MaxRAMPercentage=75.0` sizes the heap from the container limit, and the remaining 25% must cover metaspace, code cache, thread stacks, network buffers and JGit — below 2 GB that headroom is too small during vulnerability sync (OSV ingestion + advisory Git clones), and the JVM ends up swapping or crashing.
+
 ```
--XX:+UseZGC
+-XX:+UseG1GC
 -XX:MaxRAMPercentage=75.0
 -XX:+UseCompactObjectHeaders
 -XX:+UseStringDeduplication
 -Dsun.net.inetaddr.ttl=60
+```
+
+The Docker image sets these flags through `JDK_JAVA_OPTIONS` (plus `-XX:ErrorFile=/app/logs/hs_err_pid%p.log`, so JVM crash reports survive a restart when `/app/logs` is a volume). Override the variable to change them — it replaces the defaults entirely:
+
+```bash
+docker run -d \
+  -e JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=60.0 -XX:+UseCompactObjectHeaders -Dsun.net.inetaddr.ttl=60" \
+  ... \
+  silicaproxy
 ```
 
 ---

@@ -379,14 +379,14 @@ def main():
     report_content.append("")
     report_content.append("### 2. Analyse de l'impact de la RAM")
     report_content.append("- **Comparaison de l'effet RAM (512M vs 1G vs 4G)** :")
-    report_content.append("  * **À 512 Mo** : Sous 4 ou 8 vCPU, le proxy fonctionne mais la faible RAM allouée à la Heap contraint la JVM à exécuter des cycles ZGC très fréquents. Cela impacte la latence p95, particulièrement sur la couche DAO/SQL.")
+    report_content.append("  * **À 512 Mo** : Sous 4 ou 8 vCPU, le proxy fonctionne mais la faible RAM allouée à la Heap contraint la JVM à exécuter des cycles GC très fréquents. Cela impacte la latence p95, particulièrement sur la couche DAO/SQL.")
     report_content.append("  * **À 1 Go** : Représente le sweet-spot. L'empreinte mémoire reste contenue et le GC a assez de marge de manœuvre pour ne pas impacter les requêtes concurrentes.")
     report_content.append("  * **À 4 Go** : Offre la latence la plus basse et stable (p95 minimale) car la heap JVM est surdimensionnée pour notre cas d'usage stateless.")
     report_content.append("")
     report_content.append("### 3. Conclusion sur le dimensionnement optimal")
     report_content.append("Pour un déploiement de production SilicaProxy :")
     report_content.append("- **Le vCPU est critique** : Un minimum de **1.0 vCPU** par instance est nécessaire pour obtenir un débit acceptable, et **2.0 vCPU** est recommandé pour absorber les pics de charge des chaînes de CI/CD.")
-    report_content.append("- **La RAM est secondaire mais protectrice** : **1 Go de RAM** par instance est suffisant grâce au design stateless sans cache mémoire L1. Allouer **2 Go de RAM** permet de détendre l'activité du Garbage Collector (ZGC) lors des pics de charge extrêmes (> 2000 req/s).")
+    report_content.append("- **La RAM est secondaire mais protectrice** : **1 Go de RAM** par instance est suffisant grâce au design stateless sans cache mémoire L1. Allouer **2 Go de RAM** permet de détendre l'activité du Garbage Collector (G1) lors des pics de charge extrêmes (> 2000 req/s).")
     
     # Save the report
     with open(report_path, "w", encoding="utf-8") as f:
