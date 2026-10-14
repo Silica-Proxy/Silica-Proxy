@@ -74,22 +74,45 @@ public class PackageSearchDao {
         return spec.query(CompanyPolicy.class).list();
     }
 
-    // Every advisory of the package, version filtering left to PackageSearchService : range-only
-    // advisories (npm/Maven, affected_versions = []) can only be matched in Java (OsvRangeEvaluator).
-    public List<PublicVulnerabilityRow> findPublicVulnerabilities(String packageName, @Nullable String ecosystem) {
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, source, package_name, ecosystem, summary, cvss_score, published_at,
-                       affected_versions::text AS versions_json, affected_ranges::text AS ranges_json
+    // Every advisory of the package. The regex is evaluated here by PostgreSQL, like the other searches,
+    // so that no user-supplied pattern runs in the JVM : with a regex, versions_json only holds the
+    // matching enumerated versions, and range-only advisories (npm/Maven, affected_versions = []) are
+    // kept since a regex cannot be tested against a range. Exact-version filtering, which needs
+    // OsvRangeEvaluator, is left to PackageSearchService.
+    public List<PublicVulnerabilityRow> findPublicVulnerabilities(
+            String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
+        String versionsColumn = versionRegex != null
+                ? """
+                  COALESCE((SELECT jsonb_agg(v) FROM jsonb_array_elements_text(affected_versions) AS v
+                            WHERE v ~ :versionRegex), '[]'::jsonb)::text"""
+                : "affected_versions::text";
+        StringBuilder sql = new StringBuilder("SELECT id, source, package_name, ecosystem, summary, cvss_score, published_at, "
+                + versionsColumn + """
+                 AS versions_json, affected_ranges::text AS ranges_json
                 FROM public_vulnerabilities
                 WHERE package_name = :packageName
                 """);
         if (ecosystem != null) {
             sql.append(" AND ecosystem = :ecosystem");
         }
+        if (versionRegex != null && exactVersion != null) {
+            sql.append(" AND :exactVersion ~ :versionRegex");
+        } else if (versionRegex != null) {
+            sql.append("""
+                     AND (EXISTS (SELECT 1 FROM jsonb_array_elements_text(affected_versions) AS v WHERE v ~ :versionRegex)
+                          OR (jsonb_array_length(affected_versions) = 0 AND jsonb_array_length(affected_ranges) > 0))
+                    """);
+        }
 
         JdbcClient.StatementSpec spec = jdbcClient.sql(sql.toString()).param("packageName", packageName);
         if (ecosystem != null) {
             spec = spec.param("ecosystem", ecosystem);
+        }
+        if (versionRegex != null) {
+            spec = spec.param("versionRegex", versionRegex);
+            if (exactVersion != null) {
+                spec = spec.param("exactVersion", exactVersion);
+            }
         }
         List<PublicVulnerabilityRow> rows = new ArrayList<>();
         for (Map<String, Object> row : spec.query().listOfRows()) {

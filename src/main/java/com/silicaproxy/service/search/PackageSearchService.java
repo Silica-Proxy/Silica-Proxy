@@ -35,7 +35,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.regex.Pattern;
 
 /**
  * Orchestrates the diagnostic search of a package in the three local sources (validation
@@ -90,15 +89,16 @@ public class PackageSearchService {
 
     private List<PublicVulnerabilityHit> searchPublicVulnerabilities(
             String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
-        Pattern pattern = versionRegex != null ? Pattern.compile(versionRegex) : null;
         List<PublicVulnerabilityHit> hits = new ArrayList<>();
-        for (PublicVulnerabilityRow row : packageSearchDao.findPublicVulnerabilities(packageName, ecosystem)) {
+        // The regex is applied by the DAO (PostgreSQL) : rows and versions are already filtered by it.
+        for (PublicVulnerabilityRow row
+                : packageSearchDao.findPublicVulnerabilities(packageName, ecosystem, exactVersion, versionRegex)) {
             List<String> versions = new ArrayList<>();
             for (JsonNode version : readJson(row, row.versionsJson(), "affected_versions")) {
                 versions.add(version.asString());
             }
             JsonNode ranges = readJson(row, row.rangesJson(), "affected_ranges");
-            matchVersions(row.ecosystem(), versions, ranges, exactVersion, pattern)
+            matchVersions(row.ecosystem(), versions, ranges, exactVersion)
                     .ifPresent(matched -> hits.add(new PublicVulnerabilityHit(
                             row.id(), row.source(), row.packageName(), row.ecosystem(), row.summary(),
                             row.cvssScore(), row.publishedAt(), matched, ranges)));
@@ -106,22 +106,13 @@ public class PackageSearchService {
         return hits;
     }
 
-    // Empty Optional : the advisory is filtered out. Both filters, if given, must match.
+    // Empty Optional : the advisory is filtered out.
     private static Optional<List<String>> matchVersions(
-            String ecosystem, List<String> versions, JsonNode ranges,
-            @Nullable String exactVersion, @Nullable Pattern pattern) {
+            String ecosystem, List<String> versions, JsonNode ranges, @Nullable String exactVersion) {
         if (exactVersion != null) {
             boolean affected = versions.contains(exactVersion)
                     || OsvRangeEvaluator.isAffected(ecosystem, exactVersion, ranges);
-            boolean regexMatches = pattern == null || pattern.matcher(exactVersion).find();
-            return affected && regexMatches ? Optional.of(List.of(exactVersion)) : Optional.empty();
-        }
-        if (pattern != null) {
-            List<String> matched = versions.stream().filter(v -> pattern.matcher(v).find()).toList();
-            // A regex cannot be tested against a range : a range-only advisory is kept (with its
-            // ranges exposed) rather than hiding a real vulnerability.
-            boolean rangeOnly = versions.isEmpty() && !ranges.isEmpty();
-            return !matched.isEmpty() || rangeOnly ? Optional.of(matched) : Optional.empty();
+            return affected ? Optional.of(List.of(exactVersion)) : Optional.empty();
         }
         return Optional.of(versions);
     }

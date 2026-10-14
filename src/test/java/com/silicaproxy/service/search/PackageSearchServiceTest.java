@@ -104,6 +104,9 @@ class PackageSearchServiceTest extends BaseIntegrationTest {
 
         SearchResult noMatch = packageSearchService.search("event-stream", null, "9.9.9", null);
         assertThat(noMatch.publicVulnerabilities()).isEmpty();
+
+        SearchResult regexNoMatch = packageSearchService.search("event-stream", null, null, "^9\\.");
+        assertThat(regexNoMatch.publicVulnerabilities()).isEmpty();
     }
 
     @Test
