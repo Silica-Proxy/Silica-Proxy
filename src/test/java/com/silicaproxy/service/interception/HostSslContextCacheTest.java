@@ -24,6 +24,7 @@ import javax.net.ssl.SSLContext;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -129,6 +130,34 @@ class HostSslContextCacheTest {
         }
 
         assertThat(cache.size()).isLessThanOrEqualTo(maxEntries);
+    }
+
+    @Test
+    void shouldEvictLeastRecentlyAccessedEntriesFirst() throws Exception {
+        HostSslContextCache cache = new HostSslContextCache(3);
+        AtomicInteger computeCount = new AtomicInteger();
+        Function<String, SSLContext> compute = h -> {
+            computeCount.incrementAndGet();
+            return uncheckedNewContext();
+        };
+
+        cache.getOrCompute("hot.example.com", compute);
+        Thread.sleep(5);
+        cache.getOrCompute("cold1.example.com", compute);
+        Thread.sleep(5);
+        cache.getOrCompute("cold2.example.com", compute);
+        Thread.sleep(5);
+        cache.getOrCompute("hot.example.com", compute);
+        Thread.sleep(5);
+        cache.getOrCompute("new.example.com", compute);
+
+        assertThat(cache.size()).isLessThanOrEqualTo(3);
+        int computedBefore = computeCount.get();
+        cache.getOrCompute("hot.example.com", compute);
+        cache.getOrCompute("new.example.com", compute);
+        assertThat(computeCount.get()).isEqualTo(computedBefore);
+        cache.getOrCompute("cold1.example.com", compute);
+        assertThat(computeCount.get()).isEqualTo(computedBefore + 1);
     }
 
     private SSLContext uncheckedNewContext() {
