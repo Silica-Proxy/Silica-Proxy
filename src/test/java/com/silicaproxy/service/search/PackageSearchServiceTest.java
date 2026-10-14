@@ -107,6 +107,49 @@ class PackageSearchServiceTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldFindRangeOnlyNpmAdvisory() {
+        jdbcClient.sql("""
+                INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score, published_at)
+                VALUES ('GHSA-lodash-1', 'OSV', 'lodash', 'npm', 'Prototype pollution', '[]'::jsonb,
+                        '[{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "4.17.21"}]}]'::jsonb, 7.2, NULL)
+                """).update();
+
+        SearchResult all = packageSearchService.search("lodash", null, null, null);
+        assertThat(all.publicVulnerabilities()).hasSize(1);
+        assertThat(all.publicVulnerabilities().get(0).matchedVersions()).isEmpty();
+        assertThat(all.publicVulnerabilities().get(0).affectedRanges().get(0).get("type").asString())
+                .isEqualTo("SEMVER");
+
+        SearchResult affected = packageSearchService.search("lodash", "npm", "4.17.20", null);
+        assertThat(affected.publicVulnerabilities()).hasSize(1);
+        assertThat(affected.publicVulnerabilities().get(0).matchedVersions()).containsExactly("4.17.20");
+
+        SearchResult fixed = packageSearchService.search("lodash", "npm", "4.17.21", null);
+        assertThat(fixed.publicVulnerabilities()).isEmpty();
+
+        // A regex cannot be evaluated against a range : the advisory is kept, nothing matched.
+        SearchResult regex = packageSearchService.search("lodash", null, null, "^4\\.");
+        assertThat(regex.publicVulnerabilities()).hasSize(1);
+        assertThat(regex.publicVulnerabilities().get(0).matchedVersions()).isEmpty();
+    }
+
+    @Test
+    void shouldFindRangeOnlyMavenAdvisoryByExactVersion() {
+        jdbcClient.sql("""
+                INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score, published_at)
+                VALUES ('GHSA-maven-1', 'OSV', 'org.example:lib', 'maven', 'Deserialization', '[]'::jsonb,
+                        '[{"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}, {"fixed": "2.9.10"}]}]'::jsonb, 9.1, NULL)
+                """).update();
+
+        assertThat(packageSearchService.search("org.example:lib", "maven", "2.9.9", null).publicVulnerabilities())
+                .hasSize(1);
+        assertThat(packageSearchService.search("org.example:lib", "maven", "2.9.10", null).publicVulnerabilities())
+                .isEmpty();
+        assertThat(packageSearchService.search("org.example:lib", "maven", "1.9.0", null).publicVulnerabilities())
+                .isEmpty();
+    }
+
+    @Test
     void shouldFindApiCacheEntryAndFlagExpiredOnes() {
         jdbcClient.sql("""
                 INSERT INTO api_cache (package_name, ecosystem, package_version, is_secure, api_source, expires_at)
