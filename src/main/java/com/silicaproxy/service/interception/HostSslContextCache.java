@@ -24,6 +24,7 @@ import org.springframework.stereotype.Component;
 import javax.net.ssl.SSLContext;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -38,15 +39,25 @@ import java.util.function.Function;
  * stale -- a CPU/memory DoS vector. Same size-cap approach as
  * {@link com.silicaproxy.config.SsrfSafeInetAddressResolverProvider}, which guards against the
  * analogous risk for DNS resolutions.
+ *
+ * <p>When the cap is exceeded, the least-recently-accessed entries are evicted first (never the
+ * host just requested), down to 90% of the cap so a flood of new hosts
+ * does not trigger a sort on every insertion. Hot hosts such as the public registries therefore
+ * survive a flood instead of being dropped in hash-bucket order and regenerated over and over.
  */
 @Component
 @NullMarked
 public class HostSslContextCache {
 
+    private static final double EVICTION_TARGET_RATIO = 0.9;
+
     private final Map<String, CachedContext> cache = new ConcurrentHashMap<>();
     private final int maxEntries;
 
     private record CachedContext(SSLContext sslContext, AtomicReference<Instant> lastAccessedAt) {}
+
+    /** Snapshot of an entry's last access, so the sort is not disturbed by concurrent touches. */
+    private record EvictionCandidate(String host, CachedContext context, Instant lastAccessedAt) {}
 
     public HostSslContextCache(SilicaProxyProperties properties) {
         this.maxEntries = properties.sslMitm().contextCacheMaxEntries();
@@ -54,7 +65,12 @@ public class HostSslContextCache {
 
     /** Test-only : no size cap enforced (defaults to Integer.MAX_VALUE). */
     HostSslContextCache() {
-        this.maxEntries = Integer.MAX_VALUE;
+        this(Integer.MAX_VALUE);
+    }
+
+    /** Test-only : explicit size cap. */
+    HostSslContextCache(int maxEntries) {
+        this.maxEntries = maxEntries;
     }
 
     /**
@@ -66,7 +82,7 @@ public class HostSslContextCache {
         CachedContext cached = cache.computeIfAbsent(host,
                 h -> new CachedContext(computeFunction.apply(h), new AtomicReference<>(Instant.now())));
         cached.lastAccessedAt().set(Instant.now());
-        evictIfOversized();
+        evictIfOversized(host);
         return cached.sslContext();
     }
 
@@ -78,14 +94,18 @@ public class HostSslContextCache {
         return sizeBefore - cache.size();
     }
 
-    private void evictIfOversized() {
+    private void evictIfOversized(String justAccessed) {
         if (cache.size() <= maxEntries) {
             return;
         }
-        int excess = cache.size() - maxEntries;
-        if (excess > 0) {
-            cache.keySet().stream().limit(excess).forEach(cache::remove);
-        }
+        int excess = cache.size() - Math.max(1, (int) (maxEntries * EVICTION_TARGET_RATIO));
+        cache.entrySet().stream()
+                .filter(entry -> !entry.getKey().equals(justAccessed))
+                .map(entry -> new EvictionCandidate(entry.getKey(), entry.getValue(),
+                        entry.getValue().lastAccessedAt().get()))
+                .sorted(Comparator.comparing(EvictionCandidate::lastAccessedAt))
+                .limit(Math.max(0, excess))
+                .forEach(candidate -> cache.remove(candidate.host(), candidate.context()));
     }
 
     public int size() {

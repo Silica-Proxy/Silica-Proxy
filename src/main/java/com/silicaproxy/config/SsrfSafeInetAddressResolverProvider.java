@@ -23,7 +23,9 @@ import java.net.spi.InetAddressResolver;
 import java.net.spi.InetAddressResolverProvider;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
@@ -43,13 +45,29 @@ import java.util.stream.Stream;
  * API calls), so an unbounded map would itself be a memory-exhaustion vector -- the same class of
  * issue {@link com.silicaproxy.service.interception.HostSslContextCache} guards against for the
  * per-host MITM SSLContext cache.
+ *
+ * <p>When the cap is exceeded, expired entries go first, then the oldest insertions (earliest
+ * {@code expiresAt}), down to 90% of the cap. The host just resolved is
+ * never evicted: dropping it between the validator's lookup and the connection's lookup would
+ * force a second DNS query and reopen the very rebinding gap this class closes.
  */
 public final class SsrfSafeInetAddressResolverProvider extends InetAddressResolverProvider {
 
     private static final Duration CACHE_TTL = Duration.ofSeconds(30);
     private static final int MAX_CACHE_ENTRIES = 2000;
+    private static final double EVICTION_TARGET_RATIO = 0.9;
 
     private final ConcurrentHashMap<String, CachedResolution> cache = new ConcurrentHashMap<>();
+    private final int maxEntries;
+
+    public SsrfSafeInetAddressResolverProvider() {
+        this(MAX_CACHE_ENTRIES);
+    }
+
+    /** Test-only : explicit size cap. */
+    SsrfSafeInetAddressResolverProvider(int maxEntries) {
+        this.maxEntries = maxEntries;
+    }
 
     private record CachedResolution(List<InetAddress> addresses, Instant expiresAt) {
         boolean isExpired(Instant now) {
@@ -59,7 +77,12 @@ public final class SsrfSafeInetAddressResolverProvider extends InetAddressResolv
 
     @Override
     public InetAddressResolver get(Configuration configuration) {
-        return new CachingResolver(configuration.builtinResolver());
+        return resolverFor(configuration.builtinResolver());
+    }
+
+    /** Package-private so tests can inject a delegate ({@link Configuration} is sealed). */
+    InetAddressResolver resolverFor(InetAddressResolver delegate) {
+        return new CachingResolver(delegate);
     }
 
     @Override
@@ -67,15 +90,21 @@ public final class SsrfSafeInetAddressResolverProvider extends InetAddressResolv
         return "silicaproxy-ssrf-safe-resolver";
     }
 
-    private void evictIfOversized() {
-        if (cache.size() <= MAX_CACHE_ENTRIES) {
+    private void evictIfOversized(String justResolved) {
+        if (cache.size() <= maxEntries) {
             return;
         }
         Instant now = Instant.now();
-        cache.values().removeIf(entry -> entry.isExpired(now));
-        int excess = cache.size() - MAX_CACHE_ENTRIES;
+        cache.entrySet().removeIf(entry -> !entry.getKey().equals(justResolved) && entry.getValue().isExpired(now));
+        int excess = cache.size() - Math.max(1, (int) (maxEntries * EVICTION_TARGET_RATIO));
         if (excess > 0) {
-            cache.keySet().stream().limit(excess).forEach(cache::remove);
+            cache.entrySet().stream()
+                    .filter(entry -> !entry.getKey().equals(justResolved))
+                    .sorted(Comparator.comparing(entry -> entry.getValue().expiresAt()))
+                    .limit(excess)
+                    .map(entry -> Map.entry(entry.getKey(), entry.getValue()))
+                    .toList()
+                    .forEach(entry -> cache.remove(entry.getKey(), entry.getValue()));
         }
     }
 
@@ -96,7 +125,7 @@ public final class SsrfSafeInetAddressResolverProvider extends InetAddressResolv
             }
             List<InetAddress> resolved = delegate.lookupByName(host, lookupPolicy).toList();
             cache.put(host, new CachedResolution(resolved, now.plus(CACHE_TTL)));
-            evictIfOversized();
+            evictIfOversized(host);
             return resolved.stream();
         }
 
