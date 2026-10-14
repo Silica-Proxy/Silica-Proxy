@@ -94,7 +94,7 @@ public class AuditLogService {
 
     private void recordWriteOutcome(String outcome) {
         Counter.builder(Metrics.AUDIT_LOG_WRITES_METRIC)
-                .description("Total number of audit log write attempts, by outcome (SUCCESS/FAILURE)")
+                .description("Total number of audit log write attempts, by outcome (SUCCESS/FAILURE/DROPPED)")
                 .tag(Metrics.TAG_OUTCOME, outcome)
                 .register(meterRegistry)
                 .increment();

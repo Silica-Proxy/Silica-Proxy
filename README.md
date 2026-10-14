@@ -490,7 +490,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **Database** | `spring.datasource.url` | `SPRING_DATASOURCE_URL`                                           | `jdbc:postgresql://localhost:5432/security_db` | PostgreSQL JDBC URL |
 | | `spring.datasource.username` | `SPRING_DATASOURCE_USERNAME`                                      | `postgres` | |
 | | `spring.datasource.password` | `SPRING_DATASOURCE_PASSWORD`                                      | `postgres` | |
-| **Connection pool** | `spring.datasource.hikari.maximum-pool-size` | `HIKARI_MAX_POOL_SIZE`                                            | `50` | Max DB connections |
+| **Connection pool** | `spring.datasource.hikari.maximum-pool-size` | `HIKARI_MAX_POOL_SIZE`                                            | `70` | Max DB connections |
 | | `spring.datasource.hikari.minimum-idle` | `HIKARI_MIN_IDLE`                                                 | `15` | Min idle connections |
 | | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
 | **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
@@ -790,16 +790,16 @@ docker run -d \
 
 ## Recommended PostgreSQL configuration (production)
 
-SilicaProxy's default HikariCP pool is **50 connections**. Tune PostgreSQL to match:
+SilicaProxy's default HikariCP pool is **70 connections** (up to 20 of them used by the audit log writers under load). Tune PostgreSQL to match:
 
 ```sql
 -- postgresql.conf — size these for your hardware
-max_connections = 100                     -- 2× HikariCP maximum-pool-size (buffer for admin ops)
+max_connections = 140                     -- 2× HikariCP maximum-pool-size (buffer for admin ops)
 shared_buffers = 0.25 × system_RAM        -- E.g. 4GB on 16GB server
 effective_cache_size = 0.75 × system_RAM  -- E.g. 12GB on 16GB server; hints query planner
 
 -- Per-query memory (sort, hash join)
-work_mem = 0.5 × (effective_cache_size / max_connections)  -- E.g. 60MB on 16GB/100 conns
+work_mem = 0.5 × (effective_cache_size / max_connections)  -- E.g. 43MB on 16GB/140 conns
 
 -- Tune for your storage
 effective_io_concurrency = 50             -- HDDs; raise to 100–200 for SSD/NVMe
