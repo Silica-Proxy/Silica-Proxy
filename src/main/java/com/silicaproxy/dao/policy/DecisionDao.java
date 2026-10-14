@@ -90,8 +90,10 @@ public class DecisionDao {
                   AND ecosystem = p_ecosystem
                   -- version_pattern is already stored '%'-translated by GitOpsSyncService at
                   -- write time (see toSqlWildcardPattern) : re-translating '*'/'x' here again
-                  -- would be redundant.
-                  AND p_version LIKE version_pattern
+                  -- would be redundant. '%' is the only intended wildcard in it : '_' (and '\\')
+                  -- are literal version characters, escaped here so that a rule for
+                  -- "1.0.0_rc1" does not also match "1.0.0-rc1".
+                  AND p_version LIKE REPLACE(REPLACE(version_pattern, '\\', '\\\\'), '_', '\\_') ESCAPE '\\'
 
                 UNION ALL
 

@@ -54,7 +54,8 @@ public class PackageSearchDao {
         }
         if (exactVersion != null) {
             // The stored pattern contains SQL wildcards ('%') already translated from 'x'/'*' during GitOps ingestion.
-            sql.append(" AND :exactVersion LIKE version_pattern");
+            // '_' and '\' are literal version characters there, so they are escaped (same as DecisionDao).
+            sql.append(" AND :exactVersion LIKE REPLACE(REPLACE(version_pattern, '\\', '\\\\'), '_', '\\_') ESCAPE '\\'");
         }
         if (versionRegex != null) {
             sql.append(" AND version_pattern ~ :versionRegex");

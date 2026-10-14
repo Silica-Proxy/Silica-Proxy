@@ -327,6 +327,44 @@ class DecisionDaoTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldTreatUnderscoreInVersionPatternAsLiteral() {
+        // '_' is a single-character wildcard in SQL LIKE : a rule for "1.0.0_rc1" must not
+        // also match "1.0.0-rc1" (or "1.0.01rc1"), which would let an unvetted version ride on
+        // a WHITELIST rule and bypass the public vulnerability check below it.
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('underscore-version-pkg', 'maven', '1.0.0_rc1', 'WHITELIST', 'rc1 approved', 'team')
+            """).update();
+
+        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0-rc1", "maven", 7.0)).isEmpty();
+        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.01rc1", "maven", 7.0)).isEmpty();
+
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0_rc1", "maven", 7.0);
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+    }
+
+    @Test
+    void shouldKeepExactSpecificityForVersionContainingUnderscore() {
+        // Escaping '_' must not cost an exact "1.0.0_rc1" rule its exact-version specificity :
+        // it still has to beat a wildcard rule for the same package.
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('underscore-exact-pkg', 'maven', '%', 'WHITELIST', 'Global authorization', 'team')
+            """).update();
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('underscore-exact-pkg', 'maven', '1.0.0_rc1', 'BLACKLIST', 'Compromised rc', 'security-team')
+            """).update();
+
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-exact-pkg", "1.0.0_rc1", "maven", 7.0);
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().result()).isEqualTo("BLACKLIST");
+    }
+
+    @Test
     void shouldBlockViaAnomalyMatchWhenSuspiciousVersionMatchesRequestedPackage() {
         // Mirrors the real gradio case: package_name/ecosystem on the anomaly row reflect
         // the WRONG outer advisory ("gradio"/pypi) -- only suspicious_version carries the
