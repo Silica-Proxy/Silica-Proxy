@@ -18,7 +18,7 @@
 package com.silicaproxy.dao.policy;
 
 import com.silicaproxy.model.dto.ApiCacheHit;
-import com.silicaproxy.model.dto.PublicVulnerabilityHit;
+import com.silicaproxy.model.dto.PublicVulnerabilityRow;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -75,55 +75,56 @@ public class PackageSearchDao {
         return spec.query(CompanyPolicy.class).list();
     }
 
-    public List<PublicVulnerabilityHit> searchPublicVulnerabilities(
+    // Every advisory of the package. The regex is evaluated here by PostgreSQL, like the other searches,
+    // so that no user-supplied pattern runs in the JVM : with a regex, versions_json only holds the
+    // matching enumerated versions, and range-only advisories (npm/Maven, affected_versions = []) are
+    // kept since a regex cannot be tested against a range. Exact-version filtering, which needs
+    // OsvRangeEvaluator, is left to PackageSearchService.
+    public List<PublicVulnerabilityRow> findPublicVulnerabilities(
             String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
-        JdbcClient.StatementSpec spec = buildVulnSpec(packageName, ecosystem, exactVersion, versionRegex);
-        List<Map<String, Object>> rows = spec.query().listOfRows();
-        List<PublicVulnerabilityHit> hits = new ArrayList<>();
-        for (Map<String, Object> row : rows) {
-            hits.add(mapVulnRow(row));
-        }
-        return hits;
-    }
-
-    private JdbcClient.StatementSpec buildVulnSpec(
-            String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
-        StringBuilder sql = new StringBuilder("""
-                SELECT pv.id, pv.source, pv.package_name AS package_name, pv.ecosystem, pv.summary,
-                       pv.cvss_score, pv.published_at, array_agg(elem.value) AS matched_versions
-                FROM public_vulnerabilities pv
-                CROSS JOIN LATERAL jsonb_array_elements_text(pv.affected_versions) AS elem(value)
-                WHERE pv.package_name = :packageName
+        String versionsColumn = versionRegex != null
+                ? """
+                  COALESCE((SELECT jsonb_agg(v) FROM jsonb_array_elements_text(affected_versions) AS v
+                            WHERE v ~ :versionRegex), '[]'::jsonb)::text"""
+                : "affected_versions::text";
+        StringBuilder sql = new StringBuilder("SELECT id, source, package_name, ecosystem, summary, cvss_score, published_at, "
+                + versionsColumn + """
+                 AS versions_json, affected_ranges::text AS ranges_json
+                FROM public_vulnerabilities
+                WHERE package_name = :packageName
                 """);
         if (ecosystem != null) {
-            sql.append(" AND pv.ecosystem = :ecosystem");
+            sql.append(" AND ecosystem = :ecosystem");
         }
-        if (exactVersion != null) {
-            sql.append(" AND elem.value = :exactVersion");
+        if (versionRegex != null && exactVersion != null) {
+            sql.append(" AND :exactVersion ~ :versionRegex");
+        } else if (versionRegex != null) {
+            sql.append("""
+                     AND (EXISTS (SELECT 1 FROM jsonb_array_elements_text(affected_versions) AS v WHERE v ~ :versionRegex)
+                          OR (jsonb_array_length(affected_versions) = 0 AND jsonb_array_length(affected_ranges) > 0))
+                    """);
         }
-        if (versionRegex != null) {
-            sql.append(" AND elem.value ~ :versionRegex");
-        }
-        sql.append(" GROUP BY pv.id, pv.source, pv.package_name, pv.ecosystem, pv.summary, pv.cvss_score, pv.published_at");
 
         JdbcClient.StatementSpec spec = jdbcClient.sql(sql.toString()).param("packageName", packageName);
         if (ecosystem != null) {
             spec = spec.param("ecosystem", ecosystem);
         }
-        if (exactVersion != null) {
-            spec = spec.param("exactVersion", exactVersion);
-        }
         if (versionRegex != null) {
             spec = spec.param("versionRegex", versionRegex);
+            if (exactVersion != null) {
+                spec = spec.param("exactVersion", exactVersion);
+            }
         }
-        return spec;
+        List<PublicVulnerabilityRow> rows = new ArrayList<>();
+        for (Map<String, Object> row : spec.query().listOfRows()) {
+            rows.add(mapVulnRow(row));
+        }
+        return rows;
     }
 
-    private static PublicVulnerabilityHit mapVulnRow(Map<String, Object> row) {
+    private static PublicVulnerabilityRow mapVulnRow(Map<String, Object> row) {
         Timestamp publishedTs = (Timestamp) row.get("published_at");
-        java.sql.Array matchedArray = (java.sql.Array) row.get("matched_versions");
-        List<String> matchedVersions = extractStringArray(matchedArray);
-        return new PublicVulnerabilityHit(
+        return new PublicVulnerabilityRow(
                 (String) row.get("id"),
                 (String) row.get("source"),
                 (String) row.get("package_name"),
@@ -131,19 +132,9 @@ public class PackageSearchDao {
                 (String) row.get("summary"),
                 ((Number) row.get("cvss_score")).doubleValue(),
                 publishedTs != null ? publishedTs.toInstant() : null,
-                matchedVersions
+                (String) row.get("versions_json"),
+                (String) row.get("ranges_json")
         );
-    }
-
-    private static List<String> extractStringArray(java.sql.@Nullable Array sqlArray) {
-        if (sqlArray == null) {
-            return List.of();
-        }
-        try {
-            return List.of((String[]) sqlArray.getArray());
-        } catch (java.sql.SQLException e) {
-            return List.of();
-        }
     }
 
     public List<ApiCacheHit> searchApiCache(
