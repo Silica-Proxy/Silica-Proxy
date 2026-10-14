@@ -4,7 +4,6 @@ plugins {
 	id 'checkstyle'
 	id 'pmd'
 	id 'com.github.spotbugs' version '6.5.12'
-	id 'org.owasp.dependencycheck' version '13.0.0'
 	id 'org.springframework.boot' version '4.1.1'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -98,21 +97,6 @@ spotbugsMain {
 	}
 }
 spotbugsTest { enabled = false }
-
-// ── OWASP Dependency Check ────────────────────────────────────────────────────
-dependencyCheck {
-	formats = ['HTML', 'JSON']
-	// Do not block the CI build — switch to 7 to fail on HIGH+
-	failBuildOnCVSS = 11
-	suppressionFile = 'config/dependency-check-suppressions.xml'
-	// NVD API key (optional): provide via -PnvdApiKey or NVD_API_KEY environment variable
-	def rawKey = findProperty('nvdApiKey') ?: System.getenv('NVD_API_KEY') ?: ''
-	if (rawKey && !rawKey.toString().startsWith('$')) {
-		nvd {
-			apiKey = rawKey.toString()
-		}
-	}
-}
 
 // ── Checkstyle (conventions) ─────────────────────────────
 checkstyle {

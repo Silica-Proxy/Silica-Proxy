@@ -51,14 +51,21 @@ public class OutboundHttpClientConfig {
         return buildRequestFactory(properties.corporateProxy().scope().securityApis(), readTimeout);
     }
 
+    // Shared by every external validation service. Only the connection settings live here : the
+    // read timeout differs per call (services.<name>.timeout-seconds for SYNC calls, the global
+    // external-validation-read-timeout-seconds for ASYNC triggers), see ExternalValidationClient.
     @Bean
-    public ClientHttpRequestFactory externalValidationRequestFactory() {
-        Duration readTimeout = Duration.ofSeconds(
-                properties.httpClient().externalValidationReadTimeoutSeconds());
-        return buildRequestFactory(properties.corporateProxy().scope().externalValidation(), readTimeout);
+    public HttpClient externalValidationHttpClient() {
+        return buildHttpClient(properties.corporateProxy().scope().externalValidation());
     }
 
     private ClientHttpRequestFactory buildRequestFactory(boolean scopeEnabled, Duration readTimeout) {
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(buildHttpClient(scopeEnabled));
+        factory.setReadTimeout(readTimeout);
+        return factory;
+    }
+
+    private HttpClient buildHttpClient(boolean scopeEnabled) {
         HttpClient.Builder builder = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(properties.httpClient().connectTimeoutSeconds()));
         if (properties.corporateProxy().enabled() && scopeEnabled) {
@@ -66,8 +73,6 @@ public class OutboundHttpClientConfig {
                     new InetSocketAddress(properties.corporateProxy().host(), properties.corporateProxy().port()));
             builder.proxy(new NonProxyAwareProxySelector(proxy, properties.corporateProxy().nonProxyHosts()));
         }
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(builder.build());
-        factory.setReadTimeout(readTimeout);
-        return factory;
+        return builder.build();
     }
 }

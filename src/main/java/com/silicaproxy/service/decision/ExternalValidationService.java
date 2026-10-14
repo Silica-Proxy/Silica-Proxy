@@ -324,7 +324,7 @@ public class ExternalValidationService {
         cacheDao.upsertPendingSync(serviceName, packageName, ecosystem, version, pendingExpiry);
 
         ExternalValidationClient.ExternalValidationResult result = client.callSync(
-                props.url(), props.apiKey(), packageName, version, ecosystem, fullUrl);
+                props.url(), props.apiKey(), props.timeoutSeconds(), packageName, version, ecosystem, fullUrl);
 
         return resolveSyncResult(serviceName, props, packageName, version, ecosystem, result);
     }

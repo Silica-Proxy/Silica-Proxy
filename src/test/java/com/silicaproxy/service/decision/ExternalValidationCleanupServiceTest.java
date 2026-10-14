@@ -48,6 +48,7 @@ class ExternalValidationCleanupServiceTest extends BaseIntegrationTest {
     @BeforeEach
     void setUp() {
         jdbcClient.sql("TRUNCATE external_validation_cache RESTART IDENTITY CASCADE").update();
+        jdbcClient.sql("TRUNCATE external_validation_verdicts RESTART IDENTITY CASCADE").update();
         jdbcClient.sql("TRUNCATE shedlock RESTART IDENTITY CASCADE").update();
     }
 

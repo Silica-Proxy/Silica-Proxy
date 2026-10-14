@@ -25,6 +25,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -268,7 +269,7 @@ public record SilicaProxyProperties(
         @NotBlank String url,
         @Nullable String apiKey,
         @NotBlank String mode,
-        @DefaultValue("1") int timeoutSeconds,
+        @DefaultValue("1") @Positive int timeoutSeconds,
         @DefaultValue("true") boolean failOpen,
         @DefaultValue("true") boolean blocking,
         @DefaultValue("60") int cacheTtlMinutes,
