@@ -123,8 +123,10 @@ public class GitOpsDao {
                   AND ecosystem = :ecosystem
                   -- version_pattern is already stored '%'-translated by GitOpsSyncService at
                   -- write time (see toSqlWildcardPattern) : re-translating '*'/'x' here again
-                  -- would be redundant.
-                  AND :version LIKE version_pattern
+                  -- would be redundant. '%' is the only intended wildcard in it : '_' (and '\\')
+                  -- are literal version characters, escaped here so that a rule for
+                  -- "1.0.0_rc1" does not also match "1.0.0-rc1".
+                  AND :version LIKE REPLACE(REPLACE(version_pattern, '\\', '\\\\'), '_', '\\_') ESCAPE '\\'
                 -- Tie-break at equal specificity : the most restrictive action wins, rather than
                 -- an arbitrary row order, when two rules match with identical specificity.
                 ORDER BY specificity ASC,
