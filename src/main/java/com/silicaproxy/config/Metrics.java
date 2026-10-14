@@ -99,8 +99,10 @@ public final class Metrics {
     public static final String OUTCOME_SUCCESS = "SUCCESS";
     public static final String OUTCOME_FAILURE = "FAILURE";
 
-    // ---- AuditLogService (outcome reuses OUTCOME_SUCCESS/OUTCOME_FAILURE above) ----
+    // ---- AuditLogService (outcome reuses OUTCOME_SUCCESS/OUTCOME_FAILURE above, plus DROPPED
+    // when the audit executor queue is full and the write is never attempted) ----
     public static final String AUDIT_LOG_WRITES_METRIC = "silicaproxy.service.auditlog.writes";
+    public static final String OUTCOME_DROPPED = "DROPPED";
 
     // ---- SslMitmService ----
     public static final String CA_CERT_EXPIRY_METRIC = "silicaproxy.ssl.mitm.ca.seconds_until_expiry";
