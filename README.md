@@ -44,7 +44,7 @@ Artifact Repository
     │  1. company_policies   (priority 1)│  ← GitOps YAML rules
     │  2. public_vulnerabilities (prio 2)│  ← OSV / GHSA / GitLab / OpenSSF
     │  3. api_cache          (priority 3)│  ← cached live API results
-    │  (single SQL query, UNION ALL)     │
+    │  (UNION ALL + OSV range lookup)    │
     └────────────────┬──────────────────┘
                      │ if unknown package
                      ▼
@@ -90,7 +90,7 @@ com.silicaproxy
 
 **Key design choices:**
 - **Virtual threads (Project Loom / Java 25)** — thousands of concurrent downloads with near-zero overhead per connection.
-- **Single SQL query** — one `UNION ALL` covers all three local sources; the priority ordering ensures company policies always win.
+- **Local-first decision** — one `UNION ALL` query covers company policies, enumerated public vulnerabilities and the API cache; a second indexed lookup evaluates OSV version ranges (npm SemVer, Maven) at the same priority as public vulnerabilities, so company policies always win and a cached ALLOW never masks a known vulnerability.
 - **Streaming (16 KB buffer)** — binaries are never loaded into JVM memory, keeping the footprint stable regardless of artifact size.
 - **Async audit log** — audit writes never block downloads; overflow is handled with a discard policy.
 

@@ -18,7 +18,6 @@
 package com.silicaproxy.service.decision;
 
 import com.silicaproxy.config.Metrics;
-import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -53,7 +52,7 @@ public class SecurityService {
 
     private static final Logger LOG = LoggerFactory.getLogger(SecurityService.class);
 
-    private final DecisionDao decisionDao;
+    private final LocalDecisionEvaluator localDecisionEvaluator;
     private final RegistryClient registryClient;
     private final VulnerabilityApiClients apiClients;
     private final SecurityServiceCaches caches;
@@ -63,7 +62,7 @@ public class SecurityService {
     private final NpmPackumentIndex npmPackumentIndex;
 
     public SecurityService(
-            DecisionDao decisionDao,
+            LocalDecisionEvaluator localDecisionEvaluator,
             RegistryClient registryClient,
             VulnerabilityApiClients apiClients,
             SecurityServiceCaches caches,
@@ -71,7 +70,7 @@ public class SecurityService {
             ExternalValidationService externalValidationService,
             SecurityServiceMetrics metrics,
             NpmPackumentIndex npmPackumentIndex) {
-        this.decisionDao = decisionDao;
+        this.localDecisionEvaluator = localDecisionEvaluator;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
         this.caches = caches;
@@ -89,8 +88,9 @@ public class SecurityService {
         // 1. Elements for calculating the floor CVSS
         double minCvss = computeMinCvss(ecosystem);
 
-        // 2. Priority SQL Evaluation
-        Optional<DecisionResult> decisionOpt = decisionDao.evaluateDecision(packageName, version, ecosystem, minCvss);
+        // 2. Priority local evaluation (UNION ALL query, then OSV ranges at the P2 rank)
+        Optional<DecisionResult> decisionOpt =
+                localDecisionEvaluator.evaluate(packageName, version, ecosystem, minCvss);
         metrics.recordLocalEvaluationMetric(decisionOpt.isPresent() ? Metrics.OUTCOME_HIT : Metrics.OUTCOME_MISS);
         if (decisionOpt.isPresent()) {
             return decisionOpt.get();

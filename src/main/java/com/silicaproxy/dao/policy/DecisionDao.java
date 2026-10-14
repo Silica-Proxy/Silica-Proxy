@@ -18,6 +18,7 @@
 package com.silicaproxy.dao.policy;
 
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.RangeCandidate;
 import com.silicaproxy.model.entity.SeverityMapping;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -30,9 +31,10 @@ import java.util.Optional;
 /**
  * SQL core of the proxy decision  : a single query combining with 
  * {@code UNION ALL}/{@code ORDER BY priority} the three local sources (company policies, 
- * public vulnerabilities, API cache) to return only one verdict. Called by 
- * {@code SecurityService.getDecision()} at each incoming proxy request, before any 
- * external network call.
+ * public vulnerabilities, API cache) to return only one verdict, plus a second indexed lookup
+ * of the OSV version ranges ({@link #findRangeCandidates}) evaluated in Java at the public
+ * vulnerability priority. Called by {@code SecurityService.getDecision()} at each incoming
+ * proxy request, before any external network call.
  */
 @Repository
 @NullMarked
@@ -156,5 +158,28 @@ public class DecisionDao {
                 .param("minCvss", minCvssScore)
                 .query(DecisionResult.class)
                 .optional();
+    }
+
+    // Second local lookup, run only when evaluateDecision() found neither a company policy nor
+    // an enumerated public vulnerability : rows whose OSV ranges must be evaluated in Java
+    // (OsvRangeEvaluator), npm advisories carrying no version list at all. Same CVSS/malware
+    // filter as the PRIORITY 2 branch of evaluateDecision().
+    @Timed(value = "silicaproxy.dao.decision.findrangecandidates",
+            description = "Duration of the OSV range candidates lookup in DecisionDao",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public List<RangeCandidate> findRangeCandidates(String packageName, String ecosystem, double minCvssScore) {
+        return jdbcClient.sql("""
+                SELECT id, source, summary, affected_ranges::text AS "rangesJson"
+                FROM public_vulnerabilities
+                WHERE package_name = :packageName AND ecosystem = :ecosystem
+                  AND affected_ranges <> '[]'::jsonb
+                  -- Malwares (MAL-/OPENSSF) always blocked : their CVSS score is 0.0 by default
+                  AND (cvss_score >= :minCvss::numeric OR id LIKE 'MAL-%' OR source = 'OPENSSF')
+                """)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("minCvss", minCvssScore)
+                .query(RangeCandidate.class)
+                .list();
     }
 }

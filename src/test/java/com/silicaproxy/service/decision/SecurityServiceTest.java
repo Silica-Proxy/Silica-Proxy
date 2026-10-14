@@ -614,4 +614,73 @@ class SecurityServiceTest extends BaseIntegrationTest {
         assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
         assertThat(decision.reason()).contains("3");
     }
+
+    @Test
+    void shouldBlockNpmVersionInsideAnOsvSemverRange() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score)
+            VALUES ('GHSA-35jh-r3h4-6jhm', 'OSV', 'lodash', 'npm', 'Command injection in lodash', '[]'::jsonb,
+                    '[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"4.17.21"}]}]'::jsonb, 9.8)
+            """).update();
+
+        DecisionResult decision = securityService.getDecision("lodash", "4.17.20", "npm", "");
+
+        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.reason()).isEqualTo("Command injection in lodash");
+    }
+
+    @Test
+    void shouldBlockMalwareDescribedByAnAllVersionsRange() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score)
+            VALUES ('MAL-2026-0001', 'OSV', 'evil-pkg', 'npm', 'Malicious code in evil-pkg', '[]'::jsonb,
+                    '[{"type":"SEMVER","events":[{"introduced":"0"}]}]'::jsonb, 0.0)
+            """).update();
+
+        DecisionResult decision = securityService.getDecision("evil-pkg", "1.0.0", "npm", "");
+
+        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
+    }
+
+    @Test
+    void shouldLetCompanyWhitelistWinOverAnAffectedOsvRange() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score)
+            VALUES ('GHSA-range-wl', 'OSV', 'wl-range-pkg', 'npm', 'Known bug', '[]'::jsonb,
+                    '[{"type":"SEMVER","events":[{"introduced":"0"}]}]'::jsonb, 9.8)
+            """).update();
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('wl-range-pkg', 'npm', '%', 'WHITELIST', 'Accepted risk', 'security')
+            """).update();
+
+        DecisionResult decision = securityService.getDecision("wl-range-pkg", "1.0.0", "npm", "");
+
+        assertThat(decision.result()).isEqualTo("WHITELIST");
+        assertThat(decision.sourceType()).isEqualTo("COMPANY_POLICY");
+    }
+
+    @Test
+    void shouldNotLetACachedAllowMaskAnAffectedOsvRange() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, affected_ranges, cvss_score)
+            VALUES ('GHSA-range-cache', 'OSV', 'cached-range-pkg', 'npm', 'New advisory', '[]'::jsonb,
+                    '[{"type":"SEMVER","events":[{"introduced":"1.0.0"},{"fixed":"1.2.0"}]}]'::jsonb, 9.0)
+            """).update();
+        jdbcClient.sql("""
+            INSERT INTO api_cache (package_name, ecosystem, package_version, is_secure, api_source, expires_at)
+            VALUES ('cached-range-pkg', 'npm', '1.1.0', true, 'OSV_LIVE', CURRENT_TIMESTAMP + INTERVAL '1 DAY'),
+                   ('cached-range-pkg', 'npm', '1.2.0', true, 'OSV_LIVE', CURRENT_TIMESTAMP + INTERVAL '1 DAY')
+            """).update();
+
+        DecisionResult affected = securityService.getDecision("cached-range-pkg", "1.1.0", "npm", "");
+        DecisionResult fixed = securityService.getDecision("cached-range-pkg", "1.2.0", "npm", "");
+
+        assertThat(affected.result()).isEqualTo("BLOCK");
+        assertThat(affected.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(fixed.result()).isEqualTo("ALLOW");
+        assertThat(fixed.sourceType()).isEqualTo("API_CACHE");
+    }
 }
