@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,8 +83,8 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("high-cvss-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.sourceType()).isNotEqualTo("PUBLIC_VULN");
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.PUBLIC_VULN);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -97,8 +99,8 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("malware-pkg-1", "1.0.0", "npm", "");
 
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
-        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -111,7 +113,7 @@ class SecurityServiceSeverityDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("malware-pkg-2", "1.0.0", "npm", "");
 
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
-        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
     }
 }

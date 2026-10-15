@@ -16,10 +16,13 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
@@ -91,11 +94,11 @@ class ProxyControllerResponseIdentificationTest {
             new PackageIdentificationService(urlParserService, npmIndex, npmProperties);
 
     private final ProxyController controller = new ProxyController(securityService, auditLogService,
-            proxyStreamClient, packageIdentification, npmIndex, meterRegistry, new JsonMapper());
+            proxyStreamClient, packageIdentification, npmIndex, HttpsUpgradePolicy.upgradeAll(),
+            responseIdentification, new ProxyControllerMetrics(meterRegistry), new JsonMapper());
 
     @BeforeEach
     void unidentifiedUrl() {
-        controller.setResponseIdentification(responseIdentification);
         when(urlParserService.parseUrl(anyString())).thenReturn(ParsedPackage.unknown(ParsedPackage.UNKNOWN));
         when(responseIdentification.isEnabled()).thenReturn(true);
     }
@@ -120,9 +123,10 @@ class ProxyControllerResponseIdentificationTest {
                 .thenReturn(Optional.of(new ResponseIdentification(PKG, announced)));
     }
 
-    private void decision(String result) {
+    private void decision(Verdict result) {
         when(securityService.getDecision("org.example:lib", "1.0.0", "maven", URL))
-                .thenReturn(new DecisionResult("BLACKLIST".equals(result) ? "COMPANY_POLICY" : "DEFAULT", result,
+                .thenReturn(new DecisionResult(
+                        result == Verdict.BLACKLIST ? DecisionSource.COMPANY_POLICY : DecisionSource.DEFAULT, result,
                         "reason"));
     }
 
@@ -134,7 +138,7 @@ class ProxyControllerResponseIdentificationTest {
     void shouldBlockPackageIdentifiedFromResponseWithoutRelayingBody() throws Exception {
         byte[] body = body(1000);
         upstreamServes(body, sha1Of(body));
-        decision("BLACKLIST");
+        decision(Verdict.BLACKLIST);
 
         mockMvc().perform(get(URL))
                 .andExpect(status().isForbidden())
@@ -151,7 +155,7 @@ class ProxyControllerResponseIdentificationTest {
     void shouldRelayAllowedPackageIdentifiedFromResponse() throws Exception {
         byte[] body = body(40_000);
         upstreamServes(body, sha1Of(body));
-        decision("ALLOW");
+        decision(Verdict.ALLOW);
 
         mockMvc().perform(get(URL))
                 .andExpect(status().isOk())
@@ -165,7 +169,7 @@ class ProxyControllerResponseIdentificationTest {
     void shouldCutConnectionWhenLargeBodyDoesNotMatchAnnouncedDigest() throws Exception {
         byte[] served = body(40_000);
         upstreamServes(served, sha1Of("the harmless file the upstream pretends to serve".getBytes()));
-        decision("ALLOW");
+        decision(Verdict.ALLOW);
         MockHttpServletRequest request = get(URL).buildRequest(new MockServletContext());
         MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -182,7 +186,7 @@ class ProxyControllerResponseIdentificationTest {
     void shouldAnswerBadGatewayWhenSmallBodyDoesNotMatchAnnouncedDigest() throws Exception {
         byte[] served = body(1000);
         upstreamServes(served, sha1Of("another file".getBytes()));
-        decision("ALLOW");
+        decision(Verdict.ALLOW);
 
         mockMvc().perform(get(URL))
                 .andExpect(status().isBadGateway())
@@ -224,7 +228,8 @@ class ProxyControllerResponseIdentificationTest {
         byte[] body = body(1000);
         upstreamServes(body, sha1Of(body));
         ProxyController legacy = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmIndex, meterRegistry, new JsonMapper());
+                packageIdentification, npmIndex, HttpsUpgradePolicy.upgradeAll(),
+                mock(ResponseIdentificationService.class), new ProxyControllerMetrics(meterRegistry), new JsonMapper());
 
         MockMvcBuilders.standaloneSetup(legacy).build().perform(get(URL))
                 .andExpect(status().isOk())

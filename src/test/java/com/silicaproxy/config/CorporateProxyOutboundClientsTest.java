@@ -17,6 +17,8 @@
 
 package com.silicaproxy.config;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import com.silicaproxy.dao.client.OsvClient;
@@ -249,8 +251,8 @@ class CorporateProxyOutboundClientsTest {
 
         DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/lodash")));
         Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
@@ -269,8 +271,8 @@ class CorporateProxyOutboundClientsTest {
 
         DecisionResult decision = securityService.getDecision("com.example:mylib", "1.0.0", "maven", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         wireMock.verify(1, headRequestedFor(urlEqualTo("/maven2/com/example/mylib/1.0.0/")));
         Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("host.testcontainers.internal");
@@ -287,8 +289,8 @@ class CorporateProxyOutboundClientsTest {
 
         DecisionResult decision = securityService.getDecision("critical-pkg", "9.9.9", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
         wireMock.verify(0, getRequestedFor(urlEqualTo("/critical-pkg")));
         Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).doesNotContain("critical-pkg");

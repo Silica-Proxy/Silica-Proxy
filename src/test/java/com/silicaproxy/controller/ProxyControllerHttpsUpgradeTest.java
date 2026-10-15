@@ -17,6 +17,10 @@
 
 package com.silicaproxy.controller;
 
+import static org.mockito.Mockito.mock;
+import com.silicaproxy.service.interception.ResponseIdentificationService;
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -72,15 +76,20 @@ class ProxyControllerHttpsUpgradeTest {
     @BeforeEach
     void setUp() throws Exception {
         MockitoAnnotations.openMocks(this);
-        controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmPackumentIndex, new SimpleMeterRegistry(), new JsonMapper());
+        controller = controllerWith(HttpsUpgradePolicy.upgradeAll());
         when(packageIdentification.identify(anyString(), anyString(), any(HttpHeaders.class)))
                 .thenReturn(new Identification(new ParsedPackage("com.acme:lib", "1.0", "maven"), Outcome.EVALUATE, false));
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult("COMPANY_POLICY", "ALLOW", "Allowed by test"));
+                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.ALLOW, "Allowed by test"));
         when(proxyStreamClient.streamContent(anyString(), any(HttpHeaders.class)))
                 .thenReturn(new ProxyStreamClient.StreamResponse(
                         HttpStatus.OK, new HttpHeaders(), new ByteArrayInputStream(new byte[0])));
+    }
+
+    private ProxyController controllerWith(HttpsUpgradePolicy policy) {
+        return new ProxyController(securityService, auditLogService, proxyStreamClient, packageIdentification,
+                npmPackumentIndex, policy, mock(ResponseIdentificationService.class),
+                new ProxyControllerMetrics(new SimpleMeterRegistry()), new JsonMapper());
     }
 
     private MockMvc mockMvc() {
@@ -98,7 +107,7 @@ class ProxyControllerHttpsUpgradeTest {
 
     @Test
     void httpOnlyHostIsRelayedInHttp() throws Exception {
-        controller.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
+        controller = controllerWith(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
 
         mockMvc().perform(get("http://plugins.gradle.org" + POM_PATH));
 
@@ -107,7 +116,7 @@ class ProxyControllerHttpsUpgradeTest {
 
     @Test
     void otherHostsAreStillRelayedInHttpsWhenAnotherHostIsHttpOnly() throws Exception {
-        controller.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("internal.registry"));
+        controller = controllerWith(HttpsUpgradePolicy.fromCsv("internal.registry"));
 
         mockMvc().perform(get("http://repo1.maven.org" + POM_PATH));
 

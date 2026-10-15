@@ -21,6 +21,7 @@ import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.dto.RegistryLookup;
 import com.silicaproxy.model.entity.SeverityMapping;
@@ -37,7 +38,10 @@ import io.micrometer.core.annotation.Timed;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 /**
  * Central security decision orchestrator  : first evaluates the unique SQL 
@@ -51,6 +55,14 @@ import java.util.Optional;
 public class SecurityService {
 
     private static final Logger LOG = LoggerFactory.getLogger(SecurityService.class);
+
+    // CVSS floor meaning "no severity limit" (CVSS scores top out at 10.0).
+    private static final double NO_CVSS_FLOOR = 11.0;
+    // Severity just above each allowed maximum, with its CVSS floor when severity_mappings lacks it.
+    private static final Map<String, Map.Entry<String, Double>> NEXT_SEVERITY = Map.of(
+            "LOW", Map.entry("MEDIUM", 4.0),
+            "MEDIUM", Map.entry("HIGH", 7.0),
+            "HIGH", Map.entry("CRITICAL", 9.0));
 
     private final LocalDecisionEvaluator localDecisionEvaluator;
     private final RegistryClient registryClient;
@@ -115,7 +127,7 @@ public class SecurityService {
         // service, none of which vetted the package, so the live vulnerability APIs still run.
         Optional<DecisionResult> extResult =
                 externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
-        if (extResult.isPresent() && "BLOCK".equals(extResult.get().result())) {
+        if (extResult.isPresent() && extResult.get().isBlocked()) {
             return extResult.get();
         }
 
@@ -199,7 +211,7 @@ public class SecurityService {
             LOG.warn("{}/{} ({}) is unknown to every registry consulted : blocked (unknown-version-action=BLOCK)",
                     ecosystem, packageName, version);
             metrics.recordPublishDateUnresolved(ecosystem, "BLOCK");
-            return new DecisionResult("REGISTRY_NOT_FOUND", "BLOCK",
+            return DecisionResult.block(DecisionSource.REGISTRY_NOT_FOUND,
                     "Package version is unknown to the registry, its publication date cannot be verified.");
         }
         boolean failOpen = properties.quarantine().failOpen();
@@ -207,17 +219,17 @@ public class SecurityService {
                 ecosystem, packageName, version, failOpen);
         metrics.recordPublishDateUnresolved(ecosystem, failOpen ? "ALLOW" : "BLOCK");
         if (!failOpen) {
-            return new DecisionResult("REGISTRY_ERROR", "BLOCK", "Public registry is unreachable and proxy is configured in fail-closed.");
+            return DecisionResult.block(DecisionSource.REGISTRY_ERROR, "Public registry is unreachable and proxy is configured in fail-closed.");
         }
         if (properties.quarantine().checkVulnerabilitiesOnRegistryError()) {
             // cacheAllow=false : an ALLOW cached here would short-circuit the quarantine check
             // for the whole TTL once the registry recovers.
             DecisionResult vulnVerdict = runFallbackChain(packageName, version, ecosystem, false);
-            if ("BLOCK".equals(vulnVerdict.result())) {
+            if (vulnVerdict.isBlocked()) {
                 return vulnVerdict;
             }
         }
-        return new DecisionResult("REGISTRY_ERROR", "ALLOW", "Fail open due to public registry unavailability.");
+        return DecisionResult.allow(DecisionSource.REGISTRY_ERROR, "Fail open due to public registry unavailability.");
     }
 
     private Optional<DecisionResult> checkDeprecationAndQuarantine(
@@ -227,19 +239,21 @@ public class SecurityService {
                     ? metadata.deprecationReason() : "The package is deprecated or removed (yanked).";
             // Verdict in persistent cache with infinite TTL (ex: 9999-12-31)
             Instant infiniteExpiry = Instant.parse("9999-12-31T23:59:59Z");
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, false, "REGISTRY_DEPRECATION", infiniteExpiry);
-            return Optional.of(new DecisionResult("REGISTRY_DEPRECATION", "BLOCK", reason));
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, false,
+                    DecisionSource.REGISTRY_DEPRECATION.name(), infiniteExpiry);
+            return Optional.of(DecisionResult.block(DecisionSource.REGISTRY_DEPRECATION, reason));
         }
 
-        if (isQuarantineEnabled(ecosystem)) {
-            int minAgeDays = getQuarantineMinAgeDays(ecosystem);
+        OptionalInt quarantineDays = quarantineMinAgeDays(ecosystem);
+        if (quarantineDays.isPresent()) {
+            int minAgeDays = quarantineDays.getAsInt();
             long ageInDays = ChronoUnit.DAYS.between(metadata.publishedAt(), Instant.now());
             if (ageInDays < minAgeDays) {
                 String reason = String.format(
                         "Package %s version %s was published %d days ago"
                         + " (required threshold: %d days). Temporarily blocked by anti-typosquatting quarantine.",
                         packageName, version, ageInDays, minAgeDays);
-                return Optional.of(new DecisionResult("REGISTRY_QUARANTINE", "BLOCK", reason));
+                return Optional.of(DecisionResult.block(DecisionSource.REGISTRY_QUARANTINE, reason));
             }
         }
 
@@ -251,12 +265,12 @@ public class SecurityService {
         ApiCheckResult check(String packageName, String version, String ecosystem);
     }
 
-    private record FallbackSource(String configKey, String apiSource, String providerLabel, VulnerabilityCheck check) {}
+    private record FallbackSource(String configKey, DecisionSource source, String providerLabel, VulnerabilityCheck check) {}
 
     private List<FallbackSource> fallbackSources() {
         return List.of(
-                new FallbackSource("osv", Metrics.OSV_LIVE, "OSV", apiClients.osv()::checkVulnerability),
-                new FallbackSource("deps-dev", Metrics.DEPS_DEV, "deps.dev", apiClients.depsDev()::checkVulnerability));
+                new FallbackSource("osv", DecisionSource.OSV_LIVE, "OSV", apiClients.osv()::checkVulnerability),
+                new FallbackSource("deps-dev", DecisionSource.DEPS_DEV, "deps.dev", apiClients.depsDev()::checkVulnerability));
     }
 
     // External API scan (Fallback Chain) : OSV then deps.dev. The first enabled source that
@@ -277,9 +291,9 @@ public class SecurityService {
                 continue;
             }
             ApiCheckResult result = source.check().check(packageName, version, ecosystem);
-            logApiCall(source.apiSource(), packageName, ecosystem, version, result);
+            logApiCall(source.source().name(), packageName, ecosystem, version, result);
             if (!result.isError()) {
-                return resolveFallbackVerdict(packageName, version, ecosystem, source.apiSource(),
+                return resolveFallbackVerdict(packageName, version, ecosystem, source.source(),
                         source.providerLabel(), result, cacheAllow);
             }
             anyAttempted = true;
@@ -292,19 +306,19 @@ public class SecurityService {
             // Most restrictive wins across the attempted sources (same aggregation philosophy
             // as ExternalValidationService) : one fail-closed source is enough to block.
             if (anyFailClosed) {
-                return new DecisionResult("API_FALLBACK_ERROR", "BLOCK",
+                return DecisionResult.block(DecisionSource.API_FALLBACK_ERROR,
                         "External vulnerability APIs are unreachable and fail-closed is configured.");
             }
-            return new DecisionResult("API_FALLBACK_ERROR", "ALLOW",
+            return DecisionResult.allow(DecisionSource.API_FALLBACK_ERROR,
                     "External vulnerability APIs are unreachable; allowed by fail-open policy (verdict not cached).");
         }
 
         // If no fallback enabled, authorize by default
         if (cacheAllow && properties.apiCache().cacheAllowVerdict()) {
             Instant expiresAt = Instant.now().plus(properties.apiCache().allowVerdictTtlMinutes(), ChronoUnit.MINUTES);
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true, "DEFAULT", expiresAt);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true, DecisionSource.DEFAULT.name(), expiresAt);
         }
-        return new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule).");
+        return DecisionResult.allow(DecisionSource.DEFAULT, "Allowed by default (no blocking rule).");
     }
 
     private void logApiCall(String apiSource, String packageName, String ecosystem, String version,
@@ -317,7 +331,7 @@ public class SecurityService {
     }
 
     private DecisionResult resolveFallbackVerdict(
-            String packageName, String version, String ecosystem, String apiSource, String providerLabel,
+            String packageName, String version, String ecosystem, DecisionSource source, String providerLabel,
             ApiCheckResult result, boolean cacheAllow) {
         boolean isSecure = !result.vulnerable();
 
@@ -329,84 +343,60 @@ public class SecurityService {
         // Cache the verdict if TTL > 0 (BLOCK always, ALLOW only if configured and TTL > 0)
         if (ttlMinutes > 0 && (!isSecure || cacheAllow && properties.apiCache().cacheAllowVerdict())) {
             Instant expiresAt = Instant.now().plus(ttlMinutes, ChronoUnit.MINUTES);
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, apiSource, expiresAt,
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, source.name(), expiresAt,
                     result.vulnerabilityIds());
         }
 
         if (isSecure) {
-            return new DecisionResult(apiSource, "ALLOW", "Validated via external fallback API " + providerLabel + ".");
+            return DecisionResult.allow(source, "Validated via external fallback API " + providerLabel + ".");
         }
         String ids = result.vulnerabilityIds().isEmpty() ? "" : " (" + String.join(", ", result.vulnerabilityIds()) + ")";
-        return new DecisionResult(apiSource, "BLOCK",
+        return DecisionResult.block(source,
                 "The package contains a vulnerability reported by external API " + providerLabel + ids + ".");
     }
 
     private double computeMinCvss(String ecosystem) {
-        if (!properties.severityThreshold().enabled()) {
-            return 11.0;
+        SilicaProxyProperties.SeverityThresholdProperties threshold = properties.severityThreshold();
+        if (!threshold.enabled()) {
+            return NO_CVSS_FLOOR;
         }
-        SilicaProxyProperties.EcosystemSeverityProperties ecoProps = properties.severityThreshold().ecosystems().get(ecosystem.toLowerCase());
-        double configuredCvss;
-        String maxSeverity;
-        if (ecoProps != null) {
-            configuredCvss = ecoProps.maxAllowedCvss();
-            maxSeverity = ecoProps.maxAllowedSeverity();
-        } else {
-            configuredCvss = properties.severityThreshold().defaultMaxAllowedCvss();
-            maxSeverity = properties.severityThreshold().defaultMaxAllowedSeverity();
-        }
-        double resolvedCvss = getSeverityPlancher(maxSeverity);
-        return Math.min(configuredCvss, resolvedCvss);
+        SilicaProxyProperties.EcosystemSeverityProperties ecoProps = threshold.ecosystems().get(lower(ecosystem));
+        double configuredCvss = ecoProps != null ? ecoProps.maxAllowedCvss() : threshold.defaultMaxAllowedCvss();
+        String maxSeverity = ecoProps != null ? ecoProps.maxAllowedSeverity() : threshold.defaultMaxAllowedSeverity();
+        return Math.min(configuredCvss, severityFloor(maxSeverity));
     }
 
-    private double getSeverityPlancher(String maxAllowedSeverity) {
-        String nextSeverity = switch (maxAllowedSeverity.toUpperCase()) {
-            case "LOW" -> "MEDIUM";
-            case "MEDIUM" -> "HIGH";
-            case "HIGH" -> "CRITICAL";
-            default -> null;
-        };
-
-        if (nextSeverity == null) {
-            return 11.0;
+    // CVSS floor of the severity just above the allowed one : severity_mappings first, then the
+    // built-in default.
+    private double severityFloor(String maxAllowedSeverity) {
+        Map.Entry<String, Double> next = NEXT_SEVERITY.get(maxAllowedSeverity.toUpperCase(Locale.ROOT));
+        if (next == null) {
+            return NO_CVSS_FLOOR;
         }
-
-        @Nullable SeverityMapping mapping = caches.severityMappingsCache().get(nextSeverity);
-        if (mapping != null) {
-            return mapping.minCvss();
-        }
-
-        return switch (nextSeverity) {
-            case "MEDIUM" -> 4.0;
-            case "HIGH" -> 7.0;
-            case "CRITICAL" -> 9.0;
-            default -> 11.0;
-        };
+        @Nullable SeverityMapping mapping = caches.severityMappingsCache().get(next.getKey());
+        return mapping != null ? mapping.minCvss() : next.getValue();
     }
 
     private boolean isDeprecationFilteringEnabled(String ecosystem) {
-        if (!properties.deprecation().enabled()) {
-            return false;
-        }
-        Boolean ecoEnabled = properties.deprecation().ecosystems().get(ecosystem.toLowerCase());
-        return ecoEnabled != null && ecoEnabled;
+        return properties.deprecation().enabled()
+                && Boolean.TRUE.equals(properties.deprecation().ecosystems().get(lower(ecosystem)));
     }
 
-    private boolean isQuarantineEnabled(String ecosystem) {
-        if (!properties.quarantine().enabled()) {
-            return false;
+    // Empty when quarantine does not apply. An unknown ecosystem is quarantined with
+    // defaultMinAgeDays ; a known ecosystem with enabled=false explicitly opts out.
+    private OptionalInt quarantineMinAgeDays(String ecosystem) {
+        SilicaProxyProperties.QuarantineProperties quarantine = properties.quarantine();
+        if (!quarantine.enabled()) {
+            return OptionalInt.empty();
         }
-        SilicaProxyProperties.EcosystemQuarantineProperties ecoProps = properties.quarantine().ecosystems().get(ecosystem.toLowerCase());
-        // Unknown ecosystem: quarantine is active by default (uses defaultMinAgeDays).
-        // A known ecosystem with enabled=false explicitly opts out.
-        return ecoProps == null || ecoProps.enabled();
+        SilicaProxyProperties.EcosystemQuarantineProperties ecoProps = quarantine.ecosystems().get(lower(ecosystem));
+        if (ecoProps == null) {
+            return OptionalInt.of(quarantine.defaultMinAgeDays());
+        }
+        return ecoProps.enabled() ? OptionalInt.of(ecoProps.minAgeDays()) : OptionalInt.empty();
     }
 
-    private int getQuarantineMinAgeDays(String ecosystem) {
-        SilicaProxyProperties.EcosystemQuarantineProperties ecoProps = properties.quarantine().ecosystems().get(ecosystem.toLowerCase());
-        if (ecoProps != null) {
-            return ecoProps.minAgeDays();
-        }
-        return properties.quarantine().defaultMinAgeDays();
+    private static String lower(String ecosystem) {
+        return ecosystem.toLowerCase(Locale.ROOT);
     }
 }

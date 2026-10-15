@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,8 +67,8 @@ class SecurityServiceTimeoutTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("slow-pkg", "1.0.0", "npm", "");
         long elapsedMs = System.currentTimeMillis() - start;
 
-        assertThat(decision.result()).isEqualTo("ALLOW"); // fail-open enabled by default
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW); // fail-open enabled by default
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         // The timeout (2s) must have triggered well before the simulated delay (5s) : the request
         // was never blocked waiting for a response that would never arrive on time.
         assertThat(elapsedMs).isLessThan(5000);

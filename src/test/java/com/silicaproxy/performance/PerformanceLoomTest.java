@@ -17,6 +17,7 @@
 
 package com.silicaproxy.performance;
 
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.decision.SecurityService;
@@ -71,7 +72,7 @@ class PerformanceLoomTest extends BaseIntegrationTest {
                 long start = System.nanoTime();
                 DecisionResult result = securityService.getDecision("lodash", "4.17.21", "npm", "");
                 long end = System.nanoTime();
-                assertThat(result.result()).isEqualTo("ALLOW"); // Verify it worked
+                assertThat(result.result()).isEqualTo(Verdict.ALLOW); // Verify it worked
                 return (end - start) / 1_000_000; // Convert to milliseconds
             }, executor);
             futures.add(future);

@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,8 +67,8 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 VALUES ('CVE-low-floor', 'OSV', 'low-floor-pkg', 'low-eco', 'LOW floor test', '["1.0.0"]'::jsonb, 4.5)
                 """).update();
         DecisionResult lowDecision = securityService.getDecision("low-floor-pkg", "1.0.0", "low-eco", "");
-        assertThat(lowDecision.result()).as("LOW severity floor 4.0 : CVSS 4.5 doit bloquer").isEqualTo("BLOCK");
-        assertThat(lowDecision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(lowDecision.result()).as("LOW severity floor 4.0 : CVSS 4.5 doit bloquer").isEqualTo(Verdict.BLOCK);
+        assertThat(lowDecision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
 
         // MEDIUM → nextSeverity=HIGH → plancher=7.0 ; min(7.0, 7.0) = 7.0 (ecosystem maven)
         // CVSS 7.5 >= 7.0 → BLOCK from PUBLIC_VULN
@@ -75,8 +77,8 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 VALUES ('CVE-medium-floor', 'OSV', 'medium-floor-pkg', 'maven', 'MEDIUM floor test', '["1.0.0"]'::jsonb, 7.5)
                 """).update();
         DecisionResult mediumDecision = securityService.getDecision("medium-floor-pkg", "1.0.0", "maven", "");
-        assertThat(mediumDecision.result()).as("MEDIUM severity floor 7.0 : CVSS 7.5 doit bloquer").isEqualTo("BLOCK");
-        assertThat(mediumDecision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(mediumDecision.result()).as("MEDIUM severity floor 7.0 : CVSS 7.5 doit bloquer").isEqualTo(Verdict.BLOCK);
+        assertThat(mediumDecision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
 
         // HIGH → nextSeverity=CRITICAL → plancher=9.0 ; min(9.0, 9.0) = 9.0 (ecosystem npm)
         // CVSS 9.5 >= 9.0 → BLOCK from PUBLIC_VULN
@@ -85,8 +87,8 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 VALUES ('CVE-high-floor', 'OSV', 'high-floor-pkg', 'npm', 'HIGH floor test', '["1.0.0"]'::jsonb, 9.5)
                 """).update();
         DecisionResult highDecision = securityService.getDecision("high-floor-pkg", "1.0.0", "npm", "");
-        assertThat(highDecision.result()).as("HIGH severity floor 9.0 : CVSS 9.5 doit bloquer").isEqualTo("BLOCK");
-        assertThat(highDecision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(highDecision.result()).as("HIGH severity floor 9.0 : CVSS 9.5 doit bloquer").isEqualTo(Verdict.BLOCK);
+        assertThat(highDecision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
 
         // CRITICAL → nextSeverity=null → plancher=11.0 ; min(11.0, 11.0) = 11.0
         // CVSS 10.0 < 11.0 → NOT blocked by the vulnerabilities table
@@ -97,7 +99,7 @@ class SecurityServiceSeverityFloorTest extends BaseIntegrationTest {
                 """).update();
         DecisionResult criticalDecision = securityService.getDecision("critical-floor-pkg", "1.0.0", "critical-eco", "");
         assertThat(criticalDecision.sourceType()).as("CRITICAL severity floor 11.0 : CVSS 10.0 ne doit pas bloquer via PUBLIC_VULN")
-                .isNotEqualTo("PUBLIC_VULN");
-        assertThat(criticalDecision.result()).isEqualTo("ALLOW");
+                .isNotEqualTo(DecisionSource.PUBLIC_VULN);
+        assertThat(criticalDecision.result()).isEqualTo(Verdict.ALLOW);
     }
 }

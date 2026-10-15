@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.BaseIntegrationTest;
@@ -95,12 +97,12 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": [\"GHSA-xxxx-yyyy\"]}")));
 
-        double before = apiCallCount(Metrics.DEPS_DEV, "BLOCK");
+        double before = apiCallCount(DecisionSource.DEPS_DEV.name(), "BLOCK");
         DecisionResult decision = securityService.getDecision("depsdev-vuln-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
-        assertThat(apiCallCount(Metrics.DEPS_DEV, "BLOCK") - before).isEqualTo(1.0);
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
+        assertThat(apiCallCount(DecisionSource.DEPS_DEV.name(), "BLOCK") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -111,12 +113,12 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{\"advisoryKeys\": []}")));
 
-        double before = apiCallCount(Metrics.DEPS_DEV, "ALLOW");
+        double before = apiCallCount(DecisionSource.DEPS_DEV.name(), "ALLOW");
         DecisionResult decision = securityService.getDecision("depsdev-safe-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
-        assertThat(apiCallCount(Metrics.DEPS_DEV, "ALLOW") - before).isEqualTo(1.0);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
+        assertThat(apiCallCount(DecisionSource.DEPS_DEV.name(), "ALLOW") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -125,14 +127,14 @@ class SecurityServiceDepsDevTest extends BaseIntegrationTest {
         wireMock.stubFor(get(urlPathMatching("/depsdev/v3/systems/NPM/packages/depsdev-err-pkg/versions/.*"))
                 .willReturn(aResponse().withStatus(500)));
 
-        double before = apiCallCount(Metrics.DEPS_DEV, "ERROR");
+        double before = apiCallCount(DecisionSource.DEPS_DEV.name(), "ERROR");
         DecisionResult decision = securityService.getDecision("depsdev-err-pkg", "1.0.0", "npm", "");
 
         // deps.dev is the only enabled source here (osv disabled) ; when it errors, the chain
         // has nothing left to hand over to, so the fail-open policy decides -- sourceType is
         // API_FALLBACK_ERROR, not DEPS_DEV (see SecurityService.runFallbackChain).
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
-        assertThat(apiCallCount(Metrics.DEPS_DEV, "ERROR") - before).isEqualTo(1.0);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.API_FALLBACK_ERROR);
+        assertThat(apiCallCount(DecisionSource.DEPS_DEV.name(), "ERROR") - before).isEqualTo(1.0);
     }
 }

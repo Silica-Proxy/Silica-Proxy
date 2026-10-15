@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,8 +61,8 @@ class SecurityServiceFailClosedTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("down-pkg-closed", "1.0.0", "npm", "");
 
         // Fail-closed enabled via test properties
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(decision.reason()).contains("Public registry is unreachable and proxy is configured in fail-closed.");
     }
 
@@ -78,8 +80,8 @@ class SecurityServiceFailClosedTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("slow-pkg-closed", "1.0.0", "npm", "");
         long elapsedMs = System.currentTimeMillis() - start;
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(elapsedMs).isLessThan(5000);
     }
 }

@@ -17,6 +17,8 @@
 
 package com.silicaproxy.dao.policy;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.Test;
@@ -60,8 +62,8 @@ class ApiCacheBlockReasonTest extends BaseIntegrationTest {
 
         DecisionResult decision = decisionFor("1.0.0");
 
-        assertThat(decision.sourceType()).isEqualTo("API_CACHE");
-        assertThat(decision.result()).isEqualTo("BLOCK");
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.API_CACHE);
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
         assertThat(decision.reason())
                 .startsWith("Blocked by cached OSV_LIVE verdict: ")
                 .contains("GHSA-cxp5-3px4-pw24")
@@ -81,7 +83,7 @@ class ApiCacheBlockReasonTest extends BaseIntegrationTest {
 
         DecisionResult decision = decisionFor("3.0.0");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.reason()).isEqualTo("Validated via API cache");
     }
 

@@ -15,6 +15,8 @@ package com.silicaproxy.dao.policy;/*
  */
 
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -114,8 +116,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("test-package", "1.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
         assertThat(decision.get().reason()).isEqualTo("Explicit authorization");
     }
 
@@ -131,8 +133,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("vuln-only-package", "2.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("PUBLIC_VULN");
-        assertThat(decision.get().result()).isEqualTo("BLOCK");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
         assertThat(decision.get().reason()).isEqualTo("Critical CVE");
     }
 
@@ -148,8 +150,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("cached-package", "3.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("API_CACHE");
-        assertThat(decision.get().result()).isEqualTo("ALLOW");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.API_CACHE);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -164,8 +166,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("ua-parser-js", "0.7.29", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("BLOCK");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -185,13 +187,13 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // Evaluate with a threshold of 7.0 : both must be blocked despite the CVSS score of 0.0
         Optional<DecisionResult> decision1 = decisionDao.evaluateDecision("malware-package-1", "1.0.0", "npm", 7.0);
         assertThat(decision1).isPresent();
-        assertThat(decision1.get().sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
-        assertThat(decision1.get().result()).isEqualTo("BLOCK");
+        assertThat(decision1.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision1.get().result()).isEqualTo(Verdict.BLOCK);
 
         Optional<DecisionResult> decision2 = decisionDao.evaluateDecision("malware-package-2", "1.0.0", "npm", 7.0);
         assertThat(decision2).isPresent();
-        assertThat(decision2.get().sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
-        assertThat(decision2.get().result()).isEqualTo("BLOCK");
+        assertThat(decision2.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision2.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -239,8 +241,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("multi-source-pkg", "1.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
         assertThat(decision.get().reason()).isEqualTo("Exception approved");
     }
 
@@ -260,8 +262,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("exact-beats-wildcard-pkg", "1.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("BLACKLIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
     }
 
     @Test
@@ -283,8 +285,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("tie-break-pkg", "4.17.21", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("BLACKLIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
     }
 
     @Test
@@ -304,8 +306,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("wildcard-win-pkg", "2.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
     }
 
     @Test
@@ -322,8 +324,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
     }
 
     @Test
@@ -341,8 +343,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0_rc1", "maven", 7.0);
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
     }
 
     @Test
@@ -361,7 +363,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-exact-pkg", "1.0.0_rc1", "maven", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().result()).isEqualTo("BLACKLIST");
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
     }
 
     @Test
@@ -378,8 +380,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("@gradio/chatbot", "0.4.2", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("PUBLIC_VULN_ANOMALY");
-        assertThat(decision.get().result()).isEqualTo("BLOCK");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_ANOMALY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -412,8 +414,8 @@ class DecisionDaoTest extends BaseIntegrationTest {
                 decisionDao.evaluateDecision("@gradio/approved-fork", "2.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().sourceType()).isEqualTo("COMPANY_POLICY");
-        assertThat(decision.get().result()).isEqualTo("WHITELIST");
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
     }
 
     @Test

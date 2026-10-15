@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.service.interception.ResponseIdentificationService;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -683,7 +685,8 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         
         // Create the controller
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmPackumentIndex, meterRegistry, objectMapper);
+                packageIdentification, npmPackumentIndex, HttpsUpgradePolicy.upgradeAll(),
+                mock(ResponseIdentificationService.class), new ProxyControllerMetrics(meterRegistry), objectMapper);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

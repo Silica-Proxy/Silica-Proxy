@@ -83,7 +83,11 @@ public class DecisionDao {
                 SELECT 1 AS priority,
                        CASE WHEN package_name = p_name THEN 0 ELSE 2 END
                            + CASE WHEN version_pattern = p_version THEN 0 ELSE 1 END AS specificity,
-                       'COMPANY_POLICY' AS source_type, policy_action AS result, reason
+                       'COMPANY_POLICY' AS source_type,
+                       -- Mapped onto the Verdict enum : anything but BLACKLIST is a WHITELIST,
+                       -- as it always was (only BLACKLIST ever blocked).
+                       CASE WHEN policy_action = 'BLACKLIST' THEN 'BLACKLIST' ELSE 'WHITELIST' END AS result,
+                       reason
                 FROM company_policies, checked_package
                 WHERE p_name LIKE
                       REPLACE(REPLACE(REPLACE(package_name, '_', '\\_'), '%', '\\%'), '*', '%') ESCAPE '\\'

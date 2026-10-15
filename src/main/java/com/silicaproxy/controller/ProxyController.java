@@ -17,9 +17,9 @@
 
 package com.silicaproxy.controller;
 
-import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.HttpsUpgradePolicy;
@@ -35,29 +35,21 @@ import com.silicaproxy.service.interception.ResponseIdentificationService.Respon
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
-import org.jspecify.annotations.Nullable;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ProblemDetail;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import io.micrometer.core.annotation.Timed;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import java.net.URI;
 import java.util.Collections;
 import java.util.Enumeration;
 
@@ -77,7 +69,7 @@ import java.util.Enumeration;
 public class ProxyController {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProxyController.class);
-    private static final DecisionResult UNIDENTIFIED_TARBALL_VERDICT = new DecisionResult("UNIDENTIFIED_ARTIFACT", "BLOCK",
+    private static final DecisionResult UNIDENTIFIED_TARBALL_VERDICT = DecisionResult.block(DecisionSource.UNIDENTIFIED_ARTIFACT,
             "npm tarball could not be identified from its URL or from a relayed packument (unidentified-tarball-action=BLOCK).");
 
     private final SecurityService securityService;
@@ -85,16 +77,12 @@ public class ProxyController {
     private final ProxyStreamClient proxyStreamClient;
     private final PackageIdentificationService packageIdentification;
     private final NpmPackumentIndex npmPackumentIndex;
-    // null : identification from the upstream response disabled (not injected).
-    private @Nullable ResponseIdentificationService responseIdentification;
+    // Applies the configured http-only-hosts exemptions to the relayed URL.
+    private final HttpsUpgradePolicy httpsUpgradePolicy;
+    // Last chance for a request its URL does not identify (only when enabled).
+    private final ResponseIdentificationService responseIdentification;
+    private final ProxyControllerMetrics metrics;
     private final ObjectMapper objectMapper;
-    // Pre-built once at startup (like LoomProxyServer.sslHandshakeTimer) instead of calling
-    // Timer.builder(...).register(...) on every request: register() still does a registry
-    // lookup under a lock each time, which is unnecessary work on the hot request path.
-    private final Timer blockDecisionTimer;
-    private final Timer allowDecisionTimer;
-    private final MeterRegistry meterRegistry;
-    private HttpsUpgradePolicy httpsUpgradePolicy = HttpsUpgradePolicy.upgradeAll();
 
     public ProxyController(
             SecurityService securityService,
@@ -102,68 +90,19 @@ public class ProxyController {
             ProxyStreamClient proxyStreamClient,
             PackageIdentificationService packageIdentification,
             NpmPackumentIndex npmPackumentIndex,
-            MeterRegistry meterRegistry,
+            HttpsUpgradePolicy httpsUpgradePolicy,
+            ResponseIdentificationService responseIdentification,
+            ProxyControllerMetrics metrics,
             ObjectMapper objectMapper) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
         this.packageIdentification = packageIdentification;
         this.npmPackumentIndex = npmPackumentIndex;
-        this.objectMapper = objectMapper;
-        this.meterRegistry = meterRegistry;
-        this.blockDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "block");
-        this.allowDecisionTimer = buildSecurityOverheadTimer(meterRegistry, "allow");
-    }
-
-    /**
-     * Applies the configured {@code http-only-hosts} exemptions. Setter-injected (optional
-     * collaborator) so the constructor, used as-is by the existing tests, stays unchanged :
-     * without it, every non-local {@code http://} URL is upgraded to {@code https://}.
-     */
-    @Autowired(required = false)
-    public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
         this.httpsUpgradePolicy = httpsUpgradePolicy;
-    }
-
-    /**
-     * Enables identification from the upstream response. Setter-injected (optional collaborator) so
-     * the constructor, used as-is by the existing tests, stays unchanged : without it, requests the
-     * URL does not identify are relayed unchecked.
-     */
-    @Autowired(required = false)
-    public void setResponseIdentification(ResponseIdentificationService responseIdentification) {
         this.responseIdentification = responseIdentification;
-    }
-
-    private static Timer buildSecurityOverheadTimer(MeterRegistry meterRegistry, String decisionTag) {
-        return Timer.builder("silicaproxy.controller.security.overhead")
-                .description("Duration of security check only (excluding binary streaming)")
-                .tag("decision", decisionTag)
-                .publishPercentiles(0.5, 0.9, 0.95, 0.99)
-                .register(meterRegistry);
-    }
-
-    // sourceType/result/ecosystem are all bounded enum-like values (never raw package names or
-    // free-text reasons), so tagging by them stays low-cardinality and safe for Prometheus.
-    private void recordDecisionMetric(DecisionResult decision, String ecosystem) {
-        Counter.builder(Metrics.DECISIONS_METRIC)
-                .description("Total number of proxy security decisions, by verdict/source/ecosystem")
-                .tag(Metrics.TAG_VERDICT, decision.result())
-                .tag(Metrics.TAG_SOURCE, decision.sourceType())
-                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
-                .register(meterRegistry)
-                .increment();
-    }
-
-    // Tracks how much traffic skips SecurityService entirely (unparseable/direct-resource
-    // requests never reach getDecision), i.e. the proxy's security blind spot by ecosystem.
-    private void recordBypassMetric(String ecosystem) {
-        Counter.builder(Metrics.BYPASS_METRIC)
-                .description("Total number of requests that bypassed the security check "
-                        + "(unknown ecosystem/package/version), by ecosystem")
-                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
-                .register(meterRegistry)
-                .increment();
+        this.metrics = metrics;
+        this.objectMapper = objectMapper;
     }
 
     @GetMapping("/**")
@@ -202,10 +141,8 @@ public class ProxyController {
         String ecosystem = parsed.ecosystem();
 
         if (identification.outcome() == Outcome.BYPASS) {
-            ResponseIdentificationService identifier = responseIdentification;
-            if (identifier != null && identifier.isEnabled()) {
-                forwardIdentifyingResponse(identifier, fullUrl, forwardUrl, headers, response, identification,
-                        startTime);
+            if (responseIdentification.isEnabled()) {
+                forwardIdentifyingResponse(fullUrl, forwardUrl, headers, response, identification, startTime);
             } else {
                 recordBypass(parsed, forwardUrl);
                 forwardRequest(forwardUrl, headers, response, identification.learnPackument());
@@ -227,7 +164,7 @@ public class ProxyController {
     }
 
     private void recordBypass(ParsedPackage parsed, String forwardUrl) {
-        recordBypassMetric(parsed.ecosystem());
+        metrics.recordBypass(parsed.ecosystem());
         if (parsed.hasEcosystem()) {
             // Metadata/index traffic (packuments, dist-tags, search…) is expected on every
             // install and carries nothing to vet : not a warning.
@@ -249,9 +186,7 @@ public class ProxyController {
         String version = pkg.version();
         String ecosystem = pkg.ecosystem();
         long executionTimeMs = System.currentTimeMillis() - startTime;
-        boolean blocked = "BLOCK".equals(decision.result()) || "BLACKLIST".equals(decision.result());
-        (blocked ? blockDecisionTimer : allowDecisionTimer).record(Duration.ofMillis(executionTimeMs));
-        recordDecisionMetric(decision, ecosystem);
+        metrics.recordDecision(decision, ecosystem, executionTimeMs);
 
         if (LOG.isDebugEnabled()) {
             LOG.debug("Final decision for {}/{} (ecosystem={}) : RESULT={} (Source={}, Reason: {}) [Calculated in {}ms]",
@@ -262,14 +197,14 @@ public class ProxyController {
                 packageName,
                 version,
                 ecosystem,
-                decision.sourceType(),
-                decision.result(),
+                decision.sourceType().name(),
+                decision.result().name(),
                 decision.reason(),
                 (int) executionTimeMs,
                 fullUrl
         );
 
-        if (blocked) {
+        if (decision.isBlocked()) {
             LOG.warn("Request BLOCKED for {}/{} (ecosystem={}, step={}) : {}",
                     packageName, version, ecosystem, decision.sourceType(), decision.reason());
             sendProblemDetail(response, packageName, version, ecosystem, decision);
@@ -285,12 +220,11 @@ public class ProxyController {
      * relayed ; an allowed one is relayed while its digest is recomputed, and the connection is
      * cut if it does not match the announced one.
      */
-    private void forwardIdentifyingResponse(ResponseIdentificationService identifier, String fullUrl,
-            String forwardUrl, HttpHeaders headers, HttpServletResponse response, Identification identification,
+    private void forwardIdentifyingResponse(String fullUrl, String forwardUrl, HttpHeaders headers, HttpServletResponse response, Identification identification,
             long startTime) throws IOException {
         String ecosystem = identification.pkg().ecosystem();
         try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(forwardUrl, headers)) {
-            Optional<ResponseIdentification> found = identifier.identify(streamResponse.status(), streamResponse.headers());
+            Optional<ResponseIdentification> found = responseIdentification.identify(streamResponse.status(), streamResponse.headers());
             if (found.isEmpty()) {
                 recordBypass(identification.pkg(), forwardUrl);
                 relay(streamResponse, forwardUrl, response, identification.learnPackument());
@@ -308,11 +242,7 @@ public class ProxyController {
         } catch (ChecksumMismatchException e) {
             LOG.error("Upstream body digest does not match the announced one, download aborted for {} : {}",
                     forwardUrl, e.getMessage());
-            Counter.builder(Metrics.CHECKSUM_MISMATCH_METRIC)
-                    .description("Downloads identified from their announced digest whose body did not match it")
-                    .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
-                    .register(meterRegistry)
-                    .increment();
+            metrics.recordChecksumMismatch(ecosystem);
             if (!response.isCommitted()) {
                 // Nothing reached the client yet (small body) : a clean error instead of a cut.
                 response.reset();
@@ -428,38 +358,26 @@ public class ProxyController {
         response.setContentType("application/problem+json");
         response.setCharacterEncoding("UTF-8");
 
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, decision.reason());
-        pd.setProperty("step", decision.sourceType());
-        pd.setProperty("package", packageName);
-        pd.setProperty("version", version);
-        pd.setProperty("ecosystem", ecosystem);
-
-        if ("REGISTRY_QUARANTINE".equals(decision.sourceType())) {
-            pd.setProperty("error", "QuarantineBlocked");
-        } else {
-            pd.setProperty("error", "SecurityBlocked");
-        }
-
-        // We write directly to the response output stream to bypass the stream forwarder, so
-        // the body is serialized here rather than returned as a ResponseEntity<ProblemDetail>.
+        // RFC 7807 body, written directly to the response output stream to bypass the stream
+        // forwarder, so it is serialized here rather than returned as a ResponseEntity<ProblemDetail>.
         // Built as a plain map and serialized through Jackson (rather than hand-formatted via
         // String.format) so a block reason or package name containing quotes, backslashes, or
         // control characters always produces valid JSON instead of a corrupted response body.
         // Written to the raw OutputStream rather than through PrintWriter.print/write(String):
         // those two are exactly the API shape FindSecBugs' XSS_SERVLET check flags on any
         // servlet response, regardless of declared Content-Type.
-        URI pdType = pd.getType();
-        URI pdInstance = pd.getInstance();
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("type", pdType != null ? pdType.toString() : "about:blank");
-        body.put("title", pd.getTitle());
-        body.put("status", pd.getStatus());
-        body.put("detail", pd.getDetail());
-        body.put("instance", pdInstance != null ? pdInstance.toString() : "");
-        Map<String, Object> customProperties = pd.getProperties();
-        if (customProperties != null) {
-            body.putAll(customProperties);
-        }
+        body.put("type", "about:blank");
+        body.put("title", HttpStatus.FORBIDDEN.getReasonPhrase());
+        body.put("status", HttpStatus.FORBIDDEN.value());
+        body.put("detail", decision.reason());
+        body.put("instance", "");
+        body.put("step", decision.sourceType().name());
+        body.put("package", packageName);
+        body.put("version", version);
+        body.put("ecosystem", ecosystem);
+        body.put("error", decision.sourceType() == DecisionSource.REGISTRY_QUARANTINE
+                ? "QuarantineBlocked" : "SecurityBlocked");
 
         objectMapper.writeValue(response.getOutputStream(), body);
         response.getOutputStream().flush();

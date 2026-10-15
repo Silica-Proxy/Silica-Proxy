@@ -268,11 +268,17 @@ public record SilicaProxyProperties(
         boolean enabled,
         @NotBlank String url,
         @Nullable String apiKey,
-        @NotBlank String mode,
+        @NotNull ExternalValidationMode mode,
         @DefaultValue("1") @Positive int timeoutSeconds,
         @DefaultValue("true") boolean failOpen,
         @DefaultValue("true") boolean blocking,
         @DefaultValue("60") int cacheTtlMinutes,
         @DefaultValue("30") int pendingTtlMinutes
     ) {}
+
+    // Bound case-insensitively ("sync" or "SYNC") ; any other value fails at startup.
+    public enum ExternalValidationMode {
+        SYNC,
+        ASYNC
+    }
 }

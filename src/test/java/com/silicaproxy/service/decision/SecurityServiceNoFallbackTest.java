@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -76,8 +78,8 @@ class SecurityServiceNoFallbackTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("no-fallback-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("DEFAULT");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEFAULT);
         assertThat(decision.reason()).contains("default");
 
         Map<String, Object> cache = jdbcClient.sql(

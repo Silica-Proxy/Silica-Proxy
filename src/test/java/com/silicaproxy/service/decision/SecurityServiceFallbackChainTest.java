@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -81,8 +83,8 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.OSV_LIVE);
         wireMock.verify(0, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 
@@ -96,8 +98,8 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("chain-safe-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.OSV_LIVE);
         wireMock.verify(0, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 
@@ -116,8 +118,8 @@ class SecurityServiceFallbackChainTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("osv-500-chain-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
         wireMock.verify(1, getRequestedFor(urlPathMatching("/depsdev/v3/systems/.*")));
     }
 }

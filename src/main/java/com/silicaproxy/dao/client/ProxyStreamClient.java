@@ -29,6 +29,7 @@ import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.stereotype.Component;
 import io.micrometer.core.annotation.Timed;
 
+import java.util.Locale;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -65,7 +66,7 @@ public class ProxyStreamClient {
         headers.forEach((headerName, headerValues) -> {
             if (!headerName.equalsIgnoreCase("Host") 
                     && !headerName.equalsIgnoreCase("Connection")
-                    && !headerName.toLowerCase().startsWith("x-forwarded-")
+                    && !headerName.toLowerCase(Locale.ROOT).startsWith("x-forwarded-")
                     && !headerName.equalsIgnoreCase("x-real-ip")) {
                 request.getHeaders().addAll(headerName, headerValues);
             }
