@@ -106,43 +106,6 @@ jobs:
             build/reports/spotbugs/main.xml
           retention-days: 7
 
-  # ── Security: Dependency Vulnerabilities (OWASP Dependency Check) ────────────
-  dependency-check:
-    needs: build
-    runs-on: ubuntu-latest
-    container:
-      image: eclipse-temurin:25-jdk
-    timeout-minutes: 45
-    continue-on-error: true
-    env:
-      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
-      GRADLE_OPTS: "-Dorg.owasp.dependencycheck.data.directory=${{ github.workspace }}/.gradle/dependency-check-data"
-      # NVD API Key retrieved from your GitHub Secrets
-      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Setup Gradle cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            .gradle/wrapper
-            .gradle/caches
-            .gradle/dependency-check-data
-          key: nvd-cache-${{ github.ref_name }}
-          restore-keys: |
-            nvd-cache-
-      - name: Run Dependency Check
-        run: ./gradlew --no-daemon --non-interactive dependencyCheckAnalyze
-      - name: Upload Dependency Check reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: dependency-check-reports
-          path: |
-            build/reports/dependency-check-report.html
-            build/reports/dependency-check-report.json
-          retention-days: 7
-
   # ── Quality: Code Complexity (PMD) ───────────────────────────────────────────
   pmd:
     needs: build

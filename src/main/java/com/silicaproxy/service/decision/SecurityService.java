@@ -110,14 +110,19 @@ public class SecurityService {
             return gatedVerdict.get();
         }
 
-        // External validation services (before OSV/deps.dev — skips OSV when configured)
+        // External validation services (before OSV/deps.dev). Only a BLOCK short-circuits the
+        // chain : an ALLOW may be a fail-open timeout, a pending async scan or a non-blocking
+        // service, none of which vetted the package, so the live vulnerability APIs still run.
         Optional<DecisionResult> extResult =
                 externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
-        if (extResult.isPresent()) {
+        if (extResult.isPresent() && "BLOCK".equals(extResult.get().result())) {
             return extResult.get();
         }
 
-        return runFallbackChain(packageName, version, ecosystem, true);
+        // No ALLOW is cached in api_cache while external validation is active : the local
+        // evaluation reads api_cache first, so a cached ALLOW would bypass the external
+        // services (and ignore a later async BLOCKED callback) until it expires.
+        return runFallbackChain(packageName, version, ecosystem, extResult.isEmpty());
     }
 
     // Deprecation/yanked status is never persisted (unlike published_at): it must stay fresh, so

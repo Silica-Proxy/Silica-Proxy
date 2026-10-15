@@ -272,7 +272,8 @@ silicaproxy:
     registries-read-timeout-seconds: 60
     # Stricter for security APIs: short JSON responses, expected almost instant
     security-apis-read-timeout-seconds: 10
-    # Strict 1-second timeout for external validation services (sync mode)
+    # Strict 1-second timeout for the ASYNC external validation trigger (acknowledgment only);
+    # SYNC calls wait for services.<name>.timeout-seconds instead
     external-validation-read-timeout-seconds: 1
 
   # Audit of calls to external security APIs (OSV Live, deps.dev) in api_call_log.

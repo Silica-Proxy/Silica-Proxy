@@ -18,19 +18,23 @@
 package com.silicaproxy.dao.client;
 
 import com.silicaproxy.config.SsrfInterceptor;
+import com.silicaproxy.properties.SilicaProxyProperties;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @NullMarked
@@ -38,22 +42,28 @@ public class ExternalValidationClient {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalValidationClient.class);
 
-    private final RestClient restClient;
+    private final HttpClient httpClient;
+    private final SsrfInterceptor ssrfInterceptor;
+    // ASYNC triggers only wait for the acknowledgment : global external-validation-read-timeout-seconds
+    private final RestClient asyncRestClient;
+    // SYNC calls wait for the verdict : one client per distinct services.<name>.timeout-seconds,
+    // all sharing the same HttpClient (and so the same connection pool / corporate proxy)
+    private final Map<Integer, RestClient> syncRestClients = new ConcurrentHashMap<>();
 
     public ExternalValidationClient(
-            @Qualifier("externalValidationRequestFactory") ClientHttpRequestFactory requestFactory,
-            SsrfInterceptor ssrfInterceptor) {
-        this.restClient = RestClient.builder()
-                .requestFactory(requestFactory)
-                .requestInterceptor(ssrfInterceptor)
-                .build();
+            @Qualifier("externalValidationHttpClient") HttpClient httpClient,
+            SsrfInterceptor ssrfInterceptor,
+            SilicaProxyProperties properties) {
+        this.httpClient = httpClient;
+        this.ssrfInterceptor = ssrfInterceptor;
+        this.asyncRestClient = buildRestClient(properties.httpClient().externalValidationReadTimeoutSeconds());
     }
 
-    // Sync call: POST and wait for {verdict, reason} response body.
+    // Sync call: POST and wait for {verdict, reason} response body, at most timeoutSeconds.
     // Returns verdict string ("ALLOWED"/"BLOCKED") or null on error.
     @Nullable
     public ExternalValidationResult callSync(
-            String url, @Nullable String apiKey,
+            String url, @Nullable String apiKey, int timeoutSeconds,
             String packageName, String version, String ecosystem, String fullUrl) {
         Map<String, Object> body = new HashMap<>();
         body.put("packageName", packageName);
@@ -65,8 +75,9 @@ public class ExternalValidationClient {
 
         long start = System.nanoTime();
         try {
+            RestClient restClient = syncRestClients.computeIfAbsent(timeoutSeconds, this::buildRestClient);
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = buildRequest(url, apiKey, body)
+            Map<String, Object> response = buildRequest(restClient, url, apiKey, body)
                     .retrieve()
                     .body(Map.class);
 
@@ -114,7 +125,7 @@ public class ExternalValidationClient {
         }
 
         try {
-            buildRequest(url, apiKey, body)
+            buildRequest(asyncRestClient, url, apiKey, body)
                     .retrieve()
                     .toBodilessEntity();
             return true;
@@ -132,7 +143,17 @@ public class ExternalValidationClient {
         }
     }
 
-    private RestClient.RequestBodySpec buildRequest(String url, @Nullable String apiKey, Object body) {
+    private RestClient buildRestClient(int readTimeoutSeconds) {
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(Duration.ofSeconds(readTimeoutSeconds));
+        return RestClient.builder()
+                .requestFactory(requestFactory)
+                .requestInterceptor(ssrfInterceptor)
+                .build();
+    }
+
+    private static RestClient.RequestBodySpec buildRequest(
+            RestClient restClient, String url, @Nullable String apiKey, Object body) {
         RestClient.RequestBodySpec spec = restClient.post()
                 .uri(url)
                 .body(body);

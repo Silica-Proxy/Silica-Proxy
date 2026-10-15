@@ -230,7 +230,7 @@ SilicaProxy can call any number of external HTTP services to validate a package 
 
 #### Sync mode
 
-The proxy makes a POST call to the service and waits up to 1 second for a response. If the service replies in time, the verdict is applied immediately. On timeout or network error, the configurable `fail-open` / `fail-closed` policy applies.
+The proxy makes a POST call to the service and waits up to `timeout-seconds` (1 second by default) for a response. If the service replies in time, the verdict is applied immediately. On timeout or network error, the configurable `fail-open` / `fail-closed` policy applies.
 
 ```
 POST {url}
@@ -558,7 +558,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.external-validation.services.<name>.blocking` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_BLOCKING`                                                                | `true` | `false` = verdict stored for audit but never blocks a package |
 | | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_CACHETTLMINUTES`                                                               | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
 | | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_PENDINGTTLMINUTES`                                                                | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
-| | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for calls to external validation services |
+| | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for the async trigger call (acknowledgment only) — sync calls wait for `services.<name>.timeout-seconds` instead |
 | | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION`           | `false` | Route external validation traffic through the corporate proxy |
 | **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED`                                | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
 | | `silicaproxy.api-call-log.flush-interval-seconds` | `SILICAPROXY_API_CALL_LOG_FLUSH_INTERVAL_SECONDS`                 | `30` | Batch flush interval (seconds) |

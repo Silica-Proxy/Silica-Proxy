@@ -48,8 +48,8 @@ import static org.mockito.Mockito.when;
 // Verifies the position of external validation in the decision chain:
 //   company_policy → local_vuln → api_cache → quarantine → deprecation
 //   → EXTERNAL VALIDATION → osv/deps.dev
-// Steps before external validation short-circuit it; steps after it are skipped when
-// external validation returns a definitive verdict.
+// Steps before external validation short-circuit it; steps after it are skipped only when
+// external validation BLOCKs (an ALLOW still goes through the live OSV / deps.dev check).
 class ExternalValidationChainPositionTest extends BaseIntegrationTest {
 
     @LocalServerPort
@@ -81,8 +81,9 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
         registry.add("silicaproxy.quarantine.ecosystems.npm.min-age-days", () -> "7");
         registry.add("silicaproxy.deprecation.enabled", () -> "true");
         registry.add("silicaproxy.deprecation.ecosystems.npm", () -> "true");
-        // OSV enabled to verify it's skipped when external validation returns verdict
+        // OSV enabled to verify it's skipped only when external validation blocks
         registry.add("silicaproxy.api-fallback.osv.enabled", () -> "true");
+        registry.add("silicaproxy.api-fallback.deps-dev.enabled", () -> "false");
     }
 
     @BeforeEach
@@ -226,15 +227,38 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
         wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/v1/query")));
     }
 
-    // Test 62 — externalAllows_osvNotCalled
+    // Test 62 — externalAllows_osvStillCalled
     @Test
-    void externalValidationAllows_osvIsNotCalled() {
+    void externalValidationAllows_osvStillCalledAndBlocks() {
+        stubOldLodashAndVulnerableOsv();
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"Clean\"}")));
+
+        assertProxyBlocks();
+        // An external ALLOW does not replace the live vulnerability check
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/v1/query")));
+    }
+
+    @Test
+    void externalValidationTimeoutFailOpen_osvStillCalledAndBlocks() {
+        stubOldLodashAndVulnerableOsv();
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
+
+        assertProxyBlocks();
+        // A fail-open timeout vetted nothing : OSV must still be consulted
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/v1/query")));
+    }
+
+    @Test
+    void externalValidationAllows_osvAllowIsNotCachedInApiCache() {
         String oldDate = Instant.now().minusSeconds(86400 * 30).toString();
         wireMock.stubFor(get(urlEqualTo("/lodash"))
                 .willReturn(okJson("{" +
                         "\"time\":{\"4.17.21\":\"" + oldDate + "\"}," +
                         "\"versions\":{\"4.17.21\":{\"name\":\"lodash\",\"version\":\"4.17.21\"}}}")));
-
+        wireMock.stubFor(post(urlEqualTo("/v1/query")).willReturn(okJson("{}")));
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"Clean\"}")));
 
@@ -243,8 +267,32 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
                 .retrieve().toEntity(byte[].class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        // External validation returned ALLOWED — OSV is not needed
-        wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/v1/query")));
-        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/v1/query")));
+        // A cached ALLOW would be served by the local evaluation and bypass external
+        // validation on the next request
+        Integer cached = jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'lodash'")
+                .query(Integer.class).single();
+        assertThat(cached).isZero();
+    }
+
+    private void stubOldLodashAndVulnerableOsv() {
+        String oldDate = Instant.now().minusSeconds(86400 * 30).toString();
+        wireMock.stubFor(get(urlEqualTo("/lodash"))
+                .willReturn(okJson("{" +
+                        "\"time\":{\"4.17.21\":\"" + oldDate + "\"}," +
+                        "\"versions\":{\"4.17.21\":{\"name\":\"lodash\",\"version\":\"4.17.21\"}}}")));
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(okJson("{\"vulns\":[{\"id\":\"GHSA-test-0001\"}]}")));
+    }
+
+    private void assertProxyBlocks() {
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        }
     }
 }
