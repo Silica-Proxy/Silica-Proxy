@@ -28,6 +28,8 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -54,17 +56,13 @@ public class AsyncConfig {
         return executor;
     }
 
+    // One virtual thread per task, no pool: tasks are I/O bound and SYNC callers join() on them,
+    // so a bounded pool only adds queueing latency to client requests during bursts (with
+    // core < max, extra threads only start once the queue is already full). Each task stays
+    // bounded by the connect/read timeouts of ExternalValidationClient and by Hikari.
     @Bean(name = "externalValidationExecutor")
-    public Executor externalValidationExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(5);
-        executor.setMaxPoolSize(50);
-        executor.setQueueCapacity(1000);
-        executor.setThreadNamePrefix("SilicaProxy-ExtVal-");
-        executor.setThreadFactory(Thread.ofVirtual().name("SilicaProxy-ExtVal-", 0).factory());
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        executor.initialize();
-        return executor;
+    public ExecutorService externalValidationExecutor() {
+        return Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("SilicaProxy-ExtVal-", 0).factory());
     }
 
     /**
