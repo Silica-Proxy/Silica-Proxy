@@ -740,7 +740,7 @@ The `step` field indicates which pipeline stage made the blocking decision:
 
 | `step` value | Source |
 |---|---|
-| `COMPANY_POLICY` | GitOps YAML rule (blacklist) — checked first |
+| `COMPANY_POLICY` | GitOps YAML rule (`allow` or `block`) — checked first |
 | `PUBLIC_VULN` | Local vulnerability database (OSV, GHSA, …) — CVSS-threshold block |
 | `PUBLIC_VULN_MALWARE` | Local vulnerability database, `MAL-*` id or `source = OPENSSF` — always blocked regardless of CVSS |
 | `API_CACHE` | Cached result from a previous live API call |
@@ -826,7 +826,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 
 | Metric | Type | Tags | Description |
 |---|---|---|---|
-| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`/`WHITELIST`/`BLACKLIST`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
+| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely (unparseable URL or direct-resource request) — the proxy's security blind spot. |
 | `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](PACKAGE_IDENTIFICATION.md#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
 | `silicaproxy.identification.checksum.mismatch` | Counter | `ecosystem` | Downloads identified from their announced digest whose body did not match it — the download was cut. Any increase deserves an investigation of the upstream. |

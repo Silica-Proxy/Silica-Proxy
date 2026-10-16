@@ -67,7 +67,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
                 "policy-package-" + i,
                 "npm",
                 i + ".x",
-                i % 2 == 0 ? "WHITELIST" : "BLACKLIST",
+                i % 2 == 0 ? "ALLOW" : "BLOCK",
                 "Justification " + i,
                 "admin-test"
             });
@@ -106,18 +106,18 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('GHSA-test-1', 'GITHUB', 'test-package', 'npm', 'Critical CVE', 'Details', '["1.0.0"]'::jsonb, 9.5)
             """).update();
 
-        // Register a company_policy rule on "test-package" -> WHITELIST
+        // Register a company_policy rule on "test-package" -> ALLOW
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('test-package', 'npm', '1.0.0', 'WHITELIST', 'Explicit authorization', 'security-team')
+            VALUES ('test-package', 'npm', '1.0.0', 'ALLOW', 'Explicit authorization', 'security-team')
             """).update();
 
-        // Evaluate the package : the WHITELIST rule must win over the critical vulnerability
+        // Evaluate the package : the ALLOW rule must win over the critical vulnerability
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("test-package", "1.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.get().reason()).isEqualTo("Explicit authorization");
     }
 
@@ -181,7 +181,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -240,7 +240,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // Fill the 3 sources for the same package/version
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('multi-source-pkg', 'npm', '1.0.0', 'WHITELIST', 'Exception approved', 'security-team')
+            VALUES ('multi-source-pkg', 'npm', '1.0.0', 'ALLOW', 'Exception approved', 'security-team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, details, affected_versions, cvss_score)
@@ -256,28 +256,28 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.get().reason()).isEqualTo("Exception approved");
     }
 
     @Test
     void shouldPreferExactVersionBlacklistOverWildcardWhitelist() {
-        // Two company_policy rules coexist : * (stored pre-translated as %) → WHITELIST and
-        // 1.0.0 → BLACKLIST. The most specific rule (exact version) must always win.
+        // Two company_policy rules coexist : * (stored pre-translated as %) → ALLOW and
+        // 1.0.0 → BLOCK. The most specific rule (exact version) must always win.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('exact-beats-wildcard-pkg', 'npm', '%', 'WHITELIST', 'Global authorization', 'team')
+            VALUES ('exact-beats-wildcard-pkg', 'npm', '%', 'ALLOW', 'Global authorization', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('exact-beats-wildcard-pkg', 'npm', '1.0.0', 'BLACKLIST', 'Compromised version', 'security-team')
+            VALUES ('exact-beats-wildcard-pkg', 'npm', '1.0.0', 'BLOCK', 'Compromised version', 'security-team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("exact-beats-wildcard-pkg", "1.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -289,39 +289,39 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // restrictive result must win deterministically, not whichever row the DB returns first.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('tie-break-pkg', 'npm', '4.%', 'WHITELIST', 'Approved', 'team')
+            VALUES ('tie-break-pkg', 'npm', '4.%', 'ALLOW', 'Approved', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('tie-break-pkg', 'npm', '%', 'BLACKLIST', 'Actually compromised', 'security-team')
+            VALUES ('tie-break-pkg', 'npm', '%', 'BLOCK', 'Actually compromised', 'security-team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("tie-break-pkg", "4.17.21", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
     void shouldApplyWildcardWhitelistForOtherVersionsWhenExactMatchAbsent() {
-        // The rule * (stored pre-translated as %) → WHITELIST applies for versions without a
+        // The rule * (stored pre-translated as %) → ALLOW applies for versions without a
         // corresponding exact rule.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('wildcard-win-pkg', 'npm', '%', 'WHITELIST', 'Global authorization', 'team')
+            VALUES ('wildcard-win-pkg', 'npm', '%', 'ALLOW', 'Global authorization', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('wildcard-win-pkg', 'npm', '1.0.0', 'BLACKLIST', 'Compromised version', 'security-team')
+            VALUES ('wildcard-win-pkg', 'npm', '1.0.0', 'BLOCK', 'Compromised version', 'security-team')
             """).update();
 
-        // 2.0.0 has no exact rule → the wildcard rule * → WHITELIST applies
+        // 2.0.0 has no exact rule → the wildcard rule * → ALLOW applies
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("wildcard-win-pkg", "2.0.0", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -332,24 +332,24 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // '4.17.21' must match the stored '4.%' pattern via a plain LIKE.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('x-wildcard-pkg', 'npm', '4.%', 'WHITELIST', 'Series 4 approved', 'team')
+            VALUES ('x-wildcard-pkg', 'npm', '4.%', 'ALLOW', 'Series 4 approved', 'team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", 7.0);
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
     void shouldTreatUnderscoreInVersionPatternAsLiteral() {
         // '_' is a single-character wildcard in SQL LIKE : a rule for "1.0.0_rc1" must not
         // also match "1.0.0-rc1" (or "1.0.01rc1"), which would let an unvetted version ride on
-        // a WHITELIST rule and bypass the public vulnerability check below it.
+        // a ALLOW rule and bypass the public vulnerability check below it.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('underscore-version-pkg', 'maven', '1.0.0_rc1', 'WHITELIST', 'rc1 approved', 'team')
+            VALUES ('underscore-version-pkg', 'maven', '1.0.0_rc1', 'ALLOW', 'rc1 approved', 'team')
             """).update();
 
         assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0-rc1", "maven", 7.0)).isEmpty();
@@ -358,7 +358,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0_rc1", "maven", 7.0);
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -367,17 +367,17 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // it still has to beat a wildcard rule for the same package.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('underscore-exact-pkg', 'maven', '%', 'WHITELIST', 'Global authorization', 'team')
+            VALUES ('underscore-exact-pkg', 'maven', '%', 'ALLOW', 'Global authorization', 'team')
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('underscore-exact-pkg', 'maven', '1.0.0_rc1', 'BLACKLIST', 'Compromised rc', 'security-team')
+            VALUES ('underscore-exact-pkg', 'maven', '1.0.0_rc1', 'BLOCK', 'Compromised rc', 'security-team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-exact-pkg", "1.0.0_rc1", "maven", 7.0);
 
         assertThat(decision).isPresent();
-        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
     }
 
     @Test
@@ -421,7 +421,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('@gradio/approved-fork', 'npm', '2.0.0', 'WHITELIST', 'Reviewed and approved fork', 'security-team')
+            VALUES ('@gradio/approved-fork', 'npm', '2.0.0', 'ALLOW', 'Reviewed and approved fork', 'security-team')
             """).update();
 
         Optional<DecisionResult> decision =
@@ -429,7 +429,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
-        assertThat(decision.get().result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -437,7 +437,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         // Stored (already-translated) pattern '4.%' must not match '3.0.0'.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('x-wildcard-no-match-pkg', 'npm', '4.%', 'WHITELIST', 'Series 4 only', 'team')
+            VALUES ('x-wildcard-no-match-pkg', 'npm', '4.%', 'ALLOW', 'Series 4 only', 'team')
             """).update();
 
         Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-no-match-pkg", "3.0.0", "npm", 7.0);

@@ -58,8 +58,8 @@ import java.util.Enumeration;
  * forwarded by the artifacts repository (or via the CONNECT tunnel from {@code LoomProxyServer}), 
  * has {@link PackageIdentificationService} identify the package/version/ecosystem, queries
  * {@link SecurityService} for the decision, 
- * then either streams the download (ALLOW/WHITELIST) or returns a detailed 403 RFC 7807 
- * response (BLOCK/BLACKLIST). Called at each dependency resolution by package managers 
+ * then either streams the download (ALLOW) or returns a detailed 403 RFC 7807 
+ * response (BLOCK). Called at each dependency resolution by package managers 
  * (npm, pip, Maven) ; each call also triggers an asynchronous audit. A request its URL does not
  * identify gets a last chance from the upstream response ({@link ResponseIdentificationService}),
  * before its body is relayed.

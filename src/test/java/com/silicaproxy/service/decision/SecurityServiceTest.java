@@ -111,13 +111,13 @@ class SecurityServiceTest extends BaseIntegrationTest {
     void shouldAllowWhenPolicyWhitelists() {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('whitelisted-pkg', 'npm', '%', 'WHITELIST', 'Allowed package', 'security')
+            VALUES ('whitelisted-pkg', 'npm', '%', 'ALLOW', 'Allowed package', 'security')
             """).update();
 
         double before = localEvaluationCount(Metrics.OUTCOME_HIT);
         DecisionResult decision = securityService.getDecision("whitelisted-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
         assertThat(localEvaluationCount(Metrics.OUTCOME_HIT) - before).isEqualTo(1.0);
     }
@@ -655,12 +655,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('wl-range-pkg', 'npm', '%', 'WHITELIST', 'Accepted risk', 'security')
+            VALUES ('wl-range-pkg', 'npm', '%', 'ALLOW', 'Accepted risk', 'security')
             """).update();
 
         DecisionResult decision = securityService.getDecision("wl-range-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo(Verdict.WHITELIST);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
     }
 

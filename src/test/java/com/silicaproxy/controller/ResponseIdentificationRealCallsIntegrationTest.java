@@ -163,7 +163,7 @@ class ResponseIdentificationRealCallsIntegrationTest {
     void shouldBlockRealJarServedUnderOpaqueUrl() throws Exception {
         upstreamServes(jar, announcedSha1);
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLACKLIST, "Blacklisted for the test."));
+                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLOCK, "Blacklisted for the test."));
 
         assertThatThrownBy(() -> proxyRestClient.get().uri(OPAQUE_URL).retrieve().toEntity(byte[].class))
                 .isInstanceOfSatisfying(HttpClientErrorException.class, e -> {

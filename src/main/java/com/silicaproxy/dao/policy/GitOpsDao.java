@@ -130,7 +130,7 @@ public class GitOpsDao {
                 -- Tie-break at equal specificity : the most restrictive action wins, rather than
                 -- an arbitrary row order, when two rules match with identical specificity.
                 ORDER BY specificity ASC,
-                         CASE WHEN policy_action = 'BLACKLIST' THEN 0 ELSE 1 END ASC
+                         CASE WHEN policy_action = 'ALLOW' THEN 1 ELSE 0 END ASC
                 """)
                 .param("packageName", packageName)
                 .param("version", version)

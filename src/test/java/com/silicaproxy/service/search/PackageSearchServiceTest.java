@@ -62,13 +62,13 @@ class PackageSearchServiceTest extends BaseIntegrationTest {
     void shouldFindCompanyPolicyByExactVersionMatchingWildcardPattern() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '4.%', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '4.%', 'ALLOW', 'Approved', 'admin')
                 """).update();
 
         SearchResult match = packageSearchService.search("lodash", "npm", "4.17.21", null);
         assertThat(match.found()).isTrue();
         assertThat(match.companyPolicies()).hasSize(1);
-        assertThat(match.companyPolicies().get(0).policyAction()).isEqualTo("WHITELIST");
+        assertThat(match.companyPolicies().get(0).policyAction()).isEqualTo("ALLOW");
 
         SearchResult noMatch = packageSearchService.search("lodash", "npm", "3.0.0", null);
         assertThat(noMatch.companyPolicies()).isEmpty();
@@ -78,7 +78,7 @@ class PackageSearchServiceTest extends BaseIntegrationTest {
     void shouldFindCompanyPolicyByRegexOnVersionPattern() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '4.%', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '4.%', 'ALLOW', 'Approved', 'admin')
                 """).update();
 
         SearchResult result = packageSearchService.search("lodash", null, null, "^4\\.");

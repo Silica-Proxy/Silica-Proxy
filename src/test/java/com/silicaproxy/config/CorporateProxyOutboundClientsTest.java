@@ -363,7 +363,7 @@ class CorporateProxyOutboundClientsTest {
                 "SELECT * FROM company_policies WHERE ecosystem = 'npm' AND updated_by = 'gitops_sync'").query().listOfRows();
         assertThat(policies).isNotEmpty();
         assertThat(policies.get(0).get("package_name")).isEqualTo("lodash");
-        assertThat(policies.get(0).get("policy_action")).isEqualTo("BLACKLIST");
+        assertThat(policies.get(0).get("policy_action")).isEqualTo("BLOCK");
         // Squid access log confirms the JGit HTTP clone transited through the proxy to Gitea
         Container.ExecResult log = squid.execInContainer("cat", "/var/log/squid/access.log");
         assertThat(log.getStdout()).contains("gitea");
@@ -393,7 +393,7 @@ class CorporateProxyOutboundClientsTest {
                     rules:
                       - package: "lodash"
                         version: "*"
-                        action: "BLACKLIST"
+                        action: "BLOCK"
                         reason: "Corporate policy (via proxy integration test)"
                     """);
 

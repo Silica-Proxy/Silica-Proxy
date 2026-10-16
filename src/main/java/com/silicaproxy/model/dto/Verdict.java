@@ -17,16 +17,13 @@
 package com.silicaproxy.model.dto;
 
 /**
- * Outcome of a security decision. {@code WHITELIST}/{@code BLACKLIST} come from a company
- * policy, {@code ALLOW}/{@code BLOCK} from every other source.
+ * Outcome of a security decision, whatever its source (a company policy included).
  */
 public enum Verdict {
     ALLOW,
-    BLOCK,
-    WHITELIST,
-    BLACKLIST;
+    BLOCK;
 
     public boolean isBlocking() {
-        return this == BLOCK || this == BLACKLIST;
+        return this == BLOCK;
     }
 }

@@ -22,7 +22,7 @@ import org.jspecify.annotations.NullMarked;
 import java.util.List;
 
 // Result of an evaluation of company_policies rules for a given package/version. 
-// decision is ALLOWED (WHITELIST wins), BLOCKED (BLACKLIST wins), or NO_MATCH (no rule).
+// decision is ALLOWED (an ALLOW rule wins), BLOCKED (any other rule wins), or NO_MATCH (no rule).
 @NullMarked
 public record PolicyEvaluationResponse(
     String decision,

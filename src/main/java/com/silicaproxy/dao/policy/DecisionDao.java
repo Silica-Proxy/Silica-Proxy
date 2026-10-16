@@ -72,7 +72,7 @@ public class DecisionDao {
                     :ecosystem::varchar AS p_ecosystem
             )
             SELECT source_type AS "sourceType", result, reason FROM (
-                -- PRIORITY 1 : Company whitelist or blacklist (company_policies)
+                -- PRIORITY 1 : Company allow or block rules (company_policies)
                 -- package_name may itself be a '*' wildcard pattern (e.g. "@Toto/Titi*"), but
                 -- 'x' is NOT a wildcard here (unlike version_pattern) : real package names
                 -- commonly contain the literal letter 'x' (axios, next, xml2js...).
@@ -84,10 +84,9 @@ public class DecisionDao {
                        CASE WHEN package_name = p_name THEN 0 ELSE 2 END
                            + CASE WHEN version_pattern = p_version THEN 0 ELSE 1 END AS specificity,
                        'COMPANY_POLICY' AS source_type,
-                       -- Mapped onto the Verdict enum : a valid verdict name is kept as is (a
-                       -- BLOCK rule must keep blocking), anything else fails closed as a BLACKLIST.
-                       CASE WHEN policy_action IN ('ALLOW', 'BLOCK', 'WHITELIST', 'BLACKLIST')
-                            THEN policy_action ELSE 'BLACKLIST' END AS result,
+                       -- Mapped onto the Verdict enum : ALLOW and BLOCK are kept as is, anything
+                       -- else fails closed as a BLOCK.
+                       CASE WHEN policy_action = 'ALLOW' THEN 'ALLOW' ELSE 'BLOCK' END AS result,
                        reason
                 FROM company_policies, checked_package
                 WHERE p_name LIKE
@@ -150,11 +149,11 @@ public class DecisionDao {
                   AND package_version = p_version AND expires_at > CURRENT_TIMESTAMP
             ) AS combined_results
             -- Tie-break when two rows share the same priority and specificity (e.g. two
-            -- company_policies rows for the same package/version/ecosystem, one WHITELIST and
-            -- one BLACKLIST) : the most restrictive result wins, rather than an arbitrary row
+            -- company_policies rows for the same package/version/ecosystem, one ALLOW and
+            -- one BLOCK) : the most restrictive result wins, rather than an arbitrary row
             -- order.
             ORDER BY priority ASC, specificity ASC,
-                     CASE WHEN result IN ('BLOCK', 'BLACKLIST') THEN 0 ELSE 1 END ASC
+                     CASE WHEN result = 'BLOCK' THEN 0 ELSE 1 END ASC
             LIMIT 1;
             """;
 

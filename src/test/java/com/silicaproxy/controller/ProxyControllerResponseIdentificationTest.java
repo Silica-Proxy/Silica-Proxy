@@ -126,7 +126,7 @@ class ProxyControllerResponseIdentificationTest {
     private void decision(Verdict result) {
         when(securityService.getDecision("org.example:lib", "1.0.0", "maven", URL))
                 .thenReturn(new DecisionResult(
-                        result == Verdict.BLACKLIST ? DecisionSource.COMPANY_POLICY : DecisionSource.DEFAULT, result,
+                        result == Verdict.BLOCK ? DecisionSource.COMPANY_POLICY : DecisionSource.DEFAULT, result,
                         "reason"));
     }
 
@@ -138,7 +138,7 @@ class ProxyControllerResponseIdentificationTest {
     void shouldBlockPackageIdentifiedFromResponseWithoutRelayingBody() throws Exception {
         byte[] body = body(1000);
         upstreamServes(body, sha1Of(body));
-        decision(Verdict.BLACKLIST);
+        decision(Verdict.BLOCK);
 
         mockMvc().perform(get(URL))
                 .andExpect(status().isForbidden())
@@ -147,7 +147,7 @@ class ProxyControllerResponseIdentificationTest {
                 .andExpect(jsonPath("$.ecosystem").value("maven"));
 
         verify(auditLogService).logAudit(eq("org.example:lib"), eq("1.0.0"), eq("maven"), eq("COMPANY_POLICY"),
-                eq("BLACKLIST"), anyString(), anyInt(), eq(URL));
+                eq("BLOCK"), anyString(), anyInt(), eq(URL));
         assertThat(meterRegistry.find(Metrics.BYPASS_METRIC).counter()).isNull();
     }
 

@@ -24,6 +24,7 @@ import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.dto.RegistryLookup;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.model.entity.SeverityMapping;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
@@ -210,14 +211,14 @@ public class SecurityService {
                 && properties.quarantine().unknownVersionAction() == SilicaProxyProperties.UnknownVersionAction.BLOCK) {
             LOG.warn("{}/{} ({}) is unknown to every registry consulted : blocked (unknown-version-action=BLOCK)",
                     ecosystem, packageName, version);
-            metrics.recordPublishDateUnresolved(ecosystem, "BLOCK");
+            metrics.recordPublishDateUnresolved(ecosystem, Verdict.BLOCK.name());
             return DecisionResult.block(DecisionSource.REGISTRY_NOT_FOUND,
                     "Package version is unknown to the registry, its publication date cannot be verified.");
         }
         boolean failOpen = properties.quarantine().failOpen();
         LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
                 ecosystem, packageName, version, failOpen);
-        metrics.recordPublishDateUnresolved(ecosystem, failOpen ? "ALLOW" : "BLOCK");
+        metrics.recordPublishDateUnresolved(ecosystem, (failOpen ? Verdict.ALLOW : Verdict.BLOCK).name());
         if (!failOpen) {
             return DecisionResult.block(DecisionSource.REGISTRY_ERROR, "Public registry is unreachable and proxy is configured in fail-closed.");
         }
@@ -325,7 +326,7 @@ public class SecurityService {
             ApiCheckResult result) {
         String verdict = result.isError()
                 ? "ERROR"
-                : (result.vulnerable() ? "BLOCK" : "ALLOW");
+                : (result.vulnerable() ? Verdict.BLOCK : Verdict.ALLOW).name();
         metrics.recordExternalApiCallMetric(apiSource, verdict);
         apiClients.apiCallLogDao().logCall(apiSource, packageName, ecosystem, version, verdict, result);
     }

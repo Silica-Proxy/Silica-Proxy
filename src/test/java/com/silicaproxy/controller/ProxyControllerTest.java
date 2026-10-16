@@ -316,7 +316,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldStreamWhenDecisionIsWhitelist() throws Exception {
-        DecisionResult whitelisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.WHITELIST, "Approved by security team");
+        DecisionResult whitelisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.ALLOW, "Approved by security team");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
         evaluate("lodash", "4.17.21", "npm");
         stubStreaming("whitelisted-content".getBytes());
@@ -324,12 +324,12 @@ class ProxyControllerTest {
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
                 .andExpect(status().isOk());
 
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("WHITELIST"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
     }
 
     @Test
     void shouldBlockAndReturnRfc7807WhenDecisionIsBlacklist() throws Exception {
-        DecisionResult blacklisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLACKLIST, "Banned by security team");
+        DecisionResult blacklisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLOCK, "Banned by security team");
         when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
         evaluate("shelljs", "0.8.5", "npm");
 
@@ -340,7 +340,7 @@ class ProxyControllerTest {
                 .andExpect(jsonPath("$.detail").value("Banned by security team"));
 
         verifyNoInteractions(proxyStreamClient);
-        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLACKLIST"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLOCK"), anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -483,7 +483,7 @@ class ProxyControllerTest {
 
     @Test
     void shouldIncrementDecisionCounterForWhitelistAndBlacklistVerdicts() throws Exception {
-        DecisionResult whitelisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.WHITELIST, "Approved by security team");
+        DecisionResult whitelisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.ALLOW, "Approved by security team");
         when(securityService.getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString())).thenReturn(whitelisted);
         evaluate("lodash", "4.17.21", "npm");
         stubStreaming("whitelisted-content".getBytes());
@@ -491,7 +491,7 @@ class ProxyControllerTest {
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
                 .andExpect(status().isOk());
 
-        DecisionResult blacklisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLACKLIST, "Banned by security team");
+        DecisionResult blacklisted = new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLOCK, "Banned by security team");
         when(securityService.getDecision(eq("shelljs"), eq("0.8.5"), eq("npm"), anyString())).thenReturn(blacklisted);
         evaluate("shelljs", "0.8.5", "npm");
 
@@ -499,10 +499,10 @@ class ProxyControllerTest {
                 .andExpect(status().isForbidden());
 
         assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
-                .tag(Metrics.TAG_VERDICT, "WHITELIST").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .tag(Metrics.TAG_VERDICT, "ALLOW").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
                 .counter().count()).isEqualTo(1.0);
         assertThat(meterRegistry.get(Metrics.DECISIONS_METRIC)
-                .tag(Metrics.TAG_VERDICT, "BLACKLIST").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
+                .tag(Metrics.TAG_VERDICT, "BLOCK").tag(Metrics.TAG_SOURCE, "COMPANY_POLICY").tag(Metrics.TAG_ECOSYSTEM, "npm")
                 .counter().count()).isEqualTo(1.0);
     }
 
@@ -657,7 +657,7 @@ class ProxyControllerTest {
         endToEndMockMvc.perform(get("http://mirror.internal/evil")).andExpect(status().isOk());
 
         when(securityService.getDecision(eq("evil"), eq("1.0.0"), eq("npm"), anyString()))
-                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLACKLIST, "Known malware"));
+                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLOCK, "Known malware"));
 
         endToEndMockMvc.perform(get("http://mirror.internal/blobs/abc.tgz"))
                 .andExpect(status().isForbidden())

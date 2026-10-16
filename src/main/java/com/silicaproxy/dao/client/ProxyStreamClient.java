@@ -38,7 +38,7 @@ import java.net.URI;
 /**
  * Relays the download of a package binary (jar/tgz/whl) in strict streaming
  * (without loading the file in memory), propagating authorization headers received
- * from the artifacts repository. Called by {@code ProxyController} only after an ALLOW/WHITELIST 
+ * from the artifacts repository. Called by {@code ProxyController} only after an ALLOW 
  * verdict, to forward the public registry response directly to the calling client.
  */
 @Component
