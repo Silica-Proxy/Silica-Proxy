@@ -171,6 +171,20 @@ class DecisionDaoTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldFailClosedOnUnknownPolicyAction() {
+        // A policy_action that is not a Verdict name (e.g. a lowercase typo) must block, not allow
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            VALUES ('unknown-action-pkg', 'npm', '1.0.0', 'blacklist', 'Typo in policy file', 'gitops_sync')
+            """).update();
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("unknown-action-pkg", "1.0.0", "npm", 7.0);
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLACKLIST);
+    }
+
+    @Test
     void shouldAlwaysBlockMalwareRegardlessOfCvssThreshold() {
         // Register a malware with ID MAL-xxx and CVSS score 0.0
         jdbcClient.sql("""

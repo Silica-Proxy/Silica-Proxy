@@ -84,9 +84,10 @@ public class DecisionDao {
                        CASE WHEN package_name = p_name THEN 0 ELSE 2 END
                            + CASE WHEN version_pattern = p_version THEN 0 ELSE 1 END AS specificity,
                        'COMPANY_POLICY' AS source_type,
-                       -- Mapped onto the Verdict enum : anything but BLACKLIST is a WHITELIST,
-                       -- as it always was (only BLACKLIST ever blocked).
-                       CASE WHEN policy_action = 'BLACKLIST' THEN 'BLACKLIST' ELSE 'WHITELIST' END AS result,
+                       -- Mapped onto the Verdict enum : a valid verdict name is kept as is (a
+                       -- BLOCK rule must keep blocking), anything else fails closed as a BLACKLIST.
+                       CASE WHEN policy_action IN ('ALLOW', 'BLOCK', 'WHITELIST', 'BLACKLIST')
+                            THEN policy_action ELSE 'BLACKLIST' END AS result,
                        reason
                 FROM company_policies, checked_package
                 WHERE p_name LIKE

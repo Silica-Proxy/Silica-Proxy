@@ -402,7 +402,7 @@ class SecurityServiceTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("chain-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
-        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV.name());
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
         assertThat(apiCallCount(DecisionSource.OSV_LIVE.name(), "ERROR") - osvErrorBefore).isEqualTo(1.0);
         assertThat(apiCallCount(DecisionSource.DEPS_DEV.name(), "ALLOW") - depsAllowBefore).isEqualTo(1.0);
 
@@ -435,7 +435,7 @@ class SecurityServiceTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm", "");
 
         assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
-        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV.name());
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
 
         // Cached with the BLOCK TTL (block-verdict-ttl-minutes: 10080 = 7 days)
         Map<String, Object> cache = jdbcClient.sql(
