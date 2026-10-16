@@ -31,6 +31,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 
+import java.util.Locale;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -208,11 +209,11 @@ public class DepsDevClient {
     }
 
     private String mapEcosystemToDepsDevSystem(String ecosystem) {
-        return switch (ecosystem.toLowerCase()) {
+        return switch (ecosystem.toLowerCase(Locale.ROOT)) {
             case "npm" -> "NPM";
             case "pypi" -> "PYPI";
             case "maven" -> "MAVEN";
-            default -> ecosystem.toUpperCase();
+            default -> ecosystem.toUpperCase(Locale.ROOT);
         };
     }
 }

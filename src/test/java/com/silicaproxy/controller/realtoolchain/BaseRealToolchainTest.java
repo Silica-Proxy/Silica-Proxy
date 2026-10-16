@@ -108,7 +108,7 @@ abstract class BaseRealToolchainTest {
     protected void blacklist(String packageName, String ecosystem, String versionPattern) {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-                VALUES (:packageName, :ecosystem, :versionPattern, 'BLACKLIST', 'Blocked for real-toolchain BLOCK test', 'test', NOW())
+                VALUES (:packageName, :ecosystem, :versionPattern, 'BLOCK', 'Blocked for real-toolchain BLOCK test', 'test', NOW())
                 """)
                 .param("packageName", packageName)
                 .param("ecosystem", ecosystem)

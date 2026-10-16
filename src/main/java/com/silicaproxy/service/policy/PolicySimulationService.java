@@ -22,6 +22,7 @@ import com.silicaproxy.model.dto.MatchedPolicyDto;
 import com.silicaproxy.model.dto.PolicyEvaluationResponse;
 import com.silicaproxy.model.dto.PolicySimulationRequest;
 import com.silicaproxy.model.dto.SimulationPolicyInput;
+import com.silicaproxy.model.dto.Verdict;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.stereotype.Service;
 
@@ -80,11 +81,11 @@ public class PolicySimulationService {
                     packageSpecificity + versionSpecificity,
                     false));
         }
-        // Tie-break at equal specificity : BLACKLIST wins over WHITELIST, rather than relying
+        // Tie-break at equal specificity : BLOCK wins over ALLOW, rather than relying
         // on the input list's order (same rule as GitOpsDao.findMatchingPolicies / DecisionDao).
         matches.sort(Comparator
                 .comparingInt(MatchedPolicyDto::specificity)
-                .thenComparing(m -> "BLACKLIST".equals(m.policyAction()) ? 0 : 1));
+                .thenComparing(m -> Verdict.ALLOW.name().equals(m.policyAction()) ? 1 : 0));
         return matches;
     }
 
@@ -115,7 +116,7 @@ public class PolicySimulationService {
         }
 
         MatchedPolicyDto winner = matches.get(0);
-        String decision = "WHITELIST".equals(winner.policyAction()) ? "ALLOWED" : "BLOCKED";
+        String decision = Verdict.ALLOW.name().equals(winner.policyAction()) ? "ALLOWED" : "BLOCKED";
 
         List<MatchedPolicyDto> withWins = new ArrayList<>(matches.size());
         for (int i = 0; i < matches.size(); i++) {

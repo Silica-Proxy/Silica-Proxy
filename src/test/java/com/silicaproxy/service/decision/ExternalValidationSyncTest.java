@@ -17,6 +17,7 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.BaseIntegrationTest;
@@ -417,7 +418,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("lodash", "4.17.21", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         List<com.github.tomakehurst.wiremock.verification.LoggedRequest> requests =
                 wireMock.findAll(postRequestedFor(urlEqualTo("/external-validate")));
         assertThat(requests).hasSize(1);

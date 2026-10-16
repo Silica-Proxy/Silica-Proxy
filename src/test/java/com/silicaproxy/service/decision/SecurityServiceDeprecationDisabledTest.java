@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,7 +84,7 @@ class SecurityServiceDeprecationDisabledTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("deprecated-but-allowed-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_DEPRECATION");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_DEPRECATION);
     }
 }

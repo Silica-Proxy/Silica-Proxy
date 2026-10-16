@@ -52,8 +52,6 @@ public final class Metrics {
 
     // ---- SecurityService ----
     public static final String EXTERNAL_API_CALLS_METRIC = "silicaproxy.external.api.calls";
-    public static final String OSV_LIVE = "OSV_LIVE";
-    public static final String DEPS_DEV = "DEPS_DEV";
     public static final String LOCAL_EVALUATION_METRIC = "silicaproxy.decision.local_evaluation";
     public static final String OUTCOME_HIT = "HIT";
     public static final String OUTCOME_MISS = "MISS";

@@ -16,6 +16,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -77,7 +79,7 @@ class ProxyControllerChecksumMismatchIntegrationTest extends BaseIntegrationTest
         factory.setProxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", port)));
         proxyRestClient = RestClient.builder().requestFactory(factory).build();
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule)."));
+                .thenReturn(new DecisionResult(DecisionSource.DEFAULT, Verdict.ALLOW, "Allowed by default (no blocking rule)."));
         when(responseIdentification.isEnabled()).thenReturn(true);
     }
 

@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.BaseIntegrationTest;
@@ -109,14 +111,14 @@ class SecurityServiceTest extends BaseIntegrationTest {
     void shouldAllowWhenPolicyWhitelists() {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('whitelisted-pkg', 'npm', '%', 'WHITELIST', 'Allowed package', 'security')
+            VALUES ('whitelisted-pkg', 'npm', '%', 'ALLOW', 'Allowed package', 'security')
             """).update();
 
         double before = localEvaluationCount(Metrics.OUTCOME_HIT);
         DecisionResult decision = securityService.getDecision("whitelisted-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("WHITELIST");
-        assertThat(decision.sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
         assertThat(localEvaluationCount(Metrics.OUTCOME_HIT) - before).isEqualTo(1.0);
     }
 
@@ -130,8 +132,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
         double before = localEvaluationCount(Metrics.OUTCOME_HIT);
         DecisionResult decision = securityService.getDecision("vuln-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
         assertThat(localEvaluationCount(Metrics.OUTCOME_HIT) - before).isEqualTo(1.0);
     }
 
@@ -147,7 +149,7 @@ class SecurityServiceTest extends BaseIntegrationTest {
             """).update();
 
         DecisionResult beforeRefresh = securityService.getDecision("refresh-pkg", "1.0.0", "maven", "");
-        assertThat(beforeRefresh.sourceType()).isNotEqualTo("PUBLIC_VULN");
+        assertThat(beforeRefresh.sourceType()).isNotEqualTo(DecisionSource.PUBLIC_VULN);
 
         // Lower HIGH's floor below 6.0 directly in the DB (as an administrator would), then
         // refresh the in-memory cache without restarting the instance.
@@ -155,8 +157,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
         severityMappingsCache.refresh();
 
         DecisionResult afterRefresh = securityService.getDecision("refresh-pkg", "1.0.0", "maven", "");
-        assertThat(afterRefresh.result()).isEqualTo("BLOCK");
-        assertThat(afterRefresh.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(afterRefresh.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(afterRefresh.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
     }
 
     @Test
@@ -173,8 +175,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("quarantine-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
         assertThat(decision.reason()).contains("quarantine");
 
         Optional<Instant> dbPublishedAt = metadataCacheDao.getPackagePublishedAt("quarantine-pkg", "npm", "1.0.0");
@@ -201,8 +203,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("deprecated-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_DEPRECATION");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_DEPRECATION);
 
         Map<String, Object> cache = jdbcClient.sql(
                 "SELECT * FROM api_cache WHERE package_name = 'deprecated-pkg'").query().singleRow();
@@ -240,8 +242,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("precached-deprecated-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_DEPRECATION");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_DEPRECATION);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/precached-deprecated-pkg")));
     }
 
@@ -265,8 +267,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("registry-down-known-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -286,12 +288,12 @@ class SecurityServiceTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        double before = apiCallCount(Metrics.OSV_LIVE, "ALLOW");
+        double before = apiCallCount(DecisionSource.OSV_LIVE.name(), "ALLOW");
         double missBefore = localEvaluationCount(Metrics.OUTCOME_MISS);
         DecisionResult decision = securityService.getDecision("safe-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(apiCallCount(Metrics.OSV_LIVE, "ALLOW") - before).isEqualTo(1.0);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(apiCallCount(DecisionSource.OSV_LIVE.name(), "ALLOW") - before).isEqualTo(1.0);
         // Nothing in company_policies/public_vulnerabilities/api_cache for this package,
         // so the local SQL evaluation missed and OSV_LIVE had to be called (asserted above).
         assertThat(localEvaluationCount(Metrics.OUTCOME_MISS) - missBefore).isEqualTo(1.0);
@@ -332,13 +334,13 @@ class SecurityServiceTest extends BaseIntegrationTest {
                             }
                             """)));
 
-        double before = apiCallCount(Metrics.OSV_LIVE, "BLOCK");
+        double before = apiCallCount(DecisionSource.OSV_LIVE.name(), "BLOCK");
         DecisionResult decision = securityService.getDecision("vuln-osv-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("OSV_LIVE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.OSV_LIVE);
         assertThat(decision.reason()).contains("vulnerability");
-        assertThat(apiCallCount(Metrics.OSV_LIVE, "BLOCK") - before).isEqualTo(1.0);
+        assertThat(apiCallCount(DecisionSource.OSV_LIVE.name(), "BLOCK") - before).isEqualTo(1.0);
     }
 
     @Test
@@ -359,13 +361,13 @@ class SecurityServiceTest extends BaseIntegrationTest {
                 .willReturn(aResponse()
                         .withStatus(500)));
 
-        double before = apiCallCount(Metrics.OSV_LIVE, "ERROR");
+        double before = apiCallCount(DecisionSource.OSV_LIVE.name(), "ERROR");
         DecisionResult decision = securityService.getDecision("osv-fail-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW"); // fail-open: true by default on both sources
-        assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW); // fail-open: true by default on both sources
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.API_FALLBACK_ERROR);
         assertThat(decision.reason()).contains("fail-open");
-        assertThat(apiCallCount(Metrics.OSV_LIVE, "ERROR") - before).isEqualTo(1.0);
+        assertThat(apiCallCount(DecisionSource.OSV_LIVE.name(), "ERROR") - before).isEqualTo(1.0);
 
         // The heart of the fix: an error verdict must NEVER be cached, otherwise the
         // fail-open ALLOW would stick for the whole TTL after OSV recovers.
@@ -395,20 +397,20 @@ class SecurityServiceTest extends BaseIntegrationTest {
                         .withHeader("Content-Type", "application/json")
                         .withBody("{}")));
 
-        double osvErrorBefore = apiCallCount(Metrics.OSV_LIVE, "ERROR");
-        double depsAllowBefore = apiCallCount(Metrics.DEPS_DEV, "ALLOW");
+        double osvErrorBefore = apiCallCount(DecisionSource.OSV_LIVE.name(), "ERROR");
+        double depsAllowBefore = apiCallCount(DecisionSource.DEPS_DEV.name(), "ALLOW");
         DecisionResult decision = securityService.getDecision("chain-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo(Metrics.DEPS_DEV);
-        assertThat(apiCallCount(Metrics.OSV_LIVE, "ERROR") - osvErrorBefore).isEqualTo(1.0);
-        assertThat(apiCallCount(Metrics.DEPS_DEV, "ALLOW") - depsAllowBefore).isEqualTo(1.0);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
+        assertThat(apiCallCount(DecisionSource.OSV_LIVE.name(), "ERROR") - osvErrorBefore).isEqualTo(1.0);
+        assertThat(apiCallCount(DecisionSource.DEPS_DEV.name(), "ALLOW") - depsAllowBefore).isEqualTo(1.0);
 
         // A successful verdict from the next source in the chain IS cached, as usual.
         Map<String, Object> cache = jdbcClient.sql(
                 "SELECT * FROM api_cache WHERE package_name = 'chain-pkg'").query().singleRow();
         assertThat(cache.get("is_secure")).isEqualTo(true);
-        assertThat(cache.get("api_source")).isEqualTo(Metrics.DEPS_DEV);
+        assertThat(cache.get("api_source")).isEqualTo(DecisionSource.DEPS_DEV.name());
     }
 
     @Test
@@ -432,8 +434,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("chain-vuln-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo(Metrics.DEPS_DEV);
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
 
         // Cached with the BLOCK TTL (block-verdict-ttl-minutes: 10080 = 7 days)
         Map<String, Object> cache = jdbcClient.sql(
@@ -454,8 +456,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("down-pkg", "1.0.0", "npm", "");
 
         // Fail-open enabled by default in application.yaml
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(decision.reason()).contains("Fail open due to public registry unavailability.");
     }
 
@@ -466,8 +468,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("not-found-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -488,8 +490,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("boundary-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -506,8 +508,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("young-pypi-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
     }
 
     @Test
@@ -532,8 +534,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("deprecated-and-young-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_DEPRECATION");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_DEPRECATION);
     }
 
     @Test
@@ -547,8 +549,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("com.example:no-last-modified-lib", "1.0.0", "maven", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -564,8 +566,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("golang-vuln-pkg", "1.0.0", "golang", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
     }
 
     @Test
@@ -590,8 +592,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("null-reason-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_DEPRECATION");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_DEPRECATION);
         assertThat(decision.reason()).isEqualTo("The package is deprecated or removed (yanked).");
     }
 
@@ -610,8 +612,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("unknown-eco-pkg", "1.0.0", "golang", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
         assertThat(decision.reason()).contains("3");
     }
 
@@ -625,8 +627,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("lodash", "4.17.20", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
         assertThat(decision.reason()).isEqualTo("Command injection in lodash");
     }
 
@@ -640,8 +642,8 @@ class SecurityServiceTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("evil-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("PUBLIC_VULN_MALWARE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
     }
 
     @Test
@@ -653,13 +655,13 @@ class SecurityServiceTest extends BaseIntegrationTest {
             """).update();
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-            VALUES ('wl-range-pkg', 'npm', '%', 'WHITELIST', 'Accepted risk', 'security')
+            VALUES ('wl-range-pkg', 'npm', '%', 'ALLOW', 'Accepted risk', 'security')
             """).update();
 
         DecisionResult decision = securityService.getDecision("wl-range-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("WHITELIST");
-        assertThat(decision.sourceType()).isEqualTo("COMPANY_POLICY");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
     }
 
     @Test
@@ -678,9 +680,9 @@ class SecurityServiceTest extends BaseIntegrationTest {
         DecisionResult affected = securityService.getDecision("cached-range-pkg", "1.1.0", "npm", "");
         DecisionResult fixed = securityService.getDecision("cached-range-pkg", "1.2.0", "npm", "");
 
-        assertThat(affected.result()).isEqualTo("BLOCK");
-        assertThat(affected.sourceType()).isEqualTo("PUBLIC_VULN");
-        assertThat(fixed.result()).isEqualTo("ALLOW");
-        assertThat(fixed.sourceType()).isEqualTo("API_CACHE");
+        assertThat(affected.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(affected.sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
+        assertThat(fixed.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(fixed.sourceType()).isEqualTo(DecisionSource.API_CACHE);
     }
 }

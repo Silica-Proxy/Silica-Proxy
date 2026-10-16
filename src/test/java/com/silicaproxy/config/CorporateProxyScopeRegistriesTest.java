@@ -17,6 +17,8 @@
 
 package com.silicaproxy.config;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.decision.SecurityService;
@@ -96,7 +98,7 @@ class CorporateProxyScopeRegistriesTest {
 
             DecisionResult decision = securityService.getDecision("scope-disabled-pkg", "1.0.0", "npm", "");
 
-            assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+            assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         }
     }
 
@@ -142,8 +144,8 @@ class CorporateProxyScopeRegistriesTest {
 
             DecisionResult decision = securityService.getDecision("scope-enabled-pkg", "1.0.0", "npm", "");
 
-            assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
-            assertThat(decision.result()).isEqualTo("ALLOW");
+            assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
+            assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         }
     }
 }

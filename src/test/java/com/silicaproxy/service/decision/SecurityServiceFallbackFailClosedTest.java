@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,8 +88,8 @@ class SecurityServiceFallbackFailClosedTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("fail-closed-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("API_FALLBACK_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.API_FALLBACK_ERROR);
         assertThat(decision.reason()).contains("fail-closed");
 
         // Error verdicts are never cached, fail-closed included : the block must lift by
@@ -121,7 +123,7 @@ class SecurityServiceFallbackFailClosedTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("fail-closed-recover-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("DEPS_DEV");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.DEPS_DEV);
     }
 }

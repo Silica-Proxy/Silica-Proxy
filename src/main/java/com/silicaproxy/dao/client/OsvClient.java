@@ -29,6 +29,7 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 
@@ -120,7 +121,7 @@ public class OsvClient {
     }
 
     private String mapEcosystemToOsv(String ecosystem) {
-        return switch (ecosystem.toLowerCase()) {
+        return switch (ecosystem.toLowerCase(Locale.ROOT)) {
             case "npm" -> "npm";
             case "pypi" -> "PyPI";
             case "maven" -> "Maven";

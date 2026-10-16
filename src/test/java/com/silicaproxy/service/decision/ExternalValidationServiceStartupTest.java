@@ -40,7 +40,8 @@ import static org.mockito.Mockito.mock;
 class ExternalValidationServiceStartupTest {
 
     private static SilicaProxyProperties makeProperties(
-            @org.jspecify.annotations.Nullable String callbackBaseUrl, String serviceMode) {
+            @org.jspecify.annotations.Nullable String callbackBaseUrl,
+            SilicaProxyProperties.ExternalValidationMode serviceMode) {
         return new SilicaProxyProperties(
             new SilicaProxyProperties.QuarantineProperties(false, 0, true, Map.of()),
             new SilicaProxyProperties.DeprecationProperties(false, Map.of()),
@@ -77,7 +78,7 @@ class ExternalValidationServiceStartupTest {
 
     @Test
     void shouldFailFastWhenAsyncServiceConfiguredWithBlankCallbackBaseUrl() {
-        ExternalValidationService service = makeService(makeProperties(null, Metrics.TYPE_ASYNC));
+        ExternalValidationService service = makeService(makeProperties(null, SilicaProxyProperties.ExternalValidationMode.ASYNC));
 
         assertThatThrownBy(service::logConfiguredServices)
                 .isInstanceOf(IllegalStateException.class)
@@ -86,7 +87,7 @@ class ExternalValidationServiceStartupTest {
 
     @Test
     void shouldFailFastWhenAsyncServiceConfiguredWithEmptyCallbackBaseUrl() {
-        ExternalValidationService service = makeService(makeProperties("", Metrics.TYPE_ASYNC));
+        ExternalValidationService service = makeService(makeProperties("", SilicaProxyProperties.ExternalValidationMode.ASYNC));
 
         assertThatThrownBy(service::logConfiguredServices)
                 .isInstanceOf(IllegalStateException.class)
@@ -95,14 +96,14 @@ class ExternalValidationServiceStartupTest {
 
     @Test
     void shouldStartSuccessfullyWhenOnlySyncServicesConfiguredWithBlankCallbackBaseUrl() {
-        ExternalValidationService service = makeService(makeProperties(null, Metrics.TYPE_SYNC));
+        ExternalValidationService service = makeService(makeProperties(null, SilicaProxyProperties.ExternalValidationMode.SYNC));
 
         assertThatCode(service::logConfiguredServices).doesNotThrowAnyException();
     }
 
     @Test
     void shouldStartSuccessfullyWhenAsyncServiceConfiguredWithNonBlankCallbackBaseUrl() {
-        ExternalValidationService service = makeService(makeProperties("http://proxy.example.com", Metrics.TYPE_ASYNC));
+        ExternalValidationService service = makeService(makeProperties("http://proxy.example.com", SilicaProxyProperties.ExternalValidationMode.ASYNC));
 
         assertThatCode(service::logConfiguredServices).doesNotThrowAnyException();
     }

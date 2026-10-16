@@ -18,6 +18,7 @@
 package com.silicaproxy.config;
 
 import com.silicaproxy.properties.SilicaProxyProperties.ApiAuthProperties;
+import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationMode;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationServiceProperties;
 import org.junit.jupiter.api.Test;
@@ -143,7 +144,7 @@ class ConfigTreePrinterTest {
     @Test
     void shouldRenderRealExternalValidationServicesWithMaskedApiKeys() {
         ExternalValidationServiceProperties deepScan = new ExternalValidationServiceProperties(
-            true, "https://scanner.example.com/scan", "secret-api-key", "SYNC", 1, true, true, 60, 30);
+            true, "https://scanner.example.com/scan", "secret-api-key", ExternalValidationMode.SYNC, 1, true, true, 60, 30);
         ExternalValidationProperties externalValidation = new ExternalValidationProperties(
             "https://proxy.example.com", false, Map.of("deepScan", deepScan));
 

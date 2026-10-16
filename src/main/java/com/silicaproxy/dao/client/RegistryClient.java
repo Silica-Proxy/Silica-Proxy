@@ -64,30 +64,23 @@ public class RegistryClient {
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
     private final ObjectMapper objectMapper;
-    private HttpsUpgradePolicy httpsUpgradePolicy = HttpsUpgradePolicy.upgradeAll();
+    // Applies the configured http-only-hosts exemptions to the intercepted-URL fallback.
+    private final HttpsUpgradePolicy httpsUpgradePolicy;
 
     public RegistryClient(
             SilicaProxyProperties properties,
             @Qualifier("registriesRequestFactory") ClientHttpRequestFactory registriesRequestFactory,
             com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            HttpsUpgradePolicy httpsUpgradePolicy) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.httpsUpgradePolicy = httpsUpgradePolicy;
 
         this.restClient = RestClient.builder()
                 .requestFactory(registriesRequestFactory)
                 .requestInterceptor(ssrfInterceptor)
                 .build();
-    }
-
-    /**
-     * Applies the configured {@code http-only-hosts} exemptions to the intercepted-URL fallback.
-     * Setter-injected (optional collaborator) so the constructor, used as-is by the existing
-     * tests, stays unchanged.
-     */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    public void setHttpsUpgradePolicy(HttpsUpgradePolicy httpsUpgradePolicy) {
-        this.httpsUpgradePolicy = httpsUpgradePolicy;
     }
 
     public Optional<PackageMetadataResult> fetchMetadata(String packageName, String version, String ecosystem) {

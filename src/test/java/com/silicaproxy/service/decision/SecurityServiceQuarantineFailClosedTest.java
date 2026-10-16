@@ -16,6 +16,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -77,8 +79,8 @@ class SecurityServiceQuarantineFailClosedTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("closed-down-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(unresolved("npm", "BLOCK")).isEqualTo(before + 1);
     }
 
@@ -89,8 +91,8 @@ class SecurityServiceQuarantineFailClosedTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("closed-unknown-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(unresolved("pypi", "BLOCK")).isEqualTo(before + 1);
     }
 }

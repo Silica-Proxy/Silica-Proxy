@@ -70,7 +70,7 @@ class DataInventoryServiceTest extends BaseIntegrationTest {
 
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '*', 'ALLOW', 'Approved', 'admin')
                 """).update();
 
         DataInventory inventory = dataInventoryService.getInventory();

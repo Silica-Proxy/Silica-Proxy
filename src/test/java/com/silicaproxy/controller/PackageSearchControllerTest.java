@@ -54,7 +54,7 @@ class PackageSearchControllerTest extends BaseIntegrationTest {
     void shouldFindPackageAcrossAllThreeSources() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '*', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '*', 'ALLOW', 'Approved', 'admin')
                 """).update();
         jdbcClient.sql("""
                 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
@@ -74,7 +74,7 @@ class PackageSearchControllerTest extends BaseIntegrationTest {
         String body = response.getBody();
         assertThat(body).isNotNull();
         assertThat(body).contains("\"companyPolicies\"");
-        assertThat(body).contains("\"WHITELIST\"");
+        assertThat(body).contains("\"ALLOW\"");
         assertThat(body).contains("\"publicVulnerabilities\"");
         assertThat(body).contains("\"OSV\"");
         assertThat(body).contains("\"apiCacheEntries\"");

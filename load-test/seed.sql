@@ -1,42 +1,42 @@
 -- Clean up existing data to ensure clean state
 TRUNCATE company_policies, public_vulnerabilities, api_cache, package_metadata RESTART IDENTITY CASCADE;
 
--- Seed 50,000 blacklisted npm company policy rules
+-- Seed 50,000 blocked npm company policy rules
 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
 SELECT
   'blocked-company-' || i,
   'npm',
   '*',
-  'BLACKLIST',
+  'BLOCK',
   'Blocked by company governance policy',
   'admin-test'
 FROM generate_series(0, 49999) AS i;
 
--- Seed 10,000 blacklisted PyPI company policy rules
+-- Seed 10,000 blocked PyPI company policy rules
 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
 SELECT
   'blocked-pypi-' || i,
   'pypi',
   '*',
-  'BLACKLIST',
+  'BLOCK',
   'Blocked by company governance policy',
   'admin-test'
 FROM generate_series(0, 9999) AS i;
 
--- Seed 10,000 blacklisted Maven company policy rules
+-- Seed 10,000 blocked Maven company policy rules
 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
 SELECT
   'com.example:blocked-maven-' || i,
   'maven',
   '*',
-  'BLACKLIST',
+  'BLOCK',
   'Blocked by company governance policy',
   'admin-test'
 FROM generate_series(0, 9999) AS i;
 
--- Whitelist ansi-styles for testing the real streaming path
+-- Allow ansi-styles for testing the real streaming path
 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-VALUES ('ansi-styles', 'npm', '5.2.0', 'WHITELIST', 'Allowed for testing streaming performance', 'admin-test');
+VALUES ('ansi-styles', 'npm', '5.2.0', 'ALLOW', 'Allowed for testing streaming performance', 'admin-test');
 
 -- Seed 500,000 npm public vulnerabilities (Standard CVSS, CVSS = 9.5)
 INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, details, affected_versions, cvss_score)

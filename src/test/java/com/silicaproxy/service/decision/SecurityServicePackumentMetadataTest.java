@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
@@ -92,8 +94,8 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("@jsr/idx__only", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         // Public registry asked first (it wins whenever it knows the version) ; it 404s, so the
         // relayed packument's date is used without any further registry call.
         wireMock.verify(1, getRequestedFor(urlEqualTo("/@jsr/idx__only")));
@@ -120,8 +122,8 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("@priv/no-time", "2.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/origin/@priv%2fno-time"))
                 .withHeader("Accept", equalTo("application/json")));
         // Public registry asked first and 404s ; only then the origin registry answers.
@@ -141,8 +143,8 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("pub-only", "3.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/pub-only")));
     }
 
@@ -160,7 +162,7 @@ class SecurityServicePackumentMetadataTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("same-origin", "4.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/same-origin")));
     }
 }

@@ -59,7 +59,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
         // stored as '%') -- this test inserts that translated form directly.
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '%', 'WHITELIST', 'Approved', 'admin')
+                VALUES ('lodash', 'npm', '%', 'ALLOW', 'Approved', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -67,7 +67,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("\"decision\":\"ALLOWED\"");
-        assertThat(response.getBody()).contains("\"WHITELIST\"");
+        assertThat(response.getBody()).contains("\"ALLOW\"");
         assertThat(response.getBody()).contains("\"wins\":true");
     }
 
@@ -75,7 +75,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldReturnBlockedWhenBlacklistPolicyMatches() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'Forbidden', 'admin')
+                VALUES ('lodash', 'npm', '%', 'BLOCK', 'Forbidden', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -100,11 +100,11 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldShowConflictResolutionExactVersionBeatsWildcard() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'Forbidden by default', 'admin')
+                VALUES ('lodash', 'npm', '%', 'BLOCK', 'Forbidden by default', 'admin')
                 """).update();
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '4.17.21', 'WHITELIST', 'Explicitly approved version', 'admin')
+                VALUES ('lodash', 'npm', '4.17.21', 'ALLOW', 'Explicitly approved version', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -124,7 +124,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
         // translated form directly to simulate the real write path.
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'npm', '4.%', 'WHITELIST', 'Series 4 approved', 'admin')
+                VALUES ('lodash', 'npm', '4.%', 'ALLOW', 'Series 4 approved', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -138,7 +138,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
     void evaluateShouldNotMatchOtherEcosystem() {
         jdbcClient.sql("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
-                VALUES ('lodash', 'maven', '%', 'BLACKLIST', 'Other ecosystem', 'admin')
+                VALUES ('lodash', 'maven', '%', 'BLOCK', 'Other ecosystem', 'admin')
                 """).update();
 
         ResponseEntity<String> response = getResponse(
@@ -184,7 +184,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
                     "packageName": "lodash",
                     "version": "4.17.21",
                     "policies": [
-                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "WHITELIST", "reason": "Approved" }
+                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "ALLOW", "reason": "Approved" }
                     ]
                 }
                 """;
@@ -204,7 +204,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
                     "packageName": "lodash",
                     "version": "4.17.21",
                     "policies": [
-                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "BLACKLIST", "reason": "Forbidden" }
+                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "BLOCK", "reason": "Forbidden" }
                     ]
                 }
                 """;
@@ -223,8 +223,8 @@ class PolicyControllerTest extends BaseIntegrationTest {
                     "packageName": "lodash",
                     "version": "4.17.21",
                     "policies": [
-                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "BLACKLIST", "reason": "Forbidden by default" },
-                        { "packageName": "lodash", "versionPattern": "4.17.21", "policyAction": "WHITELIST", "reason": "Version approved" }
+                        { "packageName": "lodash", "versionPattern": "*", "policyAction": "BLOCK", "reason": "Forbidden by default" },
+                        { "packageName": "lodash", "versionPattern": "4.17.21", "policyAction": "ALLOW", "reason": "Version approved" }
                     ]
                 }
                 """;
@@ -245,7 +245,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
                     "packageName": "lodash",
                     "version": "4.17.21",
                     "policies": [
-                        { "packageName": "react", "versionPattern": "*", "policyAction": "BLACKLIST", "reason": "Autre package" }
+                        { "packageName": "react", "versionPattern": "*", "policyAction": "BLOCK", "reason": "Autre package" }
                     ]
                 }
                 """;
@@ -264,7 +264,7 @@ class PolicyControllerTest extends BaseIntegrationTest {
                     "packageName": "lodash",
                     "version": "4.17.21",
                     "policies": [
-                        { "packageName": "lodash", "versionPattern": "4.x", "policyAction": "WHITELIST", "reason": "Series 4 approved" }
+                        { "packageName": "lodash", "versionPattern": "4.x", "policyAction": "ALLOW", "reason": "Series 4 approved" }
                     ]
                 }
                 """;

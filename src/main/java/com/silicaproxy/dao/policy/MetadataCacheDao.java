@@ -23,6 +23,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import io.micrometer.core.annotation.Timed;
 
+import java.util.Locale;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -58,7 +59,7 @@ public class MetadataCacheDao {
             """;
         return jdbcClient.sql(sql)
                 .param("packageName", packageName)
-                .param("ecosystem", ecosystem.toLowerCase())
+                .param("ecosystem", ecosystem.toLowerCase(Locale.ROOT))
                 .param("version", version)
                 .query(Timestamp.class)
                 .optional()
@@ -76,7 +77,7 @@ public class MetadataCacheDao {
             """;
         jdbcClient.sql(sql)
                 .param("packageName", packageName)
-                .param("ecosystem", ecosystem.toLowerCase())
+                .param("ecosystem", ecosystem.toLowerCase(Locale.ROOT))
                 .param("version", version)
                 .param("publishedAt", Timestamp.from(publishedAt))
                 .update();
@@ -119,7 +120,7 @@ public class MetadataCacheDao {
             """;
         jdbcClient.sql(sql)
                 .param("packageName", packageName)
-                .param("ecosystem", ecosystem.toLowerCase())
+                .param("ecosystem", ecosystem.toLowerCase(Locale.ROOT))
                 .param("version", version)
                 .param("isSecure", isSecure)
                 .param("apiSource", apiSource)

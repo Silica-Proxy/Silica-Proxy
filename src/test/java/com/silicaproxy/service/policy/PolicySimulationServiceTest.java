@@ -36,7 +36,7 @@ class PolicySimulationServiceTest {
     void shouldNotTreatLiteralXAsWildcardOutsideTrailingSegment() {
         PolicySimulationRequest request = new PolicySimulationRequest(
                 "npm", "weird-pkg", "1.0.0-abz",
-                List.of(new SimulationPolicyInput("weird-pkg", "1.0.0-xyz", "BLACKLIST", "test")));
+                List.of(new SimulationPolicyInput("weird-pkg", "1.0.0-xyz", "BLOCK", "test")));
 
         PolicyEvaluationResponse response = service.simulate(request);
 
@@ -48,7 +48,7 @@ class PolicySimulationServiceTest {
     void shouldMatchExactLiteralVersionContainingX() {
         PolicySimulationRequest request = new PolicySimulationRequest(
                 "npm", "weird-pkg", "1.0.0-xyz",
-                List.of(new SimulationPolicyInput("weird-pkg", "1.0.0-xyz", "BLACKLIST", "test")));
+                List.of(new SimulationPolicyInput("weird-pkg", "1.0.0-xyz", "BLOCK", "test")));
 
         PolicyEvaluationResponse response = service.simulate(request);
 
@@ -59,7 +59,7 @@ class PolicySimulationServiceTest {
     void shouldTreatTrailingDotXSegmentAsWildcard() {
         PolicySimulationRequest request = new PolicySimulationRequest(
                 "npm", "jquery", "1.2.9",
-                List.of(new SimulationPolicyInput("jquery", "1.2.x", "BLACKLIST", "test")));
+                List.of(new SimulationPolicyInput("jquery", "1.2.x", "BLOCK", "test")));
 
         PolicyEvaluationResponse response = service.simulate(request);
 
@@ -68,18 +68,18 @@ class PolicySimulationServiceTest {
 
     @Test
     void shouldPreferBlacklistOverWhitelistAtEqualSpecificity() {
-        // Two policies with identical package/version (same specificity), WHITELIST listed
-        // first in the input : BLACKLIST must still win deterministically.
+        // Two policies with identical package/version (same specificity), ALLOW listed
+        // first in the input : BLOCK must still win deterministically.
         PolicySimulationRequest request = new PolicySimulationRequest(
                 "npm", "tie-break-pkg", "1.0.0",
                 List.of(
-                        new SimulationPolicyInput("tie-break-pkg", "1.0.0", "WHITELIST", "Approved"),
-                        new SimulationPolicyInput("tie-break-pkg", "1.0.0", "BLACKLIST", "Actually compromised")));
+                        new SimulationPolicyInput("tie-break-pkg", "1.0.0", "ALLOW", "Approved"),
+                        new SimulationPolicyInput("tie-break-pkg", "1.0.0", "BLOCK", "Actually compromised")));
 
         PolicyEvaluationResponse response = service.simulate(request);
 
         assertThat(response.decision()).isEqualTo("BLOCKED");
-        assertThat(response.matchingRules().get(0).policyAction()).isEqualTo("BLACKLIST");
+        assertThat(response.matchingRules().get(0).policyAction()).isEqualTo("BLOCK");
         assertThat(response.matchingRules().get(0).wins()).isTrue();
     }
 
@@ -87,7 +87,7 @@ class PolicySimulationServiceTest {
     void shouldTreatAsteriskAsWildcardAnywhere() {
         PolicySimulationRequest request = new PolicySimulationRequest(
                 "npm", "shelljs", "9.9.9",
-                List.of(new SimulationPolicyInput("shelljs", "*", "BLACKLIST", "test")));
+                List.of(new SimulationPolicyInput("shelljs", "*", "BLOCK", "test")));
 
         PolicyEvaluationResponse response = service.simulate(request);
 

@@ -16,6 +16,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -107,8 +109,8 @@ class SecurityServiceNpmPublicFirstTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("poisoned-date-pkg", "1.0.0", "npm", "");
 
         // The relayed packument's "400 days old" claim does not let a 1-day-old version through.
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
         assertThat(count(Metrics.PUBLISH_DATE_LOOKUPS_METRIC, Metrics.TAG_SOURCE, Metrics.DATE_SOURCE_PUBLIC_REGISTRY))
                 .isEqualTo(before + 1);
     }
@@ -121,8 +123,8 @@ class SecurityServiceNpmPublicFirstTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("private-only-pkg", "2.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/private-only-pkg")));
         assertThat(count(Metrics.PUBLISH_DATE_LOOKUPS_METRIC, Metrics.TAG_SOURCE, Metrics.DATE_SOURCE_ORIGIN_REGISTRY))
                 .isEqualTo(before + 1);
@@ -138,8 +140,8 @@ class SecurityServiceNpmPublicFirstTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision("outage-pkg", "3.0.0", "npm", "");
 
         // The relayed date is ignored : fail-open policy (default true) decides, and it is counted.
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(count(Metrics.PUBLISH_DATE_UNRESOLVED_METRIC, Metrics.TAG_VERDICT, "ALLOW"))
                 .isEqualTo(unresolvedBefore + 1);
         assertThat(count(Metrics.PUBLISH_DATE_LOOKUPS_METRIC, Metrics.TAG_SOURCE, Metrics.DATE_SOURCE_UNRESOLVED))
@@ -158,8 +160,8 @@ class SecurityServiceNpmPublicFirstTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("cached-outage-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(count(Metrics.PUBLISH_DATE_LOOKUPS_METRIC, Metrics.TAG_SOURCE, Metrics.DATE_SOURCE_LOCAL_CACHE))
                 .isEqualTo(before + 1);
     }
