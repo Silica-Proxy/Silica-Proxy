@@ -303,8 +303,8 @@ public class ProxyController {
         if (streamResponse.body() != null) {
             if (learnPackument && isJsonOk(streamResponse)) {
                 npmPackumentIndex.relayAndIndex(streamResponse.body(),
-                        streamResponse.headers().getFirst(HttpHeaders.CONTENT_ENCODING), fullUrl,
-                        response.getOutputStream());
+                        streamResponse.headers().getFirst(HttpHeaders.CONTENT_ENCODING),
+                        contentLength(streamResponse.headers()), fullUrl, response.getOutputStream());
             } else {
                 // Buffer of 16 KB (default in StreamUtils.copy)
                 StreamUtils.copy(streamResponse.body(), response.getOutputStream());
@@ -326,6 +326,16 @@ public class ProxyController {
                 }
             }
         });
+    }
+
+    // -1 when absent or malformed : HttpHeaders.getContentLength() throws on an unparseable
+    // value, and this one comes from the upstream registry.
+    private static long contentLength(HttpHeaders headers) {
+        try {
+            return headers.getContentLength();
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     private static boolean isJsonOk(ProxyStreamClient.StreamResponse streamResponse) {

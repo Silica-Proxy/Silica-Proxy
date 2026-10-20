@@ -28,11 +28,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StreamUtils;
-import tools.jackson.databind.JsonNode;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -41,12 +43,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -78,9 +82,17 @@ public class NpmPackumentIndex {
 
     private static final Logger LOG = LoggerFactory.getLogger(NpmPackumentIndex.class);
 
+    // How long a packument waits for an indexing permit before being relayed without indexing.
+    // Short : the streaming parse of even a large packument takes well under a second, so a
+    // longer wait only means the indexing capacity is genuinely saturated.
+    private static final Duration INDEXING_PERMIT_WAIT = Duration.ofSeconds(2);
+
     private final ObjectMapper objectMapper;
     private final NpmPackumentIndexProperties properties;
     private final NpmTarballIndexDao tarballIndexDao;
+    // Bounds how many packuments are buffered and parsed at once : each one holds up to
+    // max-body-bytes of buffered body, and virtual threads put no limit on concurrent requests.
+    private final Semaphore indexingPermits;
     // Tarball URL → version ; "name@version" → metadata. Both hold the same entries, so the size
     // cap is checked on the URL map only.
     // Persistence for other instances runs off the request thread, which only returns (and so ends
@@ -107,12 +119,25 @@ public class NpmPackumentIndex {
             String packumentUrl,
             Instant indexedAt) {}
 
+    /** One {@code versions.{key}} manifest, as streamed : only the fields the index needs. */
+    private record VersionManifest(
+            String key,
+            @Nullable String name,
+            @Nullable String version,
+            String tarball,
+            boolean deprecated,
+            @Nullable String deprecationReason) {}
+
+    /** What a packument body declares, once fully streamed ; "time" may come before or after "versions". */
+    private record StreamedPackument(String name, List<VersionManifest> versions, Map<String, String> time) {}
+
     @Autowired
     public NpmPackumentIndex(ObjectMapper objectMapper, NpmPackumentIndexProperties properties,
             NpmTarballIndexDao tarballIndexDao) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.tarballIndexDao = tarballIndexDao;
+        this.indexingPermits = new Semaphore(properties.maxConcurrentIndexing());
     }
 
     public boolean isEnabled() {
@@ -140,36 +165,39 @@ public class NpmPackumentIndex {
         if (!properties.enabled()) {
             return 0;
         }
-        try (InputStream in = decode(new ByteArrayInputStream(body, 0, length), contentEncoding)) {
-            JsonNode root = objectMapper.readTree(in);
-            JsonNode versions = root.path("versions");
-            if (!versions.isObject()) {
+        // The decoded size is capped on its own : max-body-bytes only bounds the compressed bytes,
+        // and a few MB of gzip can inflate to gigabytes.
+        try (InputStream in = new DecodedSizeLimit(
+                decode(new ByteArrayInputStream(body, 0, length), contentEncoding), properties.maxDecodedBytes());
+             JsonParser parser = objectMapper.createParser(in)) {
+            // All or nothing, like the former tree parse : a body that fails halfway (truncated,
+            // over the decoded cap) indexes no version at all.
+            @Nullable StreamedPackument packument = streamPackument(parser);
+            if (packument == null) {
                 return 0;
             }
-            String defaultName = root.path("name").asString("");
-            JsonNode time = root.path("time");
             Instant now = Instant.now();
             int indexed = 0;
-            for (Map.Entry<String, JsonNode> entry : versions.properties()) {
-                JsonNode manifest = entry.getValue();
-                String tarball = manifest.path("dist").path("tarball").asString("");
-                if (tarball.isEmpty()) {
-                    continue;
-                }
-                String name = manifest.path("name").asString(defaultName);
-                String version = manifest.path("version").asString(entry.getKey());
+            for (VersionManifest manifest : packument.versions()) {
+                String name = manifest.name() != null ? manifest.name() : packument.name();
+                String version = manifest.version() != null ? manifest.version() : manifest.key();
                 if (name.isEmpty()) {
                     continue;
                 }
+                // A registry only speaks for the package whose packument it serves : a version
+                // claiming another package's name would let any tarball URL pass for that
+                // (vetted) package.
+                if (!packument.name().isEmpty() && !name.equals(packument.name())) {
+                    LOG.debug("Packument of {} declares version {} under another name ({}) : ignored",
+                            packument.name(), manifest.key(), name);
+                    continue;
+                }
+                String tarball = manifest.tarball();
                 String key = normalize(tarball);
                 if (key != null) {
-                    // "deprecated" is a free-text message when set (npm CLI convention) ; some
-                    // registries emit a boolean instead.
-                    JsonNode deprecatedNode = manifest.path("deprecated");
-                    boolean deprecated = deprecatedNode.isBoolean() ? deprecatedNode.asBoolean()
-                            : deprecatedNode.isString() && !deprecatedNode.asString().isBlank();
-                    @Nullable Instant publishedAt = parseInstant(time.path(entry.getKey()).asString(""));
-                    @Nullable String deprecationReason = deprecatedNode.isString() ? deprecatedNode.asString() : null;
+                    boolean deprecated = manifest.deprecated();
+                    @Nullable String deprecationReason = manifest.deprecationReason();
+                    @Nullable Instant publishedAt = parseInstant(packument.time().getOrDefault(manifest.key(), ""));
                     // No network call here when "time" is absent (npm's abbreviated format) : this
                     // runs while the client waits for the packument, once per version. The publish
                     // date is resolved on demand by SecurityService instead, only for the version
@@ -202,6 +230,104 @@ public class NpmPackumentIndex {
         }
     }
 
+    // Streams the packument token by token (no object tree : a popular package's abbreviated
+    // packument inflates to tens of MB of JSON), keeping only the root "name", "time" and, per
+    // version, the fields the index needs. Empty-handed (null) when the body is not a packument.
+    private @Nullable StreamedPackument streamPackument(JsonParser parser) {
+        if (parser.nextToken() != JsonToken.START_OBJECT) {
+            return null;
+        }
+        String name = "";
+        @Nullable List<VersionManifest> versions = null;
+        Map<String, String> time = new HashMap<>();
+        while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+            String field = parser.currentName();
+            JsonToken value = parser.nextToken();
+            if ("name".equals(field) && value == JsonToken.VALUE_STRING) {
+                name = parser.getString();
+            } else if ("versions".equals(field) && value == JsonToken.START_OBJECT) {
+                versions = streamVersions(parser);
+            } else if ("time".equals(field) && value == JsonToken.START_OBJECT) {
+                streamTime(parser, time);
+            } else {
+                parser.skipChildren();
+            }
+        }
+        // Anything but the closing brace here is malformed JSON the parser already rejected.
+        return versions != null ? new StreamedPackument(name, versions, time) : null;
+    }
+
+    private static List<VersionManifest> streamVersions(JsonParser parser) {
+        List<VersionManifest> versions = new ArrayList<>();
+        while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+            String key = parser.currentName();
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                parser.skipChildren();
+                continue;
+            }
+            VersionManifest manifest = streamManifest(parser, key);
+            if (manifest != null) {
+                versions.add(manifest);
+            }
+        }
+        return versions;
+    }
+
+    // Reads one version manifest, the parser positioned on its START_OBJECT ; null when it
+    // declares no tarball.
+    private static @Nullable VersionManifest streamManifest(JsonParser parser, String key) {
+        @Nullable String name = null;
+        @Nullable String version = null;
+        String tarball = "";
+        boolean deprecated = false;
+        @Nullable String deprecationReason = null;
+        while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+            String field = parser.currentName();
+            JsonToken value = parser.nextToken();
+            switch (field) {
+                case "name" -> name = value == JsonToken.VALUE_STRING ? parser.getString() : name;
+                case "version" -> version = value == JsonToken.VALUE_STRING ? parser.getString() : version;
+                case "dist" -> tarball = value == JsonToken.START_OBJECT ? streamTarball(parser) : tarball;
+                // "deprecated" is a free-text message when set (npm CLI convention) ; some
+                // registries emit a boolean instead.
+                case "deprecated" -> {
+                    if (value == JsonToken.VALUE_STRING) {
+                        deprecationReason = parser.getString();
+                        deprecated = !deprecationReason.isBlank();
+                    } else {
+                        deprecated = value == JsonToken.VALUE_TRUE;
+                    }
+                }
+                default -> { }
+            }
+            parser.skipChildren();
+        }
+        return tarball.isEmpty() ? null : new VersionManifest(key, name, version, tarball, deprecated, deprecationReason);
+    }
+
+    // Reads "dist" (parser on its START_OBJECT) and returns its "tarball", "" when absent.
+    private static String streamTarball(JsonParser parser) {
+        String tarball = "";
+        while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+            String field = parser.currentName();
+            if (parser.nextToken() == JsonToken.VALUE_STRING && "tarball".equals(field)) {
+                tarball = parser.getString();
+            }
+            parser.skipChildren();
+        }
+        return tarball;
+    }
+
+    private static void streamTime(JsonParser parser, Map<String, String> time) {
+        while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+            String key = parser.currentName();
+            if (parser.nextToken() == JsonToken.VALUE_STRING) {
+                time.put(key, parser.getString());
+            }
+            parser.skipChildren();
+        }
+    }
+
     @PreDestroy
     void shutdown() {
         persistExecutor.shutdown();
@@ -225,12 +351,51 @@ public class NpmPackumentIndex {
      * <p>The whole body is buffered (up to {@code max-body-bytes}) and indexed BEFORE the first
      * byte reaches the client : npm requests the tarballs as soon as it has parsed the packument,
      * so indexing after the copy would race with those requests. A body that exceeds the cap is
-     * relayed untouched (buffered prefix first, then streamed) and not indexed.
+     * relayed untouched (buffered prefix first, then streamed) and not indexed. So is any body
+     * that finds no indexing permit within {@link #INDEXING_PERMIT_WAIT} : it is streamed straight
+     * through, without buffering.
+     *
+     * @param contentLength the upstream {@code Content-Length} (bytes as received, encoded), -1
+     *                      when unknown : sizes the buffer up front instead of letting it grow
      */
-    public void relayAndIndex(InputStream body, @Nullable String contentEncoding, String packumentUrl,
-            OutputStream out) throws IOException {
+    public void relayAndIndex(InputStream body, @Nullable String contentEncoding, long contentLength,
+            String packumentUrl, OutputStream out) throws IOException {
         long cap = properties.maxBodyBytes();
-        ExposedByteArrayOutputStream buffer = new ExposedByteArrayOutputStream();
+        if (contentLength > cap) {
+            LOG.debug("npm packument announced larger than {} bytes : relayed without indexing", cap);
+            StreamUtils.copy(body, out);
+            return;
+        }
+        if (!acquireIndexingPermit()) {
+            LOG.debug("npm packument indexing saturated ({} concurrent) : {} relayed without indexing",
+                    properties.maxConcurrentIndexing(), packumentUrl);
+            StreamUtils.copy(body, out);
+            return;
+        }
+        // Held until the buffered body is written out : the permit bounds the buffers alive at once.
+        try {
+            bufferIndexAndRelay(body, contentEncoding, contentLength, packumentUrl, out);
+        } finally {
+            indexingPermits.release();
+        }
+    }
+
+    private boolean acquireIndexingPermit() {
+        try {
+            return indexingPermits.tryAcquire(INDEXING_PERMIT_WAIT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private void bufferIndexAndRelay(InputStream body, @Nullable String contentEncoding, long contentLength,
+            String packumentUrl, OutputStream out) throws IOException {
+        long cap = properties.maxBodyBytes();
+        // contentLength <= cap here : one exact allocation instead of repeated doublings.
+        ExposedByteArrayOutputStream buffer = contentLength > 0
+                ? new ExposedByteArrayOutputStream((int) Math.min(contentLength, Integer.MAX_VALUE - 8))
+                : new ExposedByteArrayOutputStream();
         byte[] chunk = new byte[16 * 1024];
         int read;
         while (buffer.size() <= cap && (read = body.read(chunk)) != -1) {
@@ -264,8 +429,59 @@ public class NpmPackumentIndex {
 
     /** Gives access to the internal array, so the buffered body is not copied a second time. */
     private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        ExposedByteArrayOutputStream() {
+            super();
+        }
+
+        ExposedByteArrayOutputStream(int size) {
+            super(size);
+        }
+
         byte[] array() {
             return buf;
+        }
+    }
+
+    /** Fails the read (so the indexing, never the relay) once more than {@code limit} bytes came out. */
+    private static final class DecodedSizeLimit extends FilterInputStream {
+        private final long limit;
+        private long count;
+
+        DecodedSizeLimit(InputStream in, long limit) {
+            super(in);
+            this.limit = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            if (b != -1) {
+                count(1);
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int n = super.read(b, off, len);
+            if (n > 0) {
+                count(n);
+            }
+            return n;
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            long skipped = super.skip(n);
+            count(skipped);
+            return skipped;
+        }
+
+        private void count(long n) throws IOException {
+            count += n;
+            if (count > limit) {
+                throw new IOException("Decoded packument exceeds " + limit + " bytes");
+            }
         }
     }
 

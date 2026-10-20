@@ -51,7 +51,7 @@ class PackageIdentificationServiceTest {
     private PackageIdentificationService service(UnidentifiedTarballAction action) {
         when(npmPackumentIndex.isEnabled()).thenReturn(true);
         return new PackageIdentificationService(urlParserService, npmPackumentIndex,
-                new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action));
+                new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action, 128L * 1024 * 1024, 16));
     }
 
     private void parserReturns(String packageName, String version, String ecosystem) {

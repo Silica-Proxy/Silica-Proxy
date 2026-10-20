@@ -47,7 +47,7 @@ class PackageIdentificationGradlePortalTest {
         when(npmPackumentIndex.isEnabled()).thenReturn(true);
         PackageIdentificationService service = new PackageIdentificationService(new UrlParserService(),
                 npmPackumentIndex, new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024,
-                        UnidentifiedTarballAction.ALLOW));
+                        UnidentifiedTarballAction.ALLOW, 128L * 1024 * 1024, 16));
         return service.identify(scheme + "://" + url, "https://" + url, headers);
     }
 

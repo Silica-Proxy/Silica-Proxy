@@ -87,7 +87,7 @@ class ProxyControllerResponseIdentificationTest {
     private final ResponseIdentificationService responseIdentification = mock(ResponseIdentificationService.class);
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private final NpmPackumentIndexProperties npmProperties =
-            new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW);
+            new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW, 128L * 1024 * 1024, 16);
     private final NpmPackumentIndex npmIndex =
             new NpmPackumentIndex(new JsonMapper(), npmProperties, mock(NpmTarballIndexDao.class));
     private final PackageIdentificationService packageIdentification =

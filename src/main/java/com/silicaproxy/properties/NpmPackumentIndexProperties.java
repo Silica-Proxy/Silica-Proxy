@@ -45,7 +45,13 @@ public record NpmPackumentIndexProperties(
     @DefaultValue("33554432") @Min(1024) long maxBodyBytes,
     // npm tarball request whose package/version could be identified neither from its URL nor
     // from a relayed packument : ALLOW relays it unchecked (bypass), BLOCK answers 403.
-    @DefaultValue("ALLOW") UnidentifiedTarballAction unidentifiedTarballAction
+    @DefaultValue("ALLOW") UnidentifiedTarballAction unidentifiedTarballAction,
+    // Cap on the DECODED packument : max-body-bytes only bounds the gzip/deflate bytes as
+    // received, which can inflate a thousandfold. Over it, the body is relayed but not indexed.
+    @DefaultValue("134217728") @Min(1024) long maxDecodedBytes,
+    // Packuments buffered and parsed at once (each holds up to max-body-bytes) ; when saturated, a
+    // packument is relayed without indexing. npm alone opens up to ~15 sockets per registry.
+    @DefaultValue("16") @Min(1) int maxConcurrentIndexing
 ) {
     @ConstructorBinding
     public NpmPackumentIndexProperties {
