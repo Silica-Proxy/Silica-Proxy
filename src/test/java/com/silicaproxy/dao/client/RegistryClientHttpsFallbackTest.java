@@ -46,12 +46,14 @@ class RegistryClientHttpsFallbackTest {
     private static final String LAST_MODIFIED = "Tue, 22 Sep 2026 00:27:17 GMT";
 
     private final List<String> calls = new ArrayList<>();
+    private ClientHttpRequestFactory factory;
+    private SsrfInterceptor passThrough;
     private RegistryClient client;
 
     @BeforeEach
     void setUp() throws Exception {
         // Maven Central never knows the artifact (a Gradle plugin marker) ; any other URL answers 200.
-        ClientHttpRequestFactory factory = (uri, method) -> {
+        factory = (uri, method) -> {
             calls.add(method + " " + uri);
             MockClientHttpResponse response = uri.toString().startsWith(CENTRAL)
                     ? new MockClientHttpResponse(new byte[0], HttpStatus.NOT_FOUND)
@@ -61,11 +63,15 @@ class RegistryClientHttpsFallbackTest {
             request.setResponse(response);
             return request;
         };
-        SsrfInterceptor passThrough = mock(SsrfInterceptor.class);
+        passThrough = mock(SsrfInterceptor.class);
         doAnswer(invocation -> ((ClientHttpRequestExecution) invocation.getArgument(2))
                 .execute(invocation.getArgument(0), invocation.getArgument(1)))
                 .when(passThrough).intercept(any(), any(), any());
-        client = new RegistryClient(properties(), factory, passThrough, new JsonMapper());
+        client = clientWith(HttpsUpgradePolicy.upgradeAll());
+    }
+
+    private RegistryClient clientWith(HttpsUpgradePolicy policy) {
+        return new RegistryClient(properties(), factory, passThrough, new JsonMapper(), policy);
     }
 
     private static SilicaProxyProperties properties() {
@@ -105,7 +111,7 @@ class RegistryClientHttpsFallbackTest {
 
     @Test
     void fallbackToAnHttpOnlyHostStaysInHttp() {
-        client.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
+        client = clientWith(HttpsUpgradePolicy.fromCsv("plugins.gradle.org"));
 
         RegistryLookup result = lookup("http://plugins.gradle.org/m2/com/acme/plugin/1.0/plugin-1.0.pom");
 
@@ -115,7 +121,7 @@ class RegistryClientHttpsFallbackTest {
 
     @Test
     void fallbackDropsTheServerPortThatLeakedIntoTheUrl() {
-        client.setHttpsUpgradePolicy(HttpsUpgradePolicy.fromCsv("", 8089));
+        client = clientWith(HttpsUpgradePolicy.fromCsv("", 8089));
 
         lookup("http://plugins.gradle.org:8089/m2/com/acme/plugin/1.0/plugin-1.0.pom");
 

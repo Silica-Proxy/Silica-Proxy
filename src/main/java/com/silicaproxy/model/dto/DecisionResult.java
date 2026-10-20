@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-
 package com.silicaproxy.model.dto;
 
 import org.jspecify.annotations.NullMarked;
@@ -24,7 +23,20 @@ import org.jspecify.annotations.Nullable;
 // the source that ruled (company policy, public vulnerability, cache, or fallback API).
 @NullMarked
 public record DecisionResult(
-    String sourceType,
-    String result,
+    DecisionSource sourceType,
+    Verdict result,
     @Nullable String reason
-) {}
+) {
+
+    public static DecisionResult allow(DecisionSource source, String reason) {
+        return new DecisionResult(source, Verdict.ALLOW, reason);
+    }
+
+    public static DecisionResult block(DecisionSource source, @Nullable String reason) {
+        return new DecisionResult(source, Verdict.BLOCK, reason);
+    }
+
+    public boolean isBlocked() {
+        return result.isBlocking();
+    }
+}

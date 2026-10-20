@@ -22,9 +22,11 @@ import com.silicaproxy.dao.client.ExternalValidationClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationMode;
 import com.silicaproxy.properties.SilicaProxyProperties.ExternalValidationServiceProperties;
 import io.micrometer.core.annotation.Timed;
 import jakarta.annotation.PostConstruct;
@@ -89,7 +91,7 @@ public class ExternalValidationService {
         // unreachable relative URL to the external service the first time an ASYNC callback
         // would be built.
         boolean anyAsync = services.values().stream()
-                .anyMatch(p -> Metrics.TYPE_ASYNC.equalsIgnoreCase(p.mode()));
+                .anyMatch(p -> p.mode() == ExternalValidationMode.ASYNC);
         String callbackBaseUrl = properties.externalValidation().callbackBaseUrl();
         if (anyAsync && (callbackBaseUrl == null || callbackBaseUrl.isBlank())) {
             throw new IllegalStateException(
@@ -123,7 +125,7 @@ public class ExternalValidationService {
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> asyncServices = enabled.stream()
-                .filter(e -> Metrics.TYPE_ASYNC.equalsIgnoreCase(e.getValue().mode()))
+                .filter(e -> e.getValue().mode() == ExternalValidationMode.ASYNC)
                 .toList();
 
         // Short-circuit: a permanent BLOCK verdict from any blocking service already
@@ -144,7 +146,7 @@ public class ExternalValidationService {
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> syncServices = enabled.stream()
-                .filter(e -> Metrics.TYPE_SYNC.equalsIgnoreCase(e.getValue().mode()))
+                .filter(e -> e.getValue().mode() == ExternalValidationMode.SYNC)
                 .toList();
 
         // 1. Run all SYNC services in parallel, wait for all results
@@ -179,10 +181,10 @@ public class ExternalValidationService {
             boolean realVerdict = allOutcomes.stream().anyMatch(o -> o == ServiceOutcome.BLOCK);
             metrics.recordBlockReasonMetric(realVerdict ? Metrics.REASON_VERDICT : Metrics.REASON_FAIL_CLOSED);
             String reason = buildBlockReason(enabled, packageName, version, ecosystem);
-            return Optional.of(new DecisionResult("EXTERNAL_VALIDATION", "BLOCK", reason));
+            return Optional.of(DecisionResult.block(DecisionSource.EXTERNAL_VALIDATION, reason));
         }
 
-        return Optional.of(new DecisionResult("EXTERNAL_VALIDATION", "ALLOW",
+        return Optional.of(DecisionResult.allow(DecisionSource.EXTERNAL_VALIDATION,
                 "All external validation services allowed this package."));
     }
 
@@ -192,14 +194,18 @@ public class ExternalValidationService {
     public CallbackResult processCallback(
             UUID callbackToken, String verdict, @Nullable String reason, @Nullable String providedApiKey) {
         Optional<ExternalValidationCacheEntry> entry = cacheDao.findByCallbackToken(callbackToken);
-        if (entry.isEmpty()) {
-            // Token doesn't exist at all -- serviceName is unknowable at this point.
-            metrics.recordCallbackMetric(Metrics.SERVICE_UNKNOWN, CallbackResult.NOT_FOUND.name());
-            return CallbackResult.NOT_FOUND;
-        }
-        ExternalValidationCacheEntry e = entry.get();
+        // A token that doesn't exist at all has no knowable serviceName.
+        String serviceName = entry.map(ExternalValidationCacheEntry::serviceName).orElse(Metrics.SERVICE_UNKNOWN);
+        CallbackResult result = entry
+                .map(e -> applyCallback(e, callbackToken, verdict, reason, providedApiKey))
+                .orElse(CallbackResult.NOT_FOUND);
+        metrics.recordCallbackMetric(serviceName, result.name());
+        return result;
+    }
+
+    private CallbackResult applyCallback(ExternalValidationCacheEntry e, UUID callbackToken, String verdict,
+            @Nullable String reason, @Nullable String providedApiKey) {
         if (!"PENDING".equals(e.status())) {
-            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
             return CallbackResult.NOT_FOUND;
         }
 
@@ -210,7 +216,6 @@ public class ExternalValidationService {
                 && !constantTimeEquals(expectedApiKey, providedApiKey)) {
             LOG.warn("External validation callback for service {} rejected: missing or invalid API key",
                     e.serviceName());
-            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.UNAUTHORIZED.name());
             return CallbackResult.UNAUTHORIZED;
         }
 
@@ -222,26 +227,21 @@ public class ExternalValidationService {
             // so a duplicate/racing callback delivery for the same token can't double-process
             // it), then write to verdicts table.
             if (!cacheDao.deleteByToken(callbackToken)) {
-                metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
                 return CallbackResult.NOT_FOUND;
             }
             verdictsDao.save(e.serviceName(), e.packageName(), e.ecosystem(), e.packageVersion(), reason);
             metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.BLOCKED);
-            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.PROCESSED.name());
             return CallbackResult.PROCESSED;
         }
         if (Metrics.ALLOWED.equalsIgnoreCase(verdict)) {
             int cacheTtlMinutes = props != null ? props.cacheTtlMinutes() : 60;
             Instant cacheExpiry = Instant.now().plus(cacheTtlMinutes, ChronoUnit.MINUTES);
             if (!cacheDao.updateToAllowedByToken(callbackToken, reason, cacheExpiry)) {
-                metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
                 return CallbackResult.NOT_FOUND;
             }
             metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.ALLOWED);
-            metrics.recordCallbackMetric(e.serviceName(), CallbackResult.PROCESSED.name());
             return CallbackResult.PROCESSED;
         }
-        metrics.recordCallbackMetric(e.serviceName(), CallbackResult.NOT_FOUND.name());
         return CallbackResult.NOT_FOUND;
     }
 
@@ -277,7 +277,7 @@ public class ExternalValidationService {
             if (props != null && props.blocking()) {
                 String reason = verdict.reason() != null
                         ? verdict.reason() : "Package blocked by external validation service.";
-                return Optional.of(new DecisionResult("EXTERNAL_VALIDATION", "BLOCK", reason));
+                return Optional.of(DecisionResult.block(DecisionSource.EXTERNAL_VALIDATION, reason));
             }
         }
         return Optional.empty();

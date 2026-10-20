@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.service.interception.ResponseIdentificationService;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -133,7 +135,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
     void shouldBlockMavenPackageWhenBlacklisted() {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('org.slf4j:slf4j-api', 'maven', '%', 'BLACKLIST', 'Forbidden by security', 'admin', NOW())
+            VALUES ('org.slf4j:slf4j-api', 'maven', '%', 'BLOCK', 'Forbidden by security', 'admin', NOW())
         """).update();
 
         try {
@@ -188,7 +190,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
     void shouldBlockNpmPackageWhenBlacklisted() {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('lodash', 'npm', '%', 'BLACKLIST', 'NPM Package banned', 'admin', NOW())
+            VALUES ('lodash', 'npm', '%', 'BLOCK', 'NPM Package banned', 'admin', NOW())
         """).update();
 
         try {
@@ -365,7 +367,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         // in the single SQL query of DecisionDao, even facing a known critical vulnerability.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('vuln-allowed-pkg', 'npm', '%', 'WHITELIST', 'Approved security exception', 'security', NOW())
+            VALUES ('vuln-allowed-pkg', 'npm', '%', 'ALLOW', 'Approved security exception', 'security', NOW())
         """).update();
         jdbcClient.sql("""
             INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, affected_versions, cvss_score)
@@ -383,7 +385,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         List<Map<String, Object>> logs = awaitAuditLogRow("vuln-allowed-pkg");
         assertThat(logs).hasSize(1);
         assertThat(logs.get(0).get("decision_source")).isEqualTo("COMPANY_POLICY");
-        assertThat(logs.get(0).get("verdict")).isEqualTo("WHITELIST");
+        assertThat(logs.get(0).get("verdict")).isEqualTo("ALLOW");
     }
 
     @Test
@@ -570,7 +572,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
     void shouldPersistAuditLogRowThroughFullControllerServiceDaoChain() throws Exception {
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('audited-pkg', 'npm', '%', 'WHITELIST', 'Test audit', 'security', NOW())
+            VALUES ('audited-pkg', 'npm', '%', 'ALLOW', 'Test audit', 'security', NOW())
         """).update();
         stubStreaming("ok".getBytes());
 
@@ -585,7 +587,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         assertThat(log.get("package_version")).isEqualTo("1.0.0");
         assertThat(log.get("ecosystem")).isEqualTo("npm");
         assertThat(log.get("decision_source")).isEqualTo("COMPANY_POLICY");
-        assertThat(log.get("verdict")).isEqualTo("WHITELIST");
+        assertThat(log.get("verdict")).isEqualTo("ALLOW");
         assertThat((Integer) log.get("execution_time_ms")).isGreaterThanOrEqualTo(0);
     }
 
@@ -611,7 +613,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         // 2. Corporate governance manually blacklists the package afterwards.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('dynamic-allow-then-block-pkg', 'npm', '%', 'BLACKLIST', 'Blacklist after security review', 'security', NOW())
+            VALUES ('dynamic-allow-then-block-pkg', 'npm', '%', 'BLOCK', 'Blacklist after security review', 'security', NOW())
         """).update();
 
         // 3. Same package/version : now blocked. The corporate policy (priority 1)
@@ -650,7 +652,7 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         // 2. An exception is manually approved by security despite the CVE.
         jdbcClient.sql("""
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, updated_at)
-            VALUES ('dynamic-block-then-allow-pkg', 'npm', '%', 'WHITELIST', 'Exception approved despite CVE', 'security', NOW())
+            VALUES ('dynamic-block-then-allow-pkg', 'npm', '%', 'ALLOW', 'Exception approved despite CVE', 'security', NOW())
         """).update();
         stubStreaming("ok".getBytes());
 
@@ -683,7 +685,8 @@ class ProxyControllerIntegrationTest extends BaseIntegrationTest {
         
         // Create the controller
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
-                packageIdentification, npmPackumentIndex, meterRegistry, objectMapper);
+                packageIdentification, npmPackumentIndex, HttpsUpgradePolicy.upgradeAll(),
+                mock(ResponseIdentificationService.class), new ProxyControllerMetrics(meterRegistry), objectMapper);
         
         // Call the method directly
         controller.proxyRequest(mockRequest, mockResponse);

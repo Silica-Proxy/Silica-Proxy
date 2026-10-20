@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -266,7 +267,7 @@ public class GitOpsSyncService {
                             rulePackage,
                             ecosystem,
                             sqlPattern,
-                            ruleAction.toUpperCase(),
+                            ruleAction.toUpperCase(Locale.ROOT),
                             ruleReason,
                             "gitops_sync"
                     ));

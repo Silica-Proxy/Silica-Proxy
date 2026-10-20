@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,8 +79,8 @@ class SecurityServiceRegistryErrorVulnCheckTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("vuln-during-outage", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -90,8 +92,8 @@ class SecurityServiceRegistryErrorVulnCheckTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("clean-during-outage", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(allowRowsInApiCache("clean-during-outage")).isZero();
     }
 
@@ -102,8 +104,8 @@ class SecurityServiceRegistryErrorVulnCheckTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("all-down-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
         assertThat(allowRowsInApiCache("all-down-pkg")).isZero();
     }
 }

@@ -19,6 +19,7 @@ package com.silicaproxy.service.decision;
 
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.RangeCandidate;
 import com.silicaproxy.service.vulnerability.version.OsvRangeEvaluator;
 import org.jspecify.annotations.NullMarked;
@@ -54,7 +55,7 @@ public class LocalDecisionEvaluator {
         Optional<DecisionResult> sqlDecision = decisionDao.evaluateDecision(packageName, version, ecosystem, minCvss);
         // P1 (company policy) and P2 (enumerated public vulnerability) are final ; an api_cache
         // (P3) verdict is not yet : OSV ranges (P2 rank) must outrank it.
-        if (sqlDecision.isPresent() && !"API_CACHE".equals(sqlDecision.get().sourceType())) {
+        if (sqlDecision.isPresent() && sqlDecision.get().sourceType() != DecisionSource.API_CACHE) {
             return sqlDecision;
         }
         Optional<DecisionResult> rangeDecision = matchRanges(packageName, version, ecosystem, minCvss);
@@ -74,9 +75,9 @@ public class LocalDecisionEvaluator {
                 continue;
             }
             if (OsvRangeEvaluator.isAffected(ecosystem, version, ranges)) {
-                String sourceType = candidate.id().startsWith("MAL-") || "OPENSSF".equals(candidate.source())
-                        ? "PUBLIC_VULN_MALWARE" : "PUBLIC_VULN";
-                return Optional.of(new DecisionResult(sourceType, "BLOCK", candidate.summary()));
+                DecisionSource source = candidate.id().startsWith("MAL-") || "OPENSSF".equals(candidate.source())
+                        ? DecisionSource.PUBLIC_VULN_MALWARE : DecisionSource.PUBLIC_VULN;
+                return Optional.of(DecisionResult.block(source, candidate.summary()));
             }
         }
         return Optional.empty();

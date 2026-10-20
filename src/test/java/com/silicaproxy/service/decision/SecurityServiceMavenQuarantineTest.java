@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,8 +65,8 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("com.example:new-artifact", "1.0.0", "maven", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
     }
 
     @Test
@@ -82,8 +84,8 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("com.example:old-artifact", "1.0.0", "maven", "");
 
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
     }
 
     @Test
@@ -105,8 +107,8 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision(
                 "com.example:fallback-new-artifact", "1.0.0", "maven", fullUrl);
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
     }
 
     @Test
@@ -130,8 +132,8 @@ class SecurityServiceMavenQuarantineTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision(
                 "com.example:fallback-old-artifact", "1.0.0", "maven", fullUrl);
 
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
     }
 
     private String formatHttpDate(Instant instant) {

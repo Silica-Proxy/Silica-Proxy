@@ -94,15 +94,15 @@ class ProxyK6LoadTest {
 
         List<Object[]> policies = new ArrayList<>();
         for (int i = 0; i < 10000; i++) {
-            policies.add(new Object[]{"blocked-company-" + i, "npm", "*", "BLACKLIST", "Blocked by company governance policy", "admin-test"});
+            policies.add(new Object[]{"blocked-company-" + i, "npm", "*", "BLOCK", "Blocked by company governance policy", "admin-test"});
         }
         for (int i = 0; i < 10000; i++) {
-            policies.add(new Object[]{"blocked-pypi-" + i, "pypi", "*", "BLACKLIST", "Blocked by company governance policy", "admin-test"});
+            policies.add(new Object[]{"blocked-pypi-" + i, "pypi", "*", "BLOCK", "Blocked by company governance policy", "admin-test"});
         }
         for (int i = 0; i < 10000; i++) {
-            policies.add(new Object[]{"com.example:blocked-maven-" + i, "maven", "*", "BLACKLIST", "Blocked by company governance policy", "admin-test"});
+            policies.add(new Object[]{"com.example:blocked-maven-" + i, "maven", "*", "BLOCK", "Blocked by company governance policy", "admin-test"});
         }
-        policies.add(new Object[]{"ansi-styles", "npm", "5.2.0", "WHITELIST", "Allowed for testing streaming performance", "admin-test"});
+        policies.add(new Object[]{"ansi-styles", "npm", "5.2.0", "ALLOW", "Allowed for testing streaming performance", "admin-test"});
 
         jdbcTemplate.batchUpdate("""
                 INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)

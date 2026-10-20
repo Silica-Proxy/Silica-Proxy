@@ -17,6 +17,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.service.interception.ResponseIdentificationService;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
@@ -69,7 +71,8 @@ class ProxyControllerUnidentifiedTarballTest {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), properties, mock(NpmTarballIndexDao.class));
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
                 new PackageIdentificationService(urlParserService, index, properties), index,
-                new SimpleMeterRegistry(), new JsonMapper());
+                HttpsUpgradePolicy.upgradeAll(), mock(ResponseIdentificationService.class),
+                new ProxyControllerMetrics(new SimpleMeterRegistry()), new JsonMapper());
         when(urlParserService.parseUrl(anyString())).thenReturn(new ParsedPackage("unknown", "unknown", "unknown"));
         when(urlParserService.detectNpmMetadata(anyString(), any(HttpHeaders.class)))
                 .thenReturn(Optional.of(new ParsedPackage("unknown", "unknown", "npm")));

@@ -16,6 +16,8 @@
 
 package com.silicaproxy.controller;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.dao.client.DepsDevClient;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -161,7 +163,7 @@ class ResponseIdentificationRealCallsIntegrationTest {
     void shouldBlockRealJarServedUnderOpaqueUrl() throws Exception {
         upstreamServes(jar, announcedSha1);
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult("COMPANY_POLICY", "BLACKLIST", "Blacklisted for the test."));
+                .thenReturn(new DecisionResult(DecisionSource.COMPANY_POLICY, Verdict.BLOCK, "Blacklisted for the test."));
 
         assertThatThrownBy(() -> proxyRestClient.get().uri(OPAQUE_URL).retrieve().toEntity(byte[].class))
                 .isInstanceOfSatisfying(HttpClientErrorException.class, e -> {
@@ -175,7 +177,7 @@ class ResponseIdentificationRealCallsIntegrationTest {
     void shouldRelayRealJarServedUnderOpaqueUrlWhenAllowed() throws Exception {
         upstreamServes(jar, announcedSha1);
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule)."));
+                .thenReturn(new DecisionResult(DecisionSource.DEFAULT, Verdict.ALLOW, "Allowed by default (no blocking rule)."));
 
         byte[] relayed = proxyRestClient.get().uri(OPAQUE_URL).retrieve().body(byte[].class);
 
@@ -186,7 +188,7 @@ class ResponseIdentificationRealCallsIntegrationTest {
     @Test
     void shouldStoreIdentifiedDigestAndNotAskDepsDevAgain() throws Exception {
         when(securityService.getDecision(anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new DecisionResult("DEFAULT", "ALLOW", "Allowed by default (no blocking rule)."));
+                .thenReturn(new DecisionResult(DecisionSource.DEFAULT, Verdict.ALLOW, "Allowed by default (no blocking rule)."));
 
         upstreamServes(jar, announcedSha1);
         assertThat(proxyRestClient.get().uri(OPAQUE_URL).retrieve().body(byte[].class)).isEqualTo(jar);

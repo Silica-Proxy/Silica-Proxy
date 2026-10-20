@@ -29,6 +29,7 @@ import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.stereotype.Component;
 import io.micrometer.core.annotation.Timed;
 
+import java.util.Locale;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,7 +38,7 @@ import java.net.URI;
 /**
  * Relays the download of a package binary (jar/tgz/whl) in strict streaming
  * (without loading the file in memory), propagating authorization headers received
- * from the artifacts repository. Called by {@code ProxyController} only after an ALLOW/WHITELIST 
+ * from the artifacts repository. Called by {@code ProxyController} only after an ALLOW 
  * verdict, to forward the public registry response directly to the calling client.
  */
 @Component
@@ -65,7 +66,7 @@ public class ProxyStreamClient {
         headers.forEach((headerName, headerValues) -> {
             if (!headerName.equalsIgnoreCase("Host") 
                     && !headerName.equalsIgnoreCase("Connection")
-                    && !headerName.toLowerCase().startsWith("x-forwarded-")
+                    && !headerName.toLowerCase(Locale.ROOT).startsWith("x-forwarded-")
                     && !headerName.equalsIgnoreCase("x-real-ip")) {
                 request.getHeaders().addAll(headerName, headerValues);
             }

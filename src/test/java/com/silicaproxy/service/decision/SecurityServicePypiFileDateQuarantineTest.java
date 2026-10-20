@@ -16,6 +16,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -75,8 +77,8 @@ class SecurityServicePypiFileDateQuarantineTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", fullUrl);
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
     }
 
     @Test
@@ -85,7 +87,7 @@ class SecurityServicePypiFileDateQuarantineTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", fullUrl);
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_QUARANTINE");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_QUARANTINE);
     }
 }

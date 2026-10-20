@@ -17,6 +17,8 @@
 
 package com.silicaproxy.service.decision;
 
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,8 +74,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("ghost-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_NOT_FOUND");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_NOT_FOUND);
     }
 
     @Test
@@ -85,8 +87,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("known-pkg", "9.9.9", "pypi", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_NOT_FOUND");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_NOT_FOUND);
     }
 
     @Test
@@ -95,8 +97,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("down-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -108,8 +110,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
         DecisionResult decision = securityService.getDecision(
                 "com.example:ghost", "1.0.0", "maven", wireMock.baseUrl() + interceptedPath);
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_NOT_FOUND");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_NOT_FOUND);
     }
 
     @Test
@@ -118,8 +120,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("com.example:down", "1.0.0", "maven", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -128,8 +130,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("ghost-npm-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("BLOCK");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_NOT_FOUND");
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_NOT_FOUND);
     }
 
     @Test
@@ -138,8 +140,8 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("down-npm-pkg", "1.0.0", "npm", "");
 
-        assertThat(decision.result()).isEqualTo("ALLOW");
-        assertThat(decision.sourceType()).isEqualTo("REGISTRY_ERROR");
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_ERROR);
     }
 
     @Test
@@ -157,7 +159,7 @@ class SecurityServiceUnknownVersionActionTest extends BaseIntegrationTest {
 
         DecisionResult decision = securityService.getDecision("later-pkg", "1.0.0", "pypi", "");
 
-        assertThat(decision.sourceType()).isNotEqualTo("REGISTRY_NOT_FOUND");
-        assertThat(decision.result()).isEqualTo("ALLOW");
+        assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_NOT_FOUND);
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
     }
 }
