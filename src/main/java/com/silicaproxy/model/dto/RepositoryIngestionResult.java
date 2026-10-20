@@ -19,9 +19,10 @@ package com.silicaproxy.model.dto;
 import org.jspecify.annotations.NullMarked;
 
 /**
- * Result of {@code VulnerabilityIngestionService.ingestOsvRepository()} : the OSV files found
- * in a cloned advisory repository, the rows upserted from them and the files that failed.
+ * Result of the ingestion of a cloned advisory repository ({@code VulnerabilityIngestionService}) :
+ * the advisory files found, the rows upserted from them, the files deliberately left out
+ * (already covered by another source, empty range) and the files that failed.
  */
 @NullMarked
-public record RepositoryIngestionResult(long filesTotal, UpsertCounts counts, long filesFailed) {
+public record RepositoryIngestionResult(long filesTotal, UpsertCounts counts, long filesSkipped, long filesFailed) {
 }
