@@ -23,6 +23,8 @@ import com.silicaproxy.model.dto.PolicyEvaluationResponse;
 import com.silicaproxy.model.dto.PolicySimulationRequest;
 import com.silicaproxy.model.dto.SimulationPolicyInput;
 import com.silicaproxy.model.dto.Verdict;
+import com.silicaproxy.service.interception.ParsedPackage;
+import com.silicaproxy.service.interception.PypiNames;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.stereotype.Service;
 
@@ -50,7 +52,9 @@ public class PolicySimulationService {
     }
 
     public PolicyEvaluationResponse evaluateFromDb(String packageName, String version, String ecosystem) {
-        List<MatchedPolicyDto> matches = gitOpsDao.findMatchingPolicies(packageName, version, ecosystem);
+        // Same PEP 503 normalization as the proxy applies to the PyPI names it identifies.
+        String lookupName = ParsedPackage.PYPI.equals(ecosystem) ? PypiNames.normalize(packageName) : packageName;
+        List<MatchedPolicyDto> matches = gitOpsDao.findMatchingPolicies(lookupName, version, ecosystem);
         return buildResponse(matches);
     }
 

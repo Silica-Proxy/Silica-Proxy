@@ -17,6 +17,7 @@
 
 package com.silicaproxy.dao.client;
 
+import com.silicaproxy.model.dto.AdvisoryFinding;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.HashLookup;
 import com.silicaproxy.model.dto.HashType;
@@ -35,6 +36,7 @@ import java.util.Locale;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
@@ -71,16 +73,13 @@ public class DepsDevClient {
                 .build();
     }
 
-    private static List<String> extractAdvisoryIds(@Nullable List<?> advisoryKeys) {
-        if (advisoryKeys == null) {
-            return List.of();
+    // An advisory key is {"id": "GHSA-..."} ; any other shape still counts as one advisory, so an
+    // unexpected format never turns a reported advisory into "nothing found".
+    private static String advisoryKeyId(@Nullable Object advisoryKey) {
+        if (advisoryKey instanceof Map<?, ?> map && map.get("id") instanceof String id) {
+            return id;
         }
-        return advisoryKeys.stream()
-                .filter(Map.class::isInstance)
-                .map(entry -> ((Map<?, ?>) entry).get("id"))
-                .filter(String.class::isInstance)
-                .map(String.class::cast)
-                .toList();
+        return String.valueOf(advisoryKey);
     }
 
     @SuppressWarnings("unchecked")
@@ -93,14 +92,16 @@ public class DepsDevClient {
         String baseUrl = depsDevProps.url().endsWith("/")
                 ? depsDevProps.url().substring(0, depsDevProps.url().length() - 1)
                 : depsDevProps.url();
-        String url = baseUrl + "/systems/" + mapEcosystemToDepsDevSystem(ecosystem)
-                + "/packages/" + URLEncoder.encode(packageName, StandardCharsets.UTF_8)
-                + "/versions/" + URLEncoder.encode(version, StandardCharsets.UTF_8);
+        // Already percent-encoded ("@scope/name" -> "%40scope%2Fname") : passed as a URI so RestClient
+        // does not encode the '%' a second time, as the String (URI template) overload would.
+        URI uri = URI.create(baseUrl + "/systems/" + mapEcosystemToDepsDevSystem(ecosystem)
+                + "/packages/" + encodePathSegment(packageName)
+                + "/versions/" + encodePathSegment(version));
 
         long start = System.nanoTime();
         try {
             Map<String, Object> response = restClient.get()
-                    .uri(url)
+                    .uri(uri)
                     .retrieve()
                     .body(Map.class);
 
@@ -108,10 +109,16 @@ public class DepsDevClient {
             if (response == null) {
                 return new ApiCheckResult(false, 0, 200, responseTimeMs, null);
             }
-            List<?> advisoryKeys = (List<?>) response.get("advisoryKeys");
-            int vulnCount = advisoryKeys != null ? advisoryKeys.size() : 0;
-            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null,
-                    extractAdvisoryIds(advisoryKeys));
+            // GetVersion only gives the advisory keys, no severity : every advisory is reported with
+            // an unknown score, so silicaproxy.severity-threshold.unknown-severity-action decides
+            // (BLOCK by default, as before).
+            List<AdvisoryFinding> findings = new ArrayList<>();
+            if (response.get("advisoryKeys") instanceof List<?> advisoryKeys) {
+                for (Object advisoryKey : advisoryKeys) {
+                    findings.add(new AdvisoryFinding(advisoryKeyId(advisoryKey), List.of(), null));
+                }
+            }
+            return ApiCheckResult.ofFindings(200, responseTimeMs, findings);
         } catch (HttpStatusCodeException e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from deps.dev API for {}/{} ({})", e.getStatusCode().value(),
@@ -206,6 +213,11 @@ public class DepsDevClient {
             default -> null;
         };
         return ecosystem == null ? Optional.empty() : Optional.of(List.of(ecosystem, name, ver));
+    }
+
+    // URLEncoder is form encoding : its '+' for a space is turned into the path-safe "%20".
+    private static String encodePathSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     private String mapEcosystemToDepsDevSystem(String ecosystem) {

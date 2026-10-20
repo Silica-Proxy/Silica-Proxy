@@ -34,10 +34,18 @@ public class SecurityServiceCaches {
 
     private final MetadataCacheDao metadataCacheDao;
     private final SeverityMappingsCache severityMappingsCache;
+    private final SeverityPolicy severityPolicy;
 
-    public SecurityServiceCaches(MetadataCacheDao metadataCacheDao, SeverityMappingsCache severityMappingsCache) {
+    public SecurityServiceCaches(MetadataCacheDao metadataCacheDao, SeverityMappingsCache severityMappingsCache,
+            SeverityPolicy severityPolicy) {
         this.metadataCacheDao = metadataCacheDao;
         this.severityMappingsCache = severityMappingsCache;
+        this.severityPolicy = severityPolicy;
+    }
+
+    /** Severity threshold per ecosystem, built on the severity mappings. */
+    public SeverityPolicy severityPolicy() {
+        return severityPolicy;
     }
 
     public MetadataCacheDao metadataCacheDao() {

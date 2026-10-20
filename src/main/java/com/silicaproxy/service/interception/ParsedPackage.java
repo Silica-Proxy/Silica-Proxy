@@ -33,6 +33,14 @@ public record ParsedPackage(String packageName, String version, String ecosystem
     public static final String PYPI = "pypi";
     public static final String MAVEN = "maven";
 
+    // A PyPI name is normalized (PEP 503) whatever the layer that identified it (URL, client
+    // hints, upstream digest), so that it matches OSV advisories and GitOps rules.
+    public ParsedPackage {
+        if (PYPI.equals(ecosystem) && !UNKNOWN.equals(packageName)) {
+            packageName = PypiNames.normalize(packageName);
+        }
+    }
+
     /** A resource of {@code ecosystem} (possibly {@link #UNKNOWN}) naming no package version. */
     public static ParsedPackage unknown(String ecosystem) {
         return new ParsedPackage(UNKNOWN, UNKNOWN, ecosystem);

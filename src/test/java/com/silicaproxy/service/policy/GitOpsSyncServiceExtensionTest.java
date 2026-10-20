@@ -146,6 +146,28 @@ class GitOpsSyncServiceExtensionTest {
     }
 
     @Test
+    void shouldNormalizePypiRuleNamesPerPep503() throws Exception {
+        Files.writeString(tempDir.resolve("pypi.yaml"), """
+                rules:
+                  - package: "typing_extensions"
+                    version: "*"
+                    action: "block"
+                    reason: "PEP 503"
+                  - package: "Django*"
+                    version: "*"
+                    action: "block"
+                    reason: "wildcard kept"
+                """);
+
+        service.syncCompanyPolicies();
+
+        ArgumentCaptor<List<CompanyPolicy>> captor = policyCaptor();
+        verify(gitOpsDao).replaceCompanyPolicies(eq("pypi"), captor.capture());
+        assertThat(captor.getValue()).extracting(CompanyPolicy::packageName)
+                .containsExactly("typing-extensions", "django*");
+    }
+
+    @Test
     void shouldReadPypiYmlExtension() throws Exception {
         Files.writeString(tempDir.resolve("pypi.yml"), """
                 rules:

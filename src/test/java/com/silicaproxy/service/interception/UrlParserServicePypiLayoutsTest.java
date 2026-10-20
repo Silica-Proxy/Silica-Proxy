@@ -43,8 +43,8 @@ class UrlParserServicePypiLayoutsTest {
         "https://devpi.corp/root/pypi/+f/abc/def0123/requests-2.31.0-py3-none-any.whl, requests, 2.31.0",
         "https://devpi.corp/root/pypi/+f/abc/def0123/requests-2.31.0.tar.gz, requests, 2.31.0",
         // GitLab, with and without a relative URL root
-        "https://gitlab.corp/api/v4/projects/42/packages/pypi/files/0a1b2c3d/acme_lib-1.2.0.tar.gz, acme_lib, 1.2.0",
-        "https://corp.example/gitlab/api/v4/projects/42/packages/pypi/files/0a1b2c3d/acme_lib-1.2.0-py3-none-any.whl, acme_lib, 1.2.0",
+        "https://gitlab.corp/api/v4/projects/42/packages/pypi/files/0a1b2c3d/acme_lib-1.2.0.tar.gz, acme-lib, 1.2.0",
+        "https://corp.example/gitlab/api/v4/projects/42/packages/pypi/files/0a1b2c3d/acme_lib-1.2.0-py3-none-any.whl, acme-lib, 1.2.0",
         // wheel on an arbitrary path
         "https://cdn.corp/wheels/requests-2.31.0-py3-none-any.whl, requests, 2.31.0",
         // build tag and repeated ABI tag behind a prefix

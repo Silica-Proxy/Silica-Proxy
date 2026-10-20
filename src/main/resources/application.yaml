@@ -109,6 +109,10 @@ silicaproxy:
     default-max-allowed-severity: CRITICAL
     # Default maximum allowed CVSS numerical score (range from 0.0 to 10.0)
     default-max-allowed-cvss: 7.0
+    # Advisory with no score at all, neither its own (CVSS vector, qualitative severity) nor
+    # inherited from an alias (e.g. the GHSA advisory of a PYSEC one) : BLOCK or ALLOW.
+    # Also applies to deps.dev, whose API reports advisories without any severity.
+    unknown-severity-action: BLOCK
     # Ecosystem-specific settings
     ecosystems:
       npm:
