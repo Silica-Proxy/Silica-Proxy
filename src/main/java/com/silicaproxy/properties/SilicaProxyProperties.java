@@ -152,12 +152,23 @@ public record SilicaProxyProperties(
         boolean enabled,
         @NotBlank String defaultMaxAllowedSeverity,
         double defaultMaxAllowedCvss,
-        @NotNull Map<String, EcosystemSeverityProperties> ecosystems
+        @NotNull Map<String, EcosystemSeverityProperties> ecosystems,
+        // What to do with an advisory that carries no score at all (no CVSS vector, no
+        // qualitative severity), neither itself nor through any of its aliases.
+        @DefaultValue("BLOCK") UnknownSeverityAction unknownSeverityAction
     ) {
+        @ConstructorBinding
         public SeverityThresholdProperties {
             ecosystems = Collections.unmodifiableMap(new HashMap<>(ecosystems));
         }
+
+        public SeverityThresholdProperties(boolean enabled, String defaultMaxAllowedSeverity,
+                double defaultMaxAllowedCvss, Map<String, EcosystemSeverityProperties> ecosystems) {
+            this(enabled, defaultMaxAllowedSeverity, defaultMaxAllowedCvss, ecosystems, UnknownSeverityAction.BLOCK);
+        }
     }
+
+    public enum UnknownSeverityAction { BLOCK, ALLOW }
 
     public record EcosystemSeverityProperties(
         @NotBlank String maxAllowedSeverity,

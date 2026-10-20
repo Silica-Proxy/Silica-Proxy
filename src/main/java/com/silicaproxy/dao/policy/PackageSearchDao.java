@@ -87,7 +87,8 @@ public class PackageSearchDao {
                   COALESCE((SELECT jsonb_agg(v) FROM jsonb_array_elements_text(affected_versions) AS v
                             WHERE v ~ :versionRegex), '[]'::jsonb)::text"""
                 : "affected_versions::text";
-        StringBuilder sql = new StringBuilder("SELECT id, source, package_name, ecosystem, summary, cvss_score, published_at, "
+        StringBuilder sql = new StringBuilder("SELECT id, source, package_name, ecosystem, summary, "
+                + "COALESCE(cvss_score, inherited_cvss_score) AS cvss_score, published_at, "
                 + versionsColumn + """
                  AS versions_json, affected_ranges::text AS ranges_json
                 FROM public_vulnerabilities
@@ -124,13 +125,14 @@ public class PackageSearchDao {
 
     private static PublicVulnerabilityRow mapVulnRow(Map<String, Object> row) {
         Timestamp publishedTs = (Timestamp) row.get("published_at");
+        Number cvssScore = (Number) row.get("cvss_score");
         return new PublicVulnerabilityRow(
                 (String) row.get("id"),
                 (String) row.get("source"),
                 (String) row.get("package_name"),
                 (String) row.get("ecosystem"),
                 (String) row.get("summary"),
-                ((Number) row.get("cvss_score")).doubleValue(),
+                cvssScore != null ? cvssScore.doubleValue() : null,
                 publishedTs != null ? publishedTs.toInstant() : null,
                 (String) row.get("versions_json"),
                 (String) row.get("ranges_json")

@@ -33,11 +33,25 @@ public record ApiCheckResult(
         int httpStatus,
         long responseTimeMs,
         @Nullable String errorMessage,
-        List<String> vulnerabilityIds) {
+        List<String> vulnerabilityIds,
+        // Every advisory the API reported, with its score, for SeverityPolicy to apply the
+        // severity threshold to. Empty when the client reports none (vulnerable() is then kept).
+        List<AdvisoryFinding> findings) {
 
     public ApiCheckResult(boolean vulnerable, int vulnerabilitiesCount, int httpStatus, long responseTimeMs,
             @Nullable String errorMessage) {
         this(vulnerable, vulnerabilitiesCount, httpStatus, responseTimeMs, errorMessage, List.of());
+    }
+
+    public ApiCheckResult(boolean vulnerable, int vulnerabilitiesCount, int httpStatus, long responseTimeMs,
+            @Nullable String errorMessage, List<String> vulnerabilityIds) {
+        this(vulnerable, vulnerabilitiesCount, httpStatus, responseTimeMs, errorMessage, vulnerabilityIds, List.of());
+    }
+
+    /** Successful answer listing {@code findings}, before any severity threshold is applied. */
+    public static ApiCheckResult ofFindings(int httpStatus, long responseTimeMs, List<AdvisoryFinding> findings) {
+        return new ApiCheckResult(!findings.isEmpty(), findings.size(), httpStatus, responseTimeMs, null,
+                findings.stream().map(AdvisoryFinding::id).toList(), findings);
     }
 
     // The clients (OsvClient, DepsDevClient) set errorMessage on exactly their two failure

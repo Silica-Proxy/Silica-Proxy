@@ -17,11 +17,12 @@
 
 package com.silicaproxy.dao.client;
 
+import com.silicaproxy.model.dto.AdvisoryFinding;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.vulnerability.AdvisorySeverityScorer;
 import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
-import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,9 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
+
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
@@ -47,12 +51,15 @@ public class OsvClient {
 
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
+    private final AdvisorySeverityScorer severityScorer;
 
     public OsvClient(
             SilicaProxyProperties properties,
             @Qualifier("securityApisRequestFactory") ClientHttpRequestFactory securityApisRequestFactory,
-            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor) {
+            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
+            AdvisorySeverityScorer severityScorer) {
         this.properties = properties;
+        this.severityScorer = severityScorer;
 
         this.restClient = RestClient.builder()
                 .requestFactory(securityApisRequestFactory)
@@ -63,7 +70,6 @@ public class OsvClient {
     @Timed(value = "silicaproxy.dao.osv.checkvulnerability",
             description = "Duration of calling OSV API to check vulnerabilities of a package",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    @SuppressWarnings("unchecked")
     public ApiCheckResult checkVulnerability(String packageName, String version, String ecosystem) {
         SilicaProxyProperties.ApiFallbackProperties osvProps = properties.apiFallback().get("osv");
         if (osvProps == null || !osvProps.enabled()) {
@@ -78,20 +84,27 @@ public class OsvClient {
 
         long start = System.nanoTime();
         try {
-            Map<String, Object> response = restClient.post()
+            JsonNode response = restClient.post()
                     .uri(url)
                     .body(request)
                     .retrieve()
-                    .body(Map.class);
+                    .body(JsonNode.class);
 
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             if (response == null) {
                 return new ApiCheckResult(false, 0, 200, responseTimeMs, null);
             }
-            List<?> vulns = (List<?>) response.get("vulns");
-            int vulnCount = vulns != null ? vulns.size() : 0;
-            return new ApiCheckResult(vulnCount > 0, vulnCount, 200, responseTimeMs, null,
-                    extractIds(vulns, "id"));
+            // Every reported advisory, scored like the ingested ones : the severity threshold is
+            // applied afterwards (SeverityPolicy), on par with the local tables.
+            List<AdvisoryFinding> findings = new ArrayList<>();
+            for (JsonNode vuln : response.path("vulns")) {
+                String id = vuln.path("id").asString("");
+                if (!id.isEmpty()) {
+                    findings.add(new AdvisoryFinding(id, AdvisorySeverityScorer.relatedIds(vuln),
+                            severityScorer.score(vuln)));
+                }
+            }
+            return ApiCheckResult.ofFindings(200, responseTimeMs, findings);
         } catch (HttpStatusCodeException e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from OSV API for {}/{} ({})", e.getStatusCode().value(),
@@ -108,17 +121,6 @@ public class OsvClient {
         }
     }
 
-    private static List<String> extractIds(@Nullable List<?> entries, String idKey) {
-        if (entries == null) {
-            return List.of();
-        }
-        return entries.stream()
-                .filter(Map.class::isInstance)
-                .map(entry -> ((Map<?, ?>) entry).get(idKey))
-                .filter(String.class::isInstance)
-                .map(String.class::cast)
-                .toList();
-    }
 
     private String mapEcosystemToOsv(String ecosystem) {
         return switch (ecosystem.toLowerCase(Locale.ROOT)) {

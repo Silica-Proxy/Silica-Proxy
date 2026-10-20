@@ -515,6 +515,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **CVSS threshold** | `silicaproxy.severity-threshold.enabled` | `SILICAPROXY_SEVERITY_THRESHOLD_ENABLED`                          | `true` | |
 | | `silicaproxy.severity-threshold.default-max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_SEVERITY`     | `CRITICAL` | Severity level above which a package is blocked |
 | | `silicaproxy.severity-threshold.default-max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_DEFAULT_MAX_ALLOWED_CVSS`         | `7.0` | Score above which a package is blocked |
+| | `silicaproxy.severity-threshold.unknown-severity-action` | `SILICAPROXY_SEVERITY_THRESHOLD_UNKNOWN_SEVERITY_ACTION`          | `BLOCK` | `BLOCK` or `ALLOW` an advisory with no score at all, even through its aliases (see below) |
 | | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_SEVERITY` | `HIGH` | |
 | | `silicaproxy.severity-threshold.ecosystems.npm.max-allowed-cvss` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_NPM_MAX_ALLOWED_CVSS`  | `9.0` | |
 | | `silicaproxy.severity-threshold.ecosystems.maven.max-allowed-severity` | `SILICAPROXY_SEVERITY_THRESHOLD_ECOSYSTEMS_MAVEN_MAX_ALLOWED_SEVERITY` | `MEDIUM` | |
@@ -671,31 +672,53 @@ This makes it possible to open a precise exception on a single version inside a 
 |---|---|---|---|
 | HIGH severity, CVSS 8.5 | `default-max-allowed-severity: CRITICAL` | `default-max-allowed-cvss: 7.0` | 🚫 BLOCK (CVSS > 7.0) |
 | HIGH severity, CVSS 6.5 | `default-max-allowed-severity: CRITICAL` | `default-max-allowed-cvss: 7.0` | ✅ ALLOW |
-| HIGH severity, CVSS 6.5 | `default-max-allowed-severity: MEDIUM` | `default-max-allowed-cvss: 7.0` | 🚫 BLOCK (severity > MEDIUM) |
+| HIGH severity, CVSS 7.5 | `default-max-allowed-severity: MEDIUM` | `default-max-allowed-cvss: 9.0` | 🚫 BLOCK (severity > MEDIUM) |
 | CRITICAL severity, CVSS 8.5 | `default-max-allowed-severity: CRITICAL` | `default-max-allowed-cvss: 9.0` | ✅ ALLOW |
 
-The system computes a minimum CVSS floor from the severity level (e.g., `CRITICAL` → 9.0, `HIGH` → 7.0, `MEDIUM` → 4.0) and then takes the stricter of the two: `min(configured-cvss, severity-derived-cvss)`.
+The severity level of an advisory is derived from its CVSS score through `severity_mappings` (`LOW` 0.1–3.9, `MEDIUM` 4.0–6.9, `HIGH` 7.0–8.9, `CRITICAL` 9.0–10.0). An advisory is blocked when its score is **above** `max-allowed-cvss` (the configured value itself is allowed) **or** reaches the lower bound of the first level above `max-allowed-severity` (`MEDIUM` → blocked from 7.0, `HIGH` → from 9.0, `CRITICAL` → never on severity). With the shipped defaults both criteria coincide (pypi/maven : blocked from 7.0, npm : blocked from 9.0).
 
-**To disable severity filtering entirely**, set `severity-threshold.enabled: false` — all packages pass the threshold check regardless of CVSS or severity score.
+The **same threshold** applies whether the advisory comes from the local tables or from the live APIs (OSV, deps.dev) queried for a package missing from them : the live answer lists every advisory of the version, and only those over the threshold block (a LOW advisory reported live no longer blocks a package the local tables would allow).
+
+**Where the score comes from** (`AdvisorySeverityScorer`, shared by the ingestion and the live OSV check), in order :
+1. a CVSS vector of `severity[]` (highest CVSS version, then highest score) ;
+2. `database_specific.cvss.score` ;
+3. the qualitative `database_specific.severity` of GHSA advisories (`LOW` / `MODERATE` / `HIGH` / `CRITICAL`), counted as the **lower bound** of its `severity_mappings` range (a `HIGH`-only advisory counts as 7.0) ;
+4. otherwise the score is **unknown** (stored as `NULL`, never `0.0`).
+
+**Score inherited from aliases.** Most PyPI advisories of the PYSEC database carry no severity at all, while the GHSA advisory of the same flaw does (`PYSEC-2021-142` / `GHSA-8q59-q68h-6hv4`, PyYAML, 9.8). An advisory without a score of its own takes the **highest score of the advisories it shares an id with** — its `aliases` / `upstream` ids, or a common CVE id — computed at the end of each synchronization (`inherited_cvss_score`), and the same way among the advisories of a live OSV answer. On the OSV data of October 2026, this gives a score to 94 % of the PyPI advisories that have none.
+
+**Unknown severity.** An advisory left with no score at all, even through its aliases (about 160 PyPI advisories in October 2026), follows `severity-threshold.unknown-severity-action` : `BLOCK` (default — what cannot be assessed is blocked) or `ALLOW`. deps.dev reports advisory keys without any severity, so its advisories are always "unknown" and follow this action too.
+
+> Rows stored before this release keep their previous score (`0.0` included) until the next full OSV synchronization rewrites them with their real (possibly unknown) score, related ids and inherited score.
+
+**To disable severity filtering entirely**, set `severity-threshold.enabled: false` — all packages pass the threshold check regardless of CVSS or severity score, unknown ones included.
 
 > Even when set to `false`, known malware (`id LIKE 'MAL-%'` or `source = 'OPENSSF'`) is still always blocked — this flag only disables severity/CVSS filtering for regular CVEs.
 
 #### Malware always bypasses the severity/CVSS threshold
 
-Entries from the **OpenSSF Malicious Packages** source (typosquatting, sabotage, known malware — see [Public vulnerabilities](#2-public-vulnerabilities--nightly-batch-sync--hourly-incremental-priority-2)) are not CVEs: they carry no CVSS vector or qualitative severity, since a package is malicious or it isn't — there's no "how severe" scale. Ingestion therefore assigns them a default `cvss_score` of `0.0`.
+Entries from the **OpenSSF Malicious Packages** source (typosquatting, sabotage, known malware — see [Public vulnerabilities](#2-public-vulnerabilities--nightly-batch-sync--hourly-incremental-priority-2)) are not CVEs: they carry no CVSS vector or qualitative severity, since a package is malicious or it isn't — there's no "how severe" scale. Their score is therefore unknown.
 
-If the standard threshold logic applied as-is, a `0.0` score would always pass under `default-max-allowed-cvss` / `default-max-allowed-severity`, silently letting known-malicious packages through. To prevent this, `DecisionDao` adds an unconditional `OR` to the `public_vulnerabilities` lookup that ignores the configured thresholds entirely for these rows:
+If the standard threshold logic applied as-is, they would follow `unknown-severity-action` (or `severity-threshold.enabled: false`) and could let known-malicious packages through. To prevent this, `DecisionDao` adds an unconditional `OR` to the `public_vulnerabilities` lookup that ignores the configured thresholds entirely for these rows:
 
 ```sql
-AND (cvss_score >= :minCvss::numeric OR id LIKE 'MAL-%' OR source = 'OPENSSF')
+AND (id LIKE 'MAL-%' OR source = 'OPENSSF'
+     OR COALESCE(cvss_score, inherited_cvss_score) > :maxAllowedCvss
+     OR COALESCE(cvss_score, inherited_cvss_score) >= :severityFloor
+     OR (:blockUnknown AND cvss_score IS NULL AND inherited_cvss_score IS NULL))
 ```
 
-A row matches this bypass if its advisory `id` starts with `MAL-` (the OSV malware ID convention) **or** its `source` column is `OPENSSF`. Either one is always `BLOCK`, regardless of `severity-threshold.enabled` or any configured CVSS/severity value.
+A row matches this bypass if its advisory `id` starts with `MAL-` (the OSV malware ID convention) **or** its `source` column is `OPENSSF`. Either one is always `BLOCK`, regardless of `severity-threshold.enabled` or any configured CVSS/severity value. A `MAL-` advisory reported by the live OSV API is always blocked as well.
 
 | Entry type | Severity/CVSS threshold applies? |
 |---|---|
-| CVE (OSV, GHSA, GitLab) | Yes — `min(configured-cvss, severity-derived-cvss)` |
+| CVE (OSV, GHSA, GitLab) | Yes — own or inherited score against `max-allowed-cvss` and `max-allowed-severity` |
+| Advisory with no score anywhere | `unknown-severity-action` (`BLOCK` by default) |
 | Malware (`MAL-*` id or `source = OPENSSF`) | No — always `BLOCK` |
+
+#### PyPI package names (PEP 503)
+
+PyPI treats `PyYAML`, `pyyaml` and `py_yaml` as the same project, but file names keep the spelling of the upload (`PyYAML-6.0.2-…whl`, `typing_extensions-4.12.2-…whl`) while OSV stores the normalized name (`pyyaml`). Every PyPI name is therefore normalized as defined by [PEP 503](https://peps.python.org/pep-0503/#normalized-names) (lower case, runs of `-`, `_`, `.` replaced by a single `-`) : the identified request, the ingested advisories, the GitOps rules of `pypi.yaml` (`typing_extensions` is stored as `typing-extensions`, `*` wildcards are kept), the policy evaluation and package search endpoints. The `V17` migration renames the rows already stored ; when two spellings collide, the normalized one (or, for GitOps rules, the most restrictive one) is kept.
 
 ---
 

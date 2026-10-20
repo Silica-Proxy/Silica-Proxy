@@ -22,6 +22,8 @@ import com.silicaproxy.model.dto.ApiCacheHit;
 import com.silicaproxy.model.dto.PublicVulnerabilityHit;
 import com.silicaproxy.model.dto.PublicVulnerabilityRow;
 import com.silicaproxy.model.entity.CompanyPolicy;
+import com.silicaproxy.service.interception.ParsedPackage;
+import com.silicaproxy.service.interception.PypiNames;
 import com.silicaproxy.service.vulnerability.version.OsvRangeEvaluator;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -80,10 +82,12 @@ public class PackageSearchService {
             @Nullable String ecosystem,
             @Nullable String exactVersion,
             @Nullable String versionRegex) {
+        // PyPI names are stored normalized (PEP 503) : "PyYAML" finds the "pyyaml" rows.
+        String name = ParsedPackage.PYPI.equals(ecosystem) ? PypiNames.normalize(packageName) : packageName;
         return new SearchResult(
-                packageSearchDao.searchCompanyPolicies(packageName, ecosystem, exactVersion, versionRegex),
-                searchPublicVulnerabilities(packageName, ecosystem, exactVersion, versionRegex),
-                packageSearchDao.searchApiCache(packageName, ecosystem, exactVersion, versionRegex)
+                packageSearchDao.searchCompanyPolicies(name, ecosystem, exactVersion, versionRegex),
+                searchPublicVulnerabilities(name, ecosystem, exactVersion, versionRegex),
+                packageSearchDao.searchApiCache(name, ecosystem, exactVersion, versionRegex)
         );
     }
 

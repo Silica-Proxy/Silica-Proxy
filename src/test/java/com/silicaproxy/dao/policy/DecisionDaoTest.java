@@ -16,6 +16,7 @@ package com.silicaproxy.dao.policy;/*
 
 
 import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.DecisionDao;
@@ -113,7 +114,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // Evaluate the package : the ALLOW rule must win over the critical vulnerability
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("test-package", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("test-package", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -130,7 +131,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // Evaluate the package with a threshold of 7.0 : must be blocked
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("vuln-only-package", "2.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("vuln-only-package", "2.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
@@ -147,7 +148,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // Evaluate the package : must be allowed by the cache
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("cached-package", "3.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("cached-package", "3.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.API_CACHE);
@@ -163,7 +164,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('ua-parser-js', 'npm', '0.7.29', 'BLOCK', 'Compromised version containing cryptominer and trojan', 'gitops_sync')
             ON CONFLICT DO NOTHING
             """).update();
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("ua-parser-js", "0.7.29", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("ua-parser-js", "0.7.29", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -177,7 +178,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
             VALUES ('unknown-action-pkg', 'npm', '1.0.0', 'blacklist', 'Typo in policy file', 'gitops_sync')
             """).update();
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("unknown-action-pkg", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("unknown-action-pkg", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -199,12 +200,12 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // Evaluate with a threshold of 7.0 : both must be blocked despite the CVSS score of 0.0
-        Optional<DecisionResult> decision1 = decisionDao.evaluateDecision("malware-package-1", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision1 = decisionDao.evaluateDecision("malware-package-1", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
         assertThat(decision1).isPresent();
         assertThat(decision1.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
         assertThat(decision1.get().result()).isEqualTo(Verdict.BLOCK);
 
-        Optional<DecisionResult> decision2 = decisionDao.evaluateDecision("malware-package-2", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision2 = decisionDao.evaluateDecision("malware-package-2", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
         assertThat(decision2).isPresent();
         assertThat(decision2.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
         assertThat(decision2.get().result()).isEqualTo(Verdict.BLOCK);
@@ -219,7 +220,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
         for (int i = 0; i < requestCount; i++) {
             // Query on public vulnerabilities (vuln-package-0 to vuln-package-499)
             String packageName = "vuln-package-" + (i % 500);
-            Optional<DecisionResult> decision = decisionDao.evaluateDecision(packageName, "1.0.0", "npm", 7.0);
+            Optional<DecisionResult> decision = decisionDao.evaluateDecision(packageName, "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
             // Ensure the query executes properly
             assertThat(decision).isNotNull();
         }
@@ -252,7 +253,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // Corporate policy (priority 1) must override the vulnerability (priority 2) and the cache (priority 3)
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("multi-source-pkg", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("multi-source-pkg", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -273,7 +274,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('exact-beats-wildcard-pkg', 'npm', '1.0.0', 'BLOCK', 'Compromised version', 'security-team')
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("exact-beats-wildcard-pkg", "1.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("exact-beats-wildcard-pkg", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -296,7 +297,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('tie-break-pkg', 'npm', '%', 'BLOCK', 'Actually compromised', 'security-team')
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("tie-break-pkg", "4.17.21", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("tie-break-pkg", "4.17.21", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -317,7 +318,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         // 2.0.0 has no exact rule → the wildcard rule * → ALLOW applies
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("wildcard-win-pkg", "2.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("wildcard-win-pkg", "2.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -335,7 +336,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('x-wildcard-pkg', 'npm', '4.%', 'ALLOW', 'Series 4 approved', 'team')
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-pkg", "4.17.21", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -352,10 +353,10 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('underscore-version-pkg', 'maven', '1.0.0_rc1', 'ALLOW', 'rc1 approved', 'team')
             """).update();
 
-        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0-rc1", "maven", 7.0)).isEmpty();
-        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.01rc1", "maven", 7.0)).isEmpty();
+        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0-rc1", "maven", SeverityThreshold.blockingFrom(7.0))).isEmpty();
+        assertThat(decisionDao.evaluateDecision("underscore-version-pkg", "1.0.01rc1", "maven", SeverityThreshold.blockingFrom(7.0))).isEmpty();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0_rc1", "maven", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-version-pkg", "1.0.0_rc1", "maven", SeverityThreshold.blockingFrom(7.0));
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
         assertThat(decision.get().result()).isEqualTo(Verdict.ALLOW);
@@ -374,7 +375,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('underscore-exact-pkg', 'maven', '1.0.0_rc1', 'BLOCK', 'Compromised rc', 'security-team')
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-exact-pkg", "1.0.0_rc1", "maven", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("underscore-exact-pkg", "1.0.0_rc1", "maven", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
@@ -391,7 +392,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('PYSEC-mock', 'OSV', 'gradio', 'pypi', '@gradio/chatbot@0.4.2', 8.1)
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("@gradio/chatbot", "0.4.2", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("@gradio/chatbot", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_ANOMALY);
@@ -407,7 +408,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         Optional<DecisionResult> decision =
-                decisionDao.evaluateDecision("@gradio/low-severity", "1.0.0", "npm", 7.0);
+                decisionDao.evaluateDecision("@gradio/low-severity", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isEmpty();
     }
@@ -425,7 +426,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             """).update();
 
         Optional<DecisionResult> decision =
-                decisionDao.evaluateDecision("@gradio/approved-fork", "2.0.0", "npm", 7.0);
+                decisionDao.evaluateDecision("@gradio/approved-fork", "2.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isPresent();
         assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
@@ -440,7 +441,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
             VALUES ('x-wildcard-no-match-pkg', 'npm', '4.%', 'ALLOW', 'Series 4 only', 'team')
             """).update();
 
-        Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-no-match-pkg", "3.0.0", "npm", 7.0);
+        Optional<DecisionResult> decision = decisionDao.evaluateDecision("x-wildcard-no-match-pkg", "3.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(decision).isEmpty();
     }
@@ -460,7 +461,7 @@ class DecisionDaoTest extends BaseIntegrationTest {
                '[]'::jsonb, 9.0)
             """).update();
 
-        List<RangeCandidate> candidates = decisionDao.findRangeCandidates("range-pkg", "npm", 7.0);
+        List<RangeCandidate> candidates = decisionDao.findRangeCandidates("range-pkg", "npm", SeverityThreshold.blockingFrom(7.0));
 
         assertThat(candidates).extracting(RangeCandidate::id)
                 .containsExactlyInAnyOrder("GHSA-range-high", "MAL-range-0001");

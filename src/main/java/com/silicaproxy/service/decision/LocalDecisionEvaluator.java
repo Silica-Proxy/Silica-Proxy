@@ -21,6 +21,7 @@ import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.RangeCandidate;
+import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.service.vulnerability.version.OsvRangeEvaluator;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
@@ -51,21 +52,23 @@ public class LocalDecisionEvaluator {
         this.objectMapper = objectMapper;
     }
 
-    public Optional<DecisionResult> evaluate(String packageName, String version, String ecosystem, double minCvss) {
-        Optional<DecisionResult> sqlDecision = decisionDao.evaluateDecision(packageName, version, ecosystem, minCvss);
+    public Optional<DecisionResult> evaluate(String packageName, String version, String ecosystem,
+            SeverityThreshold threshold) {
+        Optional<DecisionResult> sqlDecision = decisionDao.evaluateDecision(packageName, version, ecosystem, threshold);
         // P1 (company policy) and P2 (enumerated public vulnerability) are final ; an api_cache
         // (P3) verdict is not yet : OSV ranges (P2 rank) must outrank it.
         if (sqlDecision.isPresent() && sqlDecision.get().sourceType() != DecisionSource.API_CACHE) {
             return sqlDecision;
         }
-        Optional<DecisionResult> rangeDecision = matchRanges(packageName, version, ecosystem, minCvss);
+        Optional<DecisionResult> rangeDecision = matchRanges(packageName, version, ecosystem, threshold);
         return rangeDecision.isPresent() ? rangeDecision : sqlDecision;
     }
 
     // Builds the same DecisionResult the PRIORITY 2 SQL branch of DecisionDao.evaluateDecision()
     // would have produced for an enumerated version.
-    private Optional<DecisionResult> matchRanges(String packageName, String version, String ecosystem, double minCvss) {
-        for (RangeCandidate candidate : decisionDao.findRangeCandidates(packageName, ecosystem, minCvss)) {
+    private Optional<DecisionResult> matchRanges(String packageName, String version, String ecosystem,
+            SeverityThreshold threshold) {
+        for (RangeCandidate candidate : decisionDao.findRangeCandidates(packageName, ecosystem, threshold)) {
             JsonNode ranges;
             try {
                 ranges = objectMapper.readTree(candidate.rangesJson());

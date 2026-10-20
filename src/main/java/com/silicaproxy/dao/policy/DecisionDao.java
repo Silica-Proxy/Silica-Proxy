@@ -19,6 +19,7 @@ package com.silicaproxy.dao.policy;
 
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.RangeCandidate;
+import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.entity.SeverityMapping;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -39,6 +40,18 @@ import java.util.Optional;
 @Repository
 @NullMarked
 public class DecisionDao {
+
+    // Severity threshold on a public_vulnerabilities row, shared by evaluateDecision and
+    // findRangeCandidates (see SeverityThreshold) : the row's own score, or the one it inherits
+    // from its aliases when it has none (VulnerabilityDao.refreshInheritedScores) ; no score at
+    // all is an unknown severity, blocked when :blockUnknown. Malwares (MAL-/OPENSSF) are always
+    // blocked : they usually carry no score.
+    private static final String SEVERITY_PREDICATE = """
+            (id LIKE 'MAL-%' OR source = 'OPENSSF'
+                   OR COALESCE(cvss_score, inherited_cvss_score) > :maxAllowedCvss::numeric
+                   OR COALESCE(cvss_score, inherited_cvss_score) >= :severityFloor::numeric
+                   OR (:blockUnknown::boolean AND cvss_score IS NULL AND inherited_cvss_score IS NULL))
+            """;
 
     private final JdbcClient jdbcClient;
 
@@ -61,8 +74,8 @@ public class DecisionDao {
     public Optional<DecisionResult> evaluateDecision(
             String packageName, 
             String packageVersion, 
-            String ecosystem, 
-            double minCvssScore) {
+            String ecosystem,
+            SeverityThreshold threshold) {
         
         String sql = """
             WITH checked_package AS (
@@ -113,8 +126,7 @@ public class DecisionDao {
                 WHERE package_name = p_name
                   AND ecosystem = p_ecosystem
                   AND affected_versions @> jsonb_build_array(p_version)
-                  -- Malwares (MAL-/OPENSSF) always blocked : their CVSS score is 0.0 by default
-                  AND (cvss_score >= :minCvss::numeric OR id LIKE 'MAL-%' OR source = 'OPENSSF')
+                  AND """ + SEVERITY_PREDICATE + """
 
                 UNION ALL
 
@@ -130,9 +142,19 @@ public class DecisionDao {
                        'PUBLIC_VULN_ANOMALY' AS source_type, 'BLOCK' AS result,
                        'Data-quality anomaly during OSV ingestion: this exact package/version was '
                        || 'listed as affected inside advisory ' || vulnerability_id AS reason
-                FROM vulnerability_ingestion_anomalies, checked_package
+                -- Same threshold as PUBLIC_VULN, on the anomaly's own score or, when it has none,
+                -- on the (possibly inherited) score of its advisory.
+                FROM vulnerability_ingestion_anomalies anomaly
+                CROSS JOIN checked_package
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(anomaly.cvss_score, MAX(COALESCE(pv.cvss_score, pv.inherited_cvss_score))) AS score
+                    FROM public_vulnerabilities pv
+                    WHERE pv.id = anomaly.vulnerability_id
+                ) advisory
                 WHERE suspicious_version = p_name || '@' || p_version
-                  AND cvss_score >= :minCvss::numeric
+                  AND (advisory.score > :maxAllowedCvss::numeric
+                       OR advisory.score >= :severityFloor::numeric
+                       OR (:blockUnknown::boolean AND advisory.score IS NULL))
 
                 UNION ALL
 
@@ -161,7 +183,9 @@ public class DecisionDao {
                 .param("packageName", packageName)
                 .param("packageVersion", packageVersion)
                 .param("ecosystem", ecosystem)
-                .param("minCvss", minCvssScore)
+                .param("maxAllowedCvss", threshold.maxAllowedCvss())
+                .param("severityFloor", threshold.severityFloor())
+                .param("blockUnknown", threshold.blockUnknown())
                 .query(DecisionResult.class)
                 .optional();
     }
@@ -173,18 +197,18 @@ public class DecisionDao {
     @Timed(value = "silicaproxy.dao.decision.findrangecandidates",
             description = "Duration of the OSV range candidates lookup in DecisionDao",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public List<RangeCandidate> findRangeCandidates(String packageName, String ecosystem, double minCvssScore) {
+    public List<RangeCandidate> findRangeCandidates(String packageName, String ecosystem, SeverityThreshold threshold) {
         return jdbcClient.sql("""
                 SELECT id, source, summary, affected_ranges::text AS "rangesJson"
                 FROM public_vulnerabilities
                 WHERE package_name = :packageName AND ecosystem = :ecosystem
                   AND affected_ranges <> '[]'::jsonb
-                  -- Malwares (MAL-/OPENSSF) always blocked : their CVSS score is 0.0 by default
-                  AND (cvss_score >= :minCvss::numeric OR id LIKE 'MAL-%' OR source = 'OPENSSF')
-                """)
+                  AND """ + SEVERITY_PREDICATE)
                 .param("packageName", packageName)
                 .param("ecosystem", ecosystem)
-                .param("minCvss", minCvssScore)
+                .param("maxAllowedCvss", threshold.maxAllowedCvss())
+                .param("severityFloor", threshold.severityFloor())
+                .param("blockUnknown", threshold.blockUnknown())
                 .query(RangeCandidate.class)
                 .list();
     }

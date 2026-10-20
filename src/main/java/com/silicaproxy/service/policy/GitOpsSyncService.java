@@ -25,6 +25,8 @@ import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.model.dto.GitOpsPolicyDto;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.ParsedPackage;
+import com.silicaproxy.service.interception.PypiNames;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -263,8 +265,11 @@ public class GitOpsSyncService {
                 if (rulePackage != null && ruleVersion != null && ruleAction != null && ruleReason != null) {
                     String sqlPattern = toSqlWildcardPattern(ruleVersion);
 
+                    // PEP 503 : the proxy normalizes every PyPI name it identifies, so a rule
+                    // written "typing_extensions" or "PyYAML" must be stored normalized as well.
+                    // '*' wildcards are left untouched by the normalization.
                     policies.add(new CompanyPolicy(
-                            rulePackage,
+                            ParsedPackage.PYPI.equals(ecosystem) ? PypiNames.normalize(rulePackage) : rulePackage,
                             ecosystem,
                             sqlPattern,
                             ruleAction.toUpperCase(Locale.ROOT),

@@ -18,6 +18,7 @@
 package com.silicaproxy.dao.policy;
 
 import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
@@ -52,7 +53,7 @@ class ApiCacheBlockReasonTest extends BaseIntegrationTest {
     }
 
     private DecisionResult decisionFor(String version) {
-        return decisionDao.evaluateDecision(PKG, version, "maven", 7.0).orElseThrow();
+        return decisionDao.evaluateDecision(PKG, version, "maven", SeverityThreshold.blockingFrom(7.0)).orElseThrow();
     }
 
     @Test

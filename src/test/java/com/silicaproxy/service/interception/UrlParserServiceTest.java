@@ -151,8 +151,19 @@ class UrlParserServiceTest {
         ParsedPackage parsed = urlParserService.parseUrl(
                 "https://files.pythonhosted.org/packages/01/f3/936e209267d6ef7510322191003885de524fc48d1b43269810cd589ceaf5/typing_extensions-4.11.0.tar.gz");
         assertThat(parsed.ecosystem()).isEqualTo("pypi");
-        assertThat(parsed.packageName()).isEqualTo("typing_extensions");
+        // PEP 503 normalized, as stored by OSV and GitOps
+        assertThat(parsed.packageName()).isEqualTo("typing-extensions");
         assertThat(parsed.version()).isEqualTo("4.11.0");
+    }
+
+    @Test
+    void parseUrl_shouldNormalizePypiWheelNamePerPep503() {
+        // PyYAML's wheels keep the upload spelling, OSV stores "pyyaml" (PYSEC-2021-142, GHSA-8q59-q68h-6hv4).
+        ParsedPackage parsed = urlParserService.parseUrl(
+                "https://files.pythonhosted.org/packages/ab/cd/PyYAML-6.0.2-cp312-cp312-manylinux_2_17_x86_64.whl");
+        assertThat(parsed.ecosystem()).isEqualTo("pypi");
+        assertThat(parsed.packageName()).isEqualTo("pyyaml");
+        assertThat(parsed.version()).isEqualTo("6.0.2");
     }
 
     @Test

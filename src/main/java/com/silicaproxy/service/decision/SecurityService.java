@@ -24,13 +24,12 @@ import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.dto.RegistryLookup;
+import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
-import com.silicaproxy.model.entity.SeverityMapping;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.vulnerability.VulnerabilityApiClients;
 import org.jspecify.annotations.NullMarked;
-import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -40,7 +39,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
@@ -56,14 +54,6 @@ import java.util.OptionalInt;
 public class SecurityService {
 
     private static final Logger LOG = LoggerFactory.getLogger(SecurityService.class);
-
-    // CVSS floor meaning "no severity limit" (CVSS scores top out at 10.0).
-    private static final double NO_CVSS_FLOOR = 11.0;
-    // Severity just above each allowed maximum, with its CVSS floor when severity_mappings lacks it.
-    private static final Map<String, Map.Entry<String, Double>> NEXT_SEVERITY = Map.of(
-            "LOW", Map.entry("MEDIUM", 4.0),
-            "MEDIUM", Map.entry("HIGH", 7.0),
-            "HIGH", Map.entry("CRITICAL", 9.0));
 
     private final LocalDecisionEvaluator localDecisionEvaluator;
     private final RegistryClient registryClient;
@@ -98,12 +88,12 @@ public class SecurityService {
             percentiles = {0.5, 0.9, 0.95, 0.99})
     public DecisionResult getDecision(
             String packageName, String version, String ecosystem, String fullUrl) {
-        // 1. Elements for calculating the floor CVSS
-        double minCvss = computeMinCvss(ecosystem);
+        // 1. Severity threshold of the ecosystem
+        SeverityThreshold threshold = caches.severityPolicy().thresholdFor(ecosystem);
 
         // 2. Priority local evaluation (UNION ALL query, then OSV ranges at the P2 rank)
         Optional<DecisionResult> decisionOpt =
-                localDecisionEvaluator.evaluate(packageName, version, ecosystem, minCvss);
+                localDecisionEvaluator.evaluate(packageName, version, ecosystem, threshold);
         metrics.recordLocalEvaluationMetric(decisionOpt.isPresent() ? Metrics.OUTCOME_HIT : Metrics.OUTCOME_MISS);
         if (decisionOpt.isPresent()) {
             return decisionOpt.get();
@@ -285,13 +275,17 @@ public class SecurityService {
     private DecisionResult runFallbackChain(String packageName, String version, String ecosystem, boolean cacheAllow) {
         boolean anyAttempted = false;
         boolean anyFailClosed = false;
+        // The live APIs report every advisory : the same threshold as the local tables decides
+        // which of them block.
+        SeverityThreshold threshold = caches.severityPolicy().thresholdFor(ecosystem);
 
         for (FallbackSource source : fallbackSources()) {
             SilicaProxyProperties.ApiFallbackProperties sourceProps = properties.apiFallback().get(source.configKey());
             if (sourceProps == null || !sourceProps.enabled()) {
                 continue;
             }
-            ApiCheckResult result = source.check().check(packageName, version, ecosystem);
+            ApiCheckResult result = caches.severityPolicy().apply(
+                    source.check().check(packageName, version, ecosystem), threshold);
             logApiCall(source.source().name(), packageName, ecosystem, version, result);
             if (!result.isError()) {
                 return resolveFallbackVerdict(packageName, version, ecosystem, source.source(),
@@ -354,28 +348,6 @@ public class SecurityService {
         String ids = result.vulnerabilityIds().isEmpty() ? "" : " (" + String.join(", ", result.vulnerabilityIds()) + ")";
         return DecisionResult.block(source,
                 "The package contains a vulnerability reported by external API " + providerLabel + ids + ".");
-    }
-
-    private double computeMinCvss(String ecosystem) {
-        SilicaProxyProperties.SeverityThresholdProperties threshold = properties.severityThreshold();
-        if (!threshold.enabled()) {
-            return NO_CVSS_FLOOR;
-        }
-        SilicaProxyProperties.EcosystemSeverityProperties ecoProps = threshold.ecosystems().get(lower(ecosystem));
-        double configuredCvss = ecoProps != null ? ecoProps.maxAllowedCvss() : threshold.defaultMaxAllowedCvss();
-        String maxSeverity = ecoProps != null ? ecoProps.maxAllowedSeverity() : threshold.defaultMaxAllowedSeverity();
-        return Math.min(configuredCvss, severityFloor(maxSeverity));
-    }
-
-    // CVSS floor of the severity just above the allowed one : severity_mappings first, then the
-    // built-in default.
-    private double severityFloor(String maxAllowedSeverity) {
-        Map.Entry<String, Double> next = NEXT_SEVERITY.get(maxAllowedSeverity.toUpperCase(Locale.ROOT));
-        if (next == null) {
-            return NO_CVSS_FLOOR;
-        }
-        @Nullable SeverityMapping mapping = caches.severityMappingsCache().get(next.getKey());
-        return mapping != null ? mapping.minCvss() : next.getValue();
     }
 
     private boolean isDeprecationFilteringEnabled(String ecosystem) {
