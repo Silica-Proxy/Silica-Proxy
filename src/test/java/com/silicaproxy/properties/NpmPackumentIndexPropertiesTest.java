@@ -41,6 +41,13 @@ class NpmPackumentIndexPropertiesTest {
     }
 
     @Test
+    void shouldBoundDecodedSizeAndConcurrencyByDefault() {
+        NpmPackumentIndexProperties defaults = bind(Map.of());
+        assertThat(defaults.maxDecodedBytes()).isEqualTo(128L * 1024 * 1024);
+        assertThat(defaults.maxConcurrentIndexing()).isEqualTo(16);
+    }
+
+    @Test
     void shouldBindBlockAction() {
         assertThat(bind(Map.of("silicaproxy.npm-packument-index.unidentified-tarball-action", "BLOCK"))
                 .unidentifiedTarballAction()).isEqualTo(UnidentifiedTarballAction.BLOCK);

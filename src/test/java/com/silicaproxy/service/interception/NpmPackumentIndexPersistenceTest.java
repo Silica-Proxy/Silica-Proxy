@@ -48,7 +48,7 @@ class NpmPackumentIndexPersistenceTest {
 
     private NpmPackumentIndex index() {
         return new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW), dao);
+                new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW, 128L * 1024 * 1024, 16), dao);
     }
 
     @SuppressWarnings("unchecked")
@@ -117,7 +117,7 @@ class NpmPackumentIndexPersistenceTest {
             }
         };
 
-        index().relayAndIndex(new ByteArrayInputStream(body), null, "https://private.example/internal-lib", out);
+        index().relayAndIndex(new ByteArrayInputStream(body), null, -1, "https://private.example/internal-lib", out);
 
         assertThat(persistedWhenFirstByteWritten[0]).isTrue();
     }

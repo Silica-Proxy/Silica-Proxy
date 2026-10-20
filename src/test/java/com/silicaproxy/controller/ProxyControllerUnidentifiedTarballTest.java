@@ -67,7 +67,7 @@ class ProxyControllerUnidentifiedTarballTest {
     private final UrlParserService urlParserService = mock(UrlParserService.class);
 
     private MockMvc mockMvc(UnidentifiedTarballAction action) throws Exception {
-        NpmPackumentIndexProperties properties = new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action);
+        NpmPackumentIndexProperties properties = new NpmPackumentIndexProperties(true, 1000, 60, 1024 * 1024, action, 128L * 1024 * 1024, 16);
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), properties, mock(NpmTarballIndexDao.class));
         ProxyController controller = new ProxyController(securityService, auditLogService, proxyStreamClient,
                 new PackageIdentificationService(urlParserService, index, properties), index,

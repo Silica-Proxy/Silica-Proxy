@@ -53,8 +53,13 @@ class NpmPackumentIndexTest {
             """;
 
     private static NpmPackumentIndex newIndex(int maxEntries) {
+        return newIndex(maxEntries, 128L * 1024 * 1024);
+    }
+
+    private static NpmPackumentIndex newIndex(int maxEntries, long maxDecodedBytes) {
         return new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW),
+                new NpmPackumentIndexProperties(true, maxEntries, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW,
+                        maxDecodedBytes, 16),
                 mock(NpmTarballIndexDao.class));
     }
 
@@ -146,7 +151,7 @@ class NpmPackumentIndexTest {
     @Test
     void shouldBeInertWhenDisabled() {
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(),
-                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW),
+                new NpmPackumentIndexProperties(false, 1000, 60, 1024 * 1024, UnidentifiedTarballAction.ALLOW, 128L * 1024 * 1024, 16),
                 mock(NpmTarballIndexDao.class));
 
         assertThat(index.isEnabled()).isFalse();
@@ -245,5 +250,67 @@ class NpmPackumentIndexTest {
         expiring.evictStaleEntries(Duration.ZERO.minusSeconds(1));
         assertThat(expiring.metadata("@jsr/zerun__group-deps", "0.1.5")).isEmpty();
         assertThat(expiring.originPackumentUrl("@jsr/zerun__group-deps", "0.1.5")).isEmpty();
+    }
+
+    // --- Streaming parse : field order, spoofed names, decoded size cap ---
+
+    @Test
+    void shouldReadTimeDeclaredAfterVersions() {
+        NpmPackumentIndex index = newIndex(1000);
+        String body = """
+                {"name": "p", "versions": {"1.0.0": {"dist": {"tarball": "https://r/p/1.tgz"}}},
+                 "time": {"1.0.0": "2020-01-01T00:00:00Z"}}
+                """;
+
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
+        assertThat(index.metadata("p", "1.0.0").orElseThrow().publishedAt())
+                .isEqualTo(Instant.parse("2020-01-01T00:00:00Z"));
+    }
+
+    @Test
+    void shouldSkipUnrelatedFieldsAndNestedStructures() {
+        NpmPackumentIndex index = newIndex(1000);
+        String body = """
+                {"_id": "p", "dist-tags": {"latest": "1.0.0"}, "maintainers": [{"name": "x"}], "name": "p",
+                 "versions": {"1.0.0": {"dependencies": {"a": "^1"}, "name": "p", "scripts": {"name": "q"},
+                                        "dist": {"integrity": "sha512-x", "tarball": "https://r/p/1.tgz", "signatures": [{}]},
+                                        "version": "1.0.0"},
+                              "2.0.0": "not an object"}}
+                """;
+
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
+        assertThat(index.lookup("https://r/p/1.tgz")).contains(new ParsedPackage("p", "1.0.0", "npm"));
+    }
+
+    @Test
+    void shouldIgnoreVersionDeclaringAnotherPackageName() {
+        NpmPackumentIndex index = newIndex(1000);
+        String body = """
+                {"name": "evil-pkg", "time": {"1.0.0": "2020-01-01T00:00:00Z", "4.17.21": "2020-01-01T00:00:00Z"},
+                 "versions": {
+                   "1.0.0": {"name": "evil-pkg", "version": "1.0.0", "dist": {"tarball": "https://cdn.example/a.tgz"}},
+                   "4.17.21": {"name": "lodash", "version": "4.17.21", "dist": {"tarball": "https://cdn.example/b.tgz"}}}}
+                """;
+
+        assertThat(index.indexPackument(utf8(body), null, "")).isEqualTo(1);
+        assertThat(index.lookup("https://cdn.example/b.tgz")).isEmpty();
+        assertThat(index.metadata("lodash", "4.17.21")).isEmpty();
+        assertThat(index.lookup("https://cdn.example/a.tgz")).isPresent();
+    }
+
+    @Test
+    void shouldNotIndexGzipBodyInflatingBeyondDecodedCap() throws IOException {
+        // A few KB of gzip inflating to 4 MB : under max-body-bytes as received, over the decoded cap.
+        String bomb = "{\"name\": \"p\", \"pad\": [" + "0,".repeat(2 * 1024 * 1024)
+                + "0], \"versions\": {\"1.0.0\": {\"dist\": {\"tarball\": \"https://r/p/1.tgz\"}}}}";
+        ByteArrayOutputStream gz = new ByteArrayOutputStream();
+        try (GZIPOutputStream out = new GZIPOutputStream(gz)) {
+            out.write(utf8(bomb));
+        }
+        assertThat(gz.size()).isLessThan(64 * 1024);
+
+        assertThat(newIndex(1000, 1024 * 1024).indexPackument(gz.toByteArray(), "gzip", "")).isZero();
+        // The same body is indexed once the cap leaves room for it.
+        assertThat(newIndex(1000, 8L * 1024 * 1024).indexPackument(gz.toByteArray(), "gzip", "")).isEqualTo(1);
     }
 }

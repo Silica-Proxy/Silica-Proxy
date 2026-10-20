@@ -227,6 +227,11 @@ silicaproxy:
     ttl-minutes: 60
     # Packument bodies larger than this are relayed untouched and not indexed (32 MiB)
     max-body-bytes: 33554432
+    # Same, for the DECODED body : a gzip packument under max-body-bytes can inflate a
+    # thousandfold. Over this, the packument is relayed but not indexed (128 MiB)
+    max-decoded-bytes: 134217728
+    # Packuments buffered and indexed at once ; beyond, a packument is relayed without indexing
+    max-concurrent-indexing: 16
     # npm tarball (.tgz) identified neither by its URL nor by a relayed packument (e.g. `npm ci`
     # with a lockfile on an unknown registry layout) : ALLOW = relayed without any security
     # check (bypass) ; BLOCK = 403 (UNIDENTIFIED_ARTIFACT)

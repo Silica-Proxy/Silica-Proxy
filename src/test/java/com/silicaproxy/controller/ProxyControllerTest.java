@@ -96,7 +96,7 @@ class ProxyControllerTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         NpmPackumentIndexProperties indexProperties =
-                new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024, UnidentifiedTarballAction.ALLOW);
+                new NpmPackumentIndexProperties(true, 10_000, 60, 8L * 1024 * 1024, UnidentifiedTarballAction.ALLOW, 128L * 1024 * 1024, 16);
         NpmPackumentIndex index = new NpmPackumentIndex(new JsonMapper(), indexProperties, npmTarballIndexDao);
         mockMvc = MockMvcBuilders.standaloneSetup(new ProxyController(securityService, auditLogService,
                 proxyStreamClient, packageIdentification, index, HttpsUpgradePolicy.upgradeAll(),
