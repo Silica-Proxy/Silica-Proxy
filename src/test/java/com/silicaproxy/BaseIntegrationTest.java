@@ -19,6 +19,7 @@ package com.silicaproxy;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import com.silicaproxy.dao.sync.SchedulerLockDao;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,9 +32,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @NullMarked
@@ -88,21 +86,21 @@ public abstract class BaseIntegrationTest {
 
     // A RUNNING sync_status row only counts while the ShedLock lock it runs under is held.
     protected static void holdSchedulerLock(JdbcClient jdbcClient, String lockName) {
-        setSchedulerLockUntil(jdbcClient, lockName, Instant.now().plus(10, ChronoUnit.MINUTES));
+        setSchedulerLockUntil(jdbcClient, lockName, 600);
     }
 
     protected static void releaseSchedulerLock(JdbcClient jdbcClient, String lockName) {
-        setSchedulerLockUntil(jdbcClient, lockName, Instant.now().minus(1, ChronoUnit.SECONDS));
+        setSchedulerLockUntil(jdbcClient, lockName, -1);
     }
 
-    private static void setSchedulerLockUntil(JdbcClient jdbcClient, String lockName, Instant lockUntil) {
-        jdbcClient.sql("""
-                INSERT INTO shedlock (name, lock_until, locked_at, locked_by)
-                VALUES (:name, :lockUntil, CURRENT_TIMESTAMP, 'test')
-                ON CONFLICT (name) DO UPDATE SET lock_until = :lockUntil
-                """)
+    // Written like ShedLock writes it (SchedulerLockDao.SHEDLOCK_NOW), whatever the time zone of the JVM.
+    private static void setSchedulerLockUntil(JdbcClient jdbcClient, String lockName, int secondsFromNow) {
+        jdbcClient.sql("INSERT INTO shedlock (name, lock_until, locked_at, locked_by)"
+                        + " VALUES (:name, " + SchedulerLockDao.SHEDLOCK_NOW + " + make_interval(secs => :seconds), "
+                        + SchedulerLockDao.SHEDLOCK_NOW + ", 'test')"
+                        + " ON CONFLICT (name) DO UPDATE SET lock_until = EXCLUDED.lock_until")
                 .param("name", lockName)
-                .param("lockUntil", Timestamp.from(lockUntil))
+                .param("seconds", secondsFromNow)
                 .update();
     }
 

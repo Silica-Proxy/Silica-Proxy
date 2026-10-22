@@ -52,7 +52,7 @@ public class SyncStatusDao {
     // or expired, the row is a residue (crash, kill -9, or a failure failTask could not record).
     // Follows lockAtMostFor and its heartbeat by itself, unlike a fixed threshold per job.
     static final String LOCK_HELD = "EXISTS (SELECT 1 FROM shedlock"
-            + " WHERE shedlock.name = sync_status.lock_name AND shedlock.lock_until > CURRENT_TIMESTAMP)";
+            + " WHERE shedlock.name = sync_status.lock_name AND shedlock.lock_until > " + SchedulerLockDao.SHEDLOCK_NOW + ")";
     // The jobs that run no longer : their lock is not held, or it is the caller's own lock, taken
     // just before starting its jobs (anything RUNNING under it then is a residue too).
     static final String NOT_RUNNING = "(NOT " + LOCK_HELD + " OR sync_status.lock_name = :ownLockName)";

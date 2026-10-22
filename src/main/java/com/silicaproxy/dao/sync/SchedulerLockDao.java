@@ -21,8 +21,7 @@ import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-import java.sql.Timestamp;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.Optional;
 
 /**
@@ -35,17 +34,24 @@ import java.util.Optional;
 @NullMarked
 public class SchedulerLockDao {
 
+    // The clock ShedLock writes lock_until with (usingDbTime, PostgreSQL) : the UTC wall-clock time,
+    // a TIMESTAMP without time zone stored into a TIMESTAMPTZ column, so read back in the time zone
+    // of the session. Compared with this expression, never with CURRENT_TIMESTAMP : under a JVM
+    // outside UTC (Europe/Paris, +2h), a lock of 50 min would look expired since 1h10.
+    public static final String SHEDLOCK_NOW = "timezone('utc', CURRENT_TIMESTAMP)";
+
     private final JdbcClient jdbcClient;
 
     public SchedulerLockDao(JdbcClient jdbcClient) {
         this.jdbcClient = jdbcClient;
     }
 
-    public Optional<Instant> findLockUntil(String lockName) {
-        return jdbcClient.sql("SELECT lock_until FROM shedlock WHERE name = :name")
+    // The time left before lockName is released, negative once it is.
+    public Optional<Duration> findRemainingLock(String lockName) {
+        return jdbcClient.sql("SELECT EXTRACT(EPOCH FROM (lock_until - " + SHEDLOCK_NOW + ")) FROM shedlock WHERE name = :name")
                 .param("name", lockName)
-                .query(Timestamp.class)
+                .query(Double.class)
                 .optional()
-                .map(Timestamp::toInstant);
+                .map(seconds -> Duration.ofMillis(Math.round(seconds * 1000)));
     }
 }
