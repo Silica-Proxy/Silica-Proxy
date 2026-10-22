@@ -87,6 +87,16 @@ public class SyncStatusDao {
         return count;
     }
 
+    public long countRunningUnderLockWithinThreshold(String lockName, long thresholdMinutes) {
+        Long count = jdbcClient.sql("SELECT count(*) FROM sync_status"
+                + " WHERE status = 'RUNNING' AND lock_name = :lockName"
+                + " AND last_start_time > CURRENT_TIMESTAMP - INTERVAL '" + thresholdMinutes + " minutes'")
+                .param("lockName", lockName)
+                .query(Long.class)
+                .single();
+        return count;
+    }
+
     public List<SyncStatusRow> findAllJobs() {
         List<Map<String, Object>> rows = jdbcClient.sql("""
                 SELECT job_id, status, last_start_time, last_end_time, duration_ms, error_message, items_processed, next_run_time, items_total
@@ -121,10 +131,11 @@ public class SyncStatusDao {
     }
 
     @Transactional
-    public void startTask(String taskId) {
+    public void startTask(String taskId, String lockName) {
         jdbcClient.sql("""
                 UPDATE sync_status
                 SET status = 'RUNNING',
+                    lock_name = :lockName,
                     last_start_time = CURRENT_TIMESTAMP,
                     last_end_time = NULL,
                     duration_ms = NULL,
@@ -135,6 +146,7 @@ public class SyncStatusDao {
                 WHERE job_id = :jobId
                 """)
                 .param("jobId", taskId)
+                .param("lockName", lockName)
                 .update();
     }
 

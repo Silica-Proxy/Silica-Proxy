@@ -62,6 +62,7 @@ public class GitOpsSyncService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GitOpsSyncService.class);
     private static final String GITOPS_JOB_ID = "gitops-sync";
+    private static final String GITOPS_SYNC_LOCK_NAME = "gitops_sync_lock";
 
     // npm-style convention : 'x'/'X' is only a wildcard as a full trailing version *segment*
     // (e.g. "1.2.x", "4.X"), never as a literal character occurring elsewhere (e.g. "1.0.0-xyz"
@@ -126,7 +127,7 @@ public class GitOpsSyncService {
 
     // Run every syncIntervalMinutes minutes (expressed in milliseconds in properties, wait, it's just int minutes, we use SpEL)
     @Scheduled(fixedDelayString = "#{${silicaproxy.gitops.sync-interval-minutes} * 60000}", initialDelay = 60000)
-    @SchedulerLock(name = "gitops_sync_lock", lockAtMostFor = "10m", lockAtLeastFor = "30s")
+    @SchedulerLock(name = GITOPS_SYNC_LOCK_NAME, lockAtMostFor = "10m", lockAtLeastFor = "30s")
     public void syncCompanyPolicies() {
         if (!properties.gitops().enabled()) {
             if (LOGGER.isDebugEnabled()) {
@@ -135,7 +136,7 @@ public class GitOpsSyncService {
             return;
         }
 
-        syncStatusService.startTask(GITOPS_JOB_ID);
+        syncStatusService.startTask(GITOPS_JOB_ID, GITOPS_SYNC_LOCK_NAME);
         Instant nextRun = Instant.now().plus(properties.gitops().syncIntervalMinutes(), ChronoUnit.MINUTES);
         LOGGER.info("Starting GitOps synchronization from {}...", properties.gitops().repositoryUrl());
         try {
