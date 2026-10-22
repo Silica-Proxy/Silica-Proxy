@@ -8,7 +8,7 @@ spring:
 
   datasource:
     # Database URL (default value for local development if not provided via environment)
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/security_db?prepareThreshold=5&preparedStatementCacheSize=250&preparedStatementCacheQueriesPerConnection=30}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/security_db?prepareThreshold=5}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
     password: ${SPRING_DATASOURCE_PASSWORD:postgres}
     hikari:
