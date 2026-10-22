@@ -22,6 +22,7 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -30,6 +31,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @NullMarked
@@ -80,6 +84,26 @@ public abstract class BaseIntegrationTest {
         registry.add("silicaproxy.http-client.connect-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.registries-read-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.security-apis-read-timeout-seconds", () -> 2);
+    }
+
+    // A RUNNING sync_status row only counts while the ShedLock lock it runs under is held.
+    protected static void holdSchedulerLock(JdbcClient jdbcClient, String lockName) {
+        setSchedulerLockUntil(jdbcClient, lockName, Instant.now().plus(10, ChronoUnit.MINUTES));
+    }
+
+    protected static void releaseSchedulerLock(JdbcClient jdbcClient, String lockName) {
+        setSchedulerLockUntil(jdbcClient, lockName, Instant.now().minus(1, ChronoUnit.SECONDS));
+    }
+
+    private static void setSchedulerLockUntil(JdbcClient jdbcClient, String lockName, Instant lockUntil) {
+        jdbcClient.sql("""
+                INSERT INTO shedlock (name, lock_until, locked_at, locked_by)
+                VALUES (:name, :lockUntil, CURRENT_TIMESTAMP, 'test')
+                ON CONFLICT (name) DO UPDATE SET lock_until = :lockUntil
+                """)
+                .param("name", lockName)
+                .param("lockUntil", Timestamp.from(lockUntil))
+                .update();
     }
 
     // Load a sample of real data (extract from a real ArtifactSentry instance

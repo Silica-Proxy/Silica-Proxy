@@ -19,6 +19,7 @@ package com.silicaproxy.controller;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.service.policy.GitOpsSyncService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,6 +69,7 @@ class GitOpsControllerTest extends BaseIntegrationTest {
 
     @Test
     void shouldReturnConflictWhenGitOpsSyncIsAlreadyRunning() {
+        holdSchedulerLock(jdbcClient, "gitops_sync_lock");
         jdbcClient.sql("UPDATE sync_status SET status = 'RUNNING', last_start_time = CURRENT_TIMESTAMP WHERE job_id = 'gitops-sync'").update();
 
         ResponseEntity<String> response = postForce();
@@ -75,6 +77,11 @@ class GitOpsControllerTest extends BaseIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(response.getBody()).contains("GitOps synchronization is already running");
         verifyNoInteractions(gitOpsSyncService);
+    }
+
+    @AfterEach
+    void releaseLock() {
+        releaseSchedulerLock(jdbcClient, "gitops_sync_lock");
     }
 
     private ResponseEntity<String> postForce() {

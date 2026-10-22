@@ -25,6 +25,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,54 +48,50 @@ public class SyncStatusDao {
         this.jdbcClient = jdbcClient;
     }
 
-    // SQL expression applying the correct expiration threshold according to the job 
-    // (gitops-sync is bounded by a lockAtMostFor of 10 minutes, vulnerability jobs by 1 hour).
-    private String staleThresholdCaseExpression(String gitopsJobId, long gitopsThresholdMinutes, long vulnerabilityThresholdMinutes) {
-        return "(CASE WHEN job_id = '%s' THEN INTERVAL '%d minutes' ELSE INTERVAL '%d minutes' END)"
-                .formatted(gitopsJobId, gitopsThresholdMinutes, vulnerabilityThresholdMinutes);
-    }
+    // A RUNNING row only runs while the ShedLock lock of its job is held : once that lock is released
+    // or expired, the row is a residue (crash, kill -9, or a failure failTask could not record).
+    // Follows lockAtMostFor and its heartbeat by itself, unlike a fixed threshold per job.
+    static final String LOCK_HELD = "EXISTS (SELECT 1 FROM shedlock"
+            + " WHERE shedlock.name = sync_status.lock_name AND shedlock.lock_until > CURRENT_TIMESTAMP)";
+    // The jobs that run no longer : their lock is not held, or it is the caller's own lock, taken
+    // just before starting its jobs (anything RUNNING under it then is a residue too).
+    static final String NOT_RUNNING = "(NOT " + LOCK_HELD + " OR sync_status.lock_name = :ownLockName)";
 
+    // ownLockName : the lock the caller holds before starting its jobs, or null.
     @Transactional
-    public int recoverStaleRunningJobs(String gitopsJobId, long gitopsThresholdMinutes, long vulnerabilityThresholdMinutes) {
-        String caseExpr = staleThresholdCaseExpression(gitopsJobId, gitopsThresholdMinutes, vulnerabilityThresholdMinutes);
+    public int failOrphanedJobs(@Nullable String ownLockName, String errorMessage) {
         return jdbcClient.sql("UPDATE sync_status"
                 + " SET status = 'FAILED',"
-                + " error_message = 'Synchronization interrupted by a stop or a restart of instance',"
+                + " error_message = :errorMessage,"
                 + " last_end_time = CURRENT_TIMESTAMP,"
                 + " updated_at = CURRENT_TIMESTAMP"
-                + " WHERE status = 'RUNNING'"
-                + " AND last_start_time < CURRENT_TIMESTAMP - " + caseExpr)
+                + " WHERE status = 'RUNNING' AND " + NOT_RUNNING)
+                .param("ownLockName", ownLockName, Types.VARCHAR)
+                .param("errorMessage", errorMessage)
                 .update();
     }
 
-    public boolean isJobRunningWithinThreshold(String jobId, long thresholdMinutes) {
+    public boolean isJobRunning(String jobId) {
         Long count = jdbcClient.sql("SELECT count(*) FROM sync_status"
-                + " WHERE job_id = :jobId AND status = 'RUNNING'"
-                + " AND last_start_time > CURRENT_TIMESTAMP - INTERVAL '" + thresholdMinutes + " minutes'")
+                + " WHERE job_id = :jobId AND status = 'RUNNING' AND " + LOCK_HELD)
                 .param("jobId", jobId)
                 .query(Long.class)
                 .single();
         return count != null && count > 0;
     }
 
-    public long countRunningWithinThreshold(String gitopsJobId, long gitopsThresholdMinutes, long vulnerabilityThresholdMinutes) {
-        String caseExpr = staleThresholdCaseExpression(gitopsJobId, gitopsThresholdMinutes, vulnerabilityThresholdMinutes);
-        Long count = jdbcClient.sql("SELECT count(*) FROM sync_status"
-                + " WHERE status = 'RUNNING'"
-                + " AND last_start_time > CURRENT_TIMESTAMP - " + caseExpr)
+    public long countRunning() {
+        return jdbcClient.sql("SELECT count(*) FROM sync_status WHERE status = 'RUNNING' AND " + LOCK_HELD)
                 .query(Long.class)
                 .single();
-        return count;
     }
 
-    public long countRunningUnderLockWithinThreshold(String lockName, long thresholdMinutes) {
-        Long count = jdbcClient.sql("SELECT count(*) FROM sync_status"
-                + " WHERE status = 'RUNNING' AND lock_name = :lockName"
-                + " AND last_start_time > CURRENT_TIMESTAMP - INTERVAL '" + thresholdMinutes + " minutes'")
+    public long countRunningUnderLock(String lockName) {
+        return jdbcClient.sql("SELECT count(*) FROM sync_status"
+                + " WHERE status = 'RUNNING' AND lock_name = :lockName AND " + LOCK_HELD)
                 .param("lockName", lockName)
                 .query(Long.class)
                 .single();
-        return count;
     }
 
     public List<SyncStatusRow> findAllJobs() {
