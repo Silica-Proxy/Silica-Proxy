@@ -54,6 +54,6 @@ USER appuser
 EXPOSE 8080
 
 # Default JVM flags; override the whole variable to tune them (e.g. -e JDK_JAVA_OPTIONS="...")
-ENV JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders -XX:+UseStringDeduplication -Dsun.net.inetaddr.ttl=60 -XX:ErrorFile=/app/logs/hs_err_pid%p.log"
+ENV JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders -XX:+UseStringDeduplication -Dsun.net.inetaddr.ttl=60 -XX:ErrorFile=/app/logs/hs_err_pid%p.log -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/app/logs"
 
 ENTRYPOINT ["java", "-jar", "silicaproxy.jar"]
