@@ -19,6 +19,7 @@ package com.silicaproxy.performance;
 
 import com.silicaproxy.service.interception.LoomProxyServer;
 import org.jspecify.annotations.NullMarked;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -42,6 +43,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+// Timing-sensitive: run alone by the performanceTest task, away from the parallel forks.
+@Tag("performance")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "silicaproxy.registries.npm-url=https://registry.npmjs.org",
         "silicaproxy.registries.pypi-url=https://pypi.org",

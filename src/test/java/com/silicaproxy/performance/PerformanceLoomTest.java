@@ -21,6 +21,7 @@ import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.decision.SecurityService;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -35,6 +36,8 @@ import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+// Timing-sensitive: run alone by the performanceTest task, away from the parallel forks.
+@Tag("performance")
 @TestPropertySource(properties = {
         "silicaproxy.security.ssrf-protection.enabled=false",
         "spring.datasource.hikari.maximum-pool-size=500"
