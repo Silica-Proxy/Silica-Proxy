@@ -130,12 +130,16 @@ pmdTest { enabled = false }
 
 tasks.named('test') {
 	useJUnitPlatform {
-		excludeTags 'artifact-repository'
+		excludeTags 'artifact-repository', 'performance'
 	}
-	finalizedBy jacocoTestReport
+	// Timing-sensitive tests run afterwards, alone, so CPU contention from the forks can't skew them.
+	finalizedBy 'performanceTest', jacocoTestReport
 	// The volume tests (DecisionDaoTest: 500k vulnerabilities + 10k policies) exceed the limits.
 	// the default heap of the Gradle test runner when running with the rest of the suite.
 	maxHeapSize = '2g'
+	// Each fork is its own JVM with its own Postgres/WireMock (BaseIntegrationTest statics),
+	// so classes in different forks never share data. Override with -PtestForks=N.
+	maxParallelForks = (project.findProperty('testForks') ?: Math.max(1, Runtime.runtime.availableProcessors().intdiv(2))) as int
 	// Activates application-test.yaml (src/test/resources) as the effective config for every
 	// test, overriding application.yaml on the keys it defines instead of leaving it dead code.
 	systemProperty 'spring.profiles.active', 'test'
@@ -158,7 +162,22 @@ tasks.register('artifactRepositoryTest', Test) {
 	systemProperty 'spring.profiles.active', 'test'
 }
 
+tasks.register('performanceTest', Test) {
+	group = 'verification'
+	description = 'Runs the timing-sensitive tests (k6 load test, Loom latency) in a single JVM.'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'performance'
+	}
+	mustRunAfter 'test'
+	maxHeapSize = '2g'
+	systemProperty 'spring.profiles.active', 'test'
+}
+
 jacocoTestReport {
+	mustRunAfter 'performanceTest'
+	executionData fileTree(layout.buildDirectory).include('jacoco/test.exec', 'jacoco/performanceTest.exec')
 	reports {
 		xml.required = true
 		html.required = true
