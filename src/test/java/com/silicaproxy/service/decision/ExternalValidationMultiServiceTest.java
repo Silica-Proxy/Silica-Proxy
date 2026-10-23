@@ -316,4 +316,46 @@ class ExternalValidationMultiServiceTest extends BaseIntegrationTest {
         wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-a")));
         wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/ext-b")));
     }
+
+    // The cached final ALLOW never outlives the earliest of the services' ALLOWs
+    @Test
+    void multiService_bothAllowed_finalAllowCachedUntilEarliestServiceExpiry() {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_cache
+                    (service_name, package_name, ecosystem, package_version, mode, status, expires_at)
+                VALUES ('scanner-a', 'lodash', 'npm', '4.17.21', 'SYNC', 'ALLOWED', ?)
+                """).param(Timestamp.from(Instant.now().plus(10, ChronoUnit.MINUTES))).update();
+        wireMock.stubFor(post(urlEqualTo("/ext-b"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+
+        ResponseEntity<byte[]> response = proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toEntity(byte[].class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Instant expiresAt = jdbcClient.sql("""
+                SELECT expires_at FROM api_cache
+                WHERE package_name = 'lodash' AND api_source = 'EXTERNAL_VALIDATION_CHAIN'
+                """).query(Timestamp.class).single().toInstant();
+        assertThat(expiresAt).isBetween(Instant.now().plus(9, ChronoUnit.MINUTES),
+                Instant.now().plus(11, ChronoUnit.MINUTES));
+    }
+
+    // One service allowed, the other timed out (fail-open) : nothing vetted by it, nothing cached
+    @Test
+    void multiService_oneAllowOneFailOpenTimeout_finalAllowNotCached() {
+        wireMock.stubFor(post(urlEqualTo("/ext-a"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+        wireMock.stubFor(post(urlEqualTo("/ext-b"))
+                .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
+
+        ResponseEntity<byte[]> response = proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toEntity(byte[].class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Integer cached = jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'lodash'")
+                .query(Integer.class).single();
+        assertThat(cached).isZero();
+    }
 }

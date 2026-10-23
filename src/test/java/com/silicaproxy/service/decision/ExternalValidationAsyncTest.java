@@ -242,6 +242,70 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
     }
 
+    @Test
+    void async_pendingScan_allowIsNotCachedInApiCache() throws InterruptedException {
+        proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toBodilessEntity();
+
+        Thread.sleep(500); // Fire-and-forget async task writes DB and calls WireMock after the response
+
+        // Fail-open while the scan is pending : that ALLOW vetted nothing
+        assertThat(apiCacheRowCount()).isZero();
+    }
+
+    @Test
+    void async_blockedCallbackAfterCachedAllow_nextRequestIsBlocked() throws InterruptedException {
+        proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toBodilessEntity();
+
+        Thread.sleep(500); // Fire-and-forget async task writes token to DB after the response
+
+        UUID token = cacheDao.findByServiceAndPackage(SERVICE_NAME, "lodash", "npm", "4.17.21")
+                .orElseThrow().callbackToken();
+        localRestClient.post()
+                .uri("/external-validation/callback/" + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"verdict\":\"ALLOWED\",\"reason\":\"No threats found\"}")
+                .retrieve().toBodilessEntity();
+
+        // Every service definitively allowed : the final ALLOW is cached
+        ResponseEntity<byte[]> response = proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toEntity(byte[].class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbcClient.sql("SELECT api_source FROM api_cache WHERE package_name = 'lodash'")
+                .query(String.class).single()).isEqualTo("EXTERNAL_VALIDATION_CHAIN");
+
+        // A re-scan of the same package then reports it BLOCKED
+        UUID rescanToken = UUID.randomUUID();
+        cacheDao.upsertPendingAsync(rescanToken, SERVICE_NAME, "lodash", "npm", "4.17.21",
+                Instant.now().plus(30, ChronoUnit.MINUTES));
+        localRestClient.post()
+                .uri("/external-validation/callback/" + rescanToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"verdict\":\"BLOCKED\",\"reason\":\"Malicious supply chain\"}")
+                .retrieve().toBodilessEntity();
+
+        // The cached ALLOW is gone : the next request reaches the external verdict and is blocked
+        assertThat(apiCacheRowCount()).isZero();
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+            fail("Expected 403");
+        } catch (HttpClientErrorException e) {
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(e.getResponseBodyAsString()).contains("Malicious supply chain");
+        }
+    }
+
+    private int apiCacheRowCount() {
+        return jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'lodash'")
+                .query(Integer.class).single();
+    }
+
     // Test 42 — async_initialPostFails_failOpen_requestForwarded
     @Test
     void async_initialPostFails_failOpen_requestIsForwarded() throws InterruptedException {

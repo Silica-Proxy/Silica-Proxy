@@ -20,7 +20,9 @@ package com.silicaproxy.model.dto;
  * Step of the decision chain that ruled. The first five are produced by the SQL evaluation of
  * {@code DecisionDao} (the names must match its {@code source_type} literals), the others by
  * {@code SecurityService} and {@code ProxyController}. OSV_LIVE/DEPS_DEV are also stored as
- * {@code api_cache.api_source}.
+ * {@code api_cache.api_source}, as is EXTERNAL_VALIDATION_CHAIN : the api_cache source of an ALLOW
+ * reached through the external validation services AND the live fallback chain (never returned
+ * as a decision source itself).
  */
 public enum DecisionSource {
     COMPANY_POLICY,
@@ -33,6 +35,7 @@ public enum DecisionSource {
     REGISTRY_DEPRECATION,
     REGISTRY_QUARANTINE,
     EXTERNAL_VALIDATION,
+    EXTERNAL_VALIDATION_CHAIN,
     OSV_LIVE,
     DEPS_DEV,
     API_FALLBACK_ERROR,
