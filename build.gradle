@@ -170,3 +170,8 @@ tasks.named('bootJar') {
 	archiveBaseName = 'silicaproxy'
 }
 
+// Only the boot jar is shipped; skipping the plain jar keeps build/libs/*.jar unambiguous
+tasks.named('jar') {
+	enabled = false
+}
+

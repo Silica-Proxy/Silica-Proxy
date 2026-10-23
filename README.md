@@ -388,6 +388,17 @@ Pre-built images are available on [Docker Hub](https://hub.docker.com/r/silicapr
 docker build -t silicaproxy .
 ```
 
+Multi-arch release build — reuses the layer cache stored in the registry and compresses layers with zstd (requires Docker 23+ / containerd 1.5+ on the hosts that pull the image):
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --cache-from type=registry,ref=silicaproxy/silicaproxy:buildcache \
+  --cache-to type=registry,ref=silicaproxy/silicaproxy:buildcache,mode=max \
+  --output type=image,name=silicaproxy/silicaproxy:latest,push=true,compression=zstd,oci-mediatypes=true \
+  .
+```
+
 All configuration is passed as environment variables. Minimum required set:
 
 ```bash

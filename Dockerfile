@@ -1,23 +1,24 @@
-# Stage 1: Build
-FROM eclipse-temurin:25-jdk AS builder
+# syntax=docker/dockerfile:1
+
+# Stage 1: Build — bytecode is architecture-independent, so compile once on the native build platform
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25-jdk AS builder
 WORKDIR /app
 
-# Copy gradle config and wrapper
 COPY gradle/ /app/gradle/
-COPY gradlew /app/
-COPY settings.gradle /app/
-COPY build.gradle /app/
-
-# Build dependencies offline/cache-friendly first
-RUN ./gradlew dependencies --no-daemon || true
-
-# Copy source code and build
+COPY gradlew settings.gradle build.gradle /app/
 COPY src/ /app/src/
-RUN ./gradlew bootJar --no-daemon -x test
 
-# Stage 2: Minimal JRE with jlink (alpine = musl, matches runtime base)
-FROM eclipse-temurin:25-jdk-alpine AS jre-builder
-COPY --from=builder /app/build/libs/*.jar /app/silicaproxy.jar
+# The Gradle wrapper and dependency caches persist across builds in a BuildKit cache mount
+RUN --mount=type=cache,target=/root/.gradle \
+    ./gradlew bootJar --no-daemon -x test && \
+    cp build/libs/*.jar /app/silicaproxy.jar
+
+# Split the jar into Spring Boot layers, from the most stable to the most volatile
+RUN java -Djarmode=tools -jar /app/silicaproxy.jar extract --layers --destination /app/extracted
+
+# Stage 2: Minimal JRE with jlink (musl, matches runtime base; the jdk-all variant ships the jmods jlink needs)
+FROM bellsoft/liberica-runtime-container:jdk-all-25-musl AS jre-builder
+COPY --link --from=builder /app/silicaproxy.jar /app/silicaproxy.jar
 RUN mkdir -p /tmp/app && \
     cd /tmp/app && \
     jar xf /app/silicaproxy.jar && \
@@ -30,7 +31,7 @@ RUN mkdir -p /tmp/app && \
         2>/dev/null) && \
     echo "Detected modules: $MODULES" && \
     jlink \
-        --add-modules "${MODULES},jdk.crypto.ec,jdk.crypto.cryptoki" \
+        --add-modules "${MODULES}" \
         --strip-debug \
         --no-man-pages \
         --no-header-files \
@@ -38,17 +39,22 @@ RUN mkdir -p /tmp/app && \
         --output /opt/jre
 
 # Stage 3: Runtime
-FROM alpine:3
+# Alpaquita musl: Alpine-compatible, with a faster musl allocator than stock Alpine
+FROM bellsoft/alpaquita-linux-base:stream-musl
 ENV JAVA_HOME=/opt/jre
 ENV PATH="$JAVA_HOME/bin:$PATH"
 WORKDIR /app
 
-COPY --from=jre-builder /opt/jre /opt/jre
-COPY --from=builder /app/build/libs/*.jar /app/silicaproxy.jar
-
-# Run as non-root user
+# Run as non-root user; the application files stay owned by root and read-only for appuser
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
     mkdir -p /app/logs /app/work /app/certs /app/policies && chown -R appuser:appgroup /app/logs /app/work /app/certs /app/policies
+
+COPY --link --from=jre-builder /opt/jre /opt/jre
+COPY --link --from=builder /app/extracted/dependencies/ /app/
+COPY --link --from=builder /app/extracted/spring-boot-loader/ /app/
+COPY --link --from=builder /app/extracted/snapshot-dependencies/ /app/
+COPY --link --from=builder /app/extracted/application/ /app/
+
 USER appuser
 
 EXPOSE 8080

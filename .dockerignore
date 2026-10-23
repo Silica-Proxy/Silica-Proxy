@@ -1,0 +1,19 @@
+# Only gradle/, gradlew, settings.gradle, build.gradle and src/ are needed by the build
+.git/
+.github/
+.gradle/
+.idea/
+.vscode/
+.settings/
+bin/
+build/
+logs/
+work/
+certs/
+policies/
+dev/
+load-test/
+dashboards/
+*.crt
+*.p12
+*.md
