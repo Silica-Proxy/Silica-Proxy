@@ -21,6 +21,7 @@ import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ExternalValidationClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
+import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import org.junit.jupiter.api.Test;
 
@@ -73,7 +74,8 @@ class ExternalValidationServiceStartupTest {
                 mock(ExternalValidationVerdictsDao.class),
                 mock(ExternalValidationClient.class),
                 mock(Executor.class),
-                mock(ExternalValidationMetrics.class));
+                mock(ExternalValidationMetrics.class),
+                mock(MetadataCacheDao.class));
     }
 
     @Test

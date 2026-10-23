@@ -129,6 +129,22 @@ public class MetadataCacheDao {
                 .update();
     }
 
+    // Only an ALLOW is dropped : a cached BLOCK stays correct whatever verdict arrives later.
+    public int deleteApiCacheAllow(String packageName, String ecosystem, String version) {
+        String sql = """
+            DELETE FROM api_cache
+            WHERE package_name = :packageName
+              AND ecosystem = :ecosystem
+              AND package_version = :version
+              AND is_secure
+            """;
+        return jdbcClient.sql(sql)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem.toLowerCase(Locale.ROOT))
+                .param("version", version)
+                .update();
+    }
+
     @Transactional
     public int deleteExpiredApiCache() {
         return jdbcClient.sql("DELETE FROM api_cache WHERE expires_at <= CURRENT_TIMESTAMP").update();

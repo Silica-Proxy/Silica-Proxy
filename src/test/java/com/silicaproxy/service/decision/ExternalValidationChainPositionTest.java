@@ -252,27 +252,57 @@ class ExternalValidationChainPositionTest extends BaseIntegrationTest {
     }
 
     @Test
-    void externalValidationAllows_osvAllowIsNotCachedInApiCache() {
+    void externalValidationAllows_finalAllowIsCachedAndServesTheNextRequest() {
+        stubOldLodashAndCleanOsv();
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"Clean\"}")));
+
+        assertProxyAllows();
+        assertProxyAllows();
+
+        // The second request is served by the cached ALLOW : no registry, external or OSV call
+        wireMock.verify(exactly(1), getRequestedFor(urlEqualTo("/lodash")));
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/v1/query")));
+
+        String source = jdbcClient.sql("SELECT api_source FROM api_cache WHERE package_name = 'lodash'")
+                .query(String.class).single();
+        assertThat(source).isEqualTo("EXTERNAL_VALIDATION_CHAIN");
+        // TTL = min(allow-verdict-ttl-minutes=1440, cache-ttl-minutes=60 of the service)
+        Instant expiresAt = jdbcClient.sql("SELECT expires_at FROM api_cache WHERE package_name = 'lodash'")
+                .query(java.sql.Timestamp.class).single().toInstant();
+        assertThat(expiresAt).isBetween(Instant.now().plusSeconds(59 * 60), Instant.now().plusSeconds(61 * 60));
+    }
+
+    @Test
+    void externalValidationTimeoutFailOpen_allowIsNotCachedInApiCache() {
+        stubOldLodashAndCleanOsv();
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
+
+        assertProxyAllows();
+
+        // A fail-open timeout vetted nothing : a cached ALLOW would bypass the external service
+        // on the next request
+        Integer cached = jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'lodash'")
+                .query(Integer.class).single();
+        assertThat(cached).isZero();
+    }
+
+    private void stubOldLodashAndCleanOsv() {
         String oldDate = Instant.now().minusSeconds(86400 * 30).toString();
         wireMock.stubFor(get(urlEqualTo("/lodash"))
                 .willReturn(okJson("{" +
                         "\"time\":{\"4.17.21\":\"" + oldDate + "\"}," +
                         "\"versions\":{\"4.17.21\":{\"name\":\"lodash\",\"version\":\"4.17.21\"}}}")));
         wireMock.stubFor(post(urlEqualTo("/v1/query")).willReturn(okJson("{}")));
-        wireMock.stubFor(post(urlEqualTo("/external-validate"))
-                .willReturn(okJson("{\"verdict\":\"ALLOWED\",\"reason\":\"Clean\"}")));
+    }
 
+    private void assertProxyAllows() {
         ResponseEntity<byte[]> response = proxyRestClient.get()
                 .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                 .retrieve().toEntity(byte[].class);
-
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/v1/query")));
-        // A cached ALLOW would be served by the local evaluation and bypass external
-        // validation on the next request
-        Integer cached = jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'lodash'")
-                .query(Integer.class).single();
-        assertThat(cached).isZero();
     }
 
     private void stubOldLodashAndVulnerableOsv() {

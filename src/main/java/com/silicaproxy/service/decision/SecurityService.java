@@ -22,6 +22,7 @@ import com.silicaproxy.dao.client.RegistryClient;
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.ExternalValidationOutcome;
 import com.silicaproxy.model.dto.PackageMetadataResult;
 import com.silicaproxy.model.dto.RegistryLookup;
 import com.silicaproxy.model.dto.SeverityThreshold;
@@ -30,6 +31,7 @@ import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.vulnerability.VulnerabilityApiClients;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -116,16 +118,42 @@ public class SecurityService {
         // External validation services (before OSV/deps.dev). Only a BLOCK short-circuits the
         // chain : an ALLOW may be a fail-open timeout, a pending async scan or a non-blocking
         // service, none of which vetted the package, so the live vulnerability APIs still run.
-        Optional<DecisionResult> extResult =
+        Optional<ExternalValidationOutcome> extResult =
                 externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
-        if (extResult.isPresent() && extResult.get().isBlocked()) {
-            return extResult.get();
+        if (extResult.isEmpty()) {
+            return runFallbackChain(packageName, version, ecosystem, AllowCaching.FALLBACK_SOURCE);
+        }
+        ExternalValidationOutcome outcome = extResult.get();
+        if (outcome.decision().isBlocked()) {
+            return outcome.decision();
         }
 
-        // No ALLOW is cached in api_cache while external validation is active : the local
-        // evaluation reads api_cache first, so a cached ALLOW would bypass the external
-        // services (and ignore a later async BLOCKED callback) until it expires.
-        return runFallbackChain(packageName, version, ecosystem, extResult.isEmpty());
+        // The local evaluation reads api_cache first, so a cached ALLOW bypasses the external
+        // services until it expires : it is only written when every service definitively
+        // allowed the package (never on a pending scan or a fail-open error), and never outlives
+        // the earliest of their ALLOWs. A later async BLOCKED callback deletes it.
+        Instant cacheableUntil = outcome.allowCacheableUntil();
+        AllowCaching allowCaching = cacheableUntil != null
+                ? AllowCaching.externalValidationChain(cacheableUntil)
+                : AllowCaching.NONE;
+        return runFallbackChain(packageName, version, ecosystem, allowCaching);
+    }
+
+    // How an ALLOW reached by the fallback chain is written to api_cache (a BLOCK is always
+    // cached under its own source). cap bounds the expiry ; source, when set, replaces the
+    // fallback source that ruled.
+    private record AllowCaching(boolean enabled, @Nullable DecisionSource source, Instant cap) {
+
+        static final AllowCaching NONE = new AllowCaching(false, null, Instant.MIN);
+        static final AllowCaching FALLBACK_SOURCE = new AllowCaching(true, null, Instant.MAX);
+
+        static AllowCaching externalValidationChain(Instant cap) {
+            return new AllowCaching(true, DecisionSource.EXTERNAL_VALIDATION_CHAIN, cap);
+        }
+
+        DecisionSource sourceOr(DecisionSource ruling) {
+            return source != null ? source : ruling;
+        }
     }
 
     // Deprecation/yanked status is never persisted (unlike published_at): it must stay fresh, so
@@ -213,9 +241,9 @@ public class SecurityService {
             return DecisionResult.block(DecisionSource.REGISTRY_ERROR, "Public registry is unreachable and proxy is configured in fail-closed.");
         }
         if (properties.quarantine().checkVulnerabilitiesOnRegistryError()) {
-            // cacheAllow=false : an ALLOW cached here would short-circuit the quarantine check
+            // AllowCaching.NONE : an ALLOW cached here would short-circuit the quarantine check
             // for the whole TTL once the registry recovers.
-            DecisionResult vulnVerdict = runFallbackChain(packageName, version, ecosystem, false);
+            DecisionResult vulnVerdict = runFallbackChain(packageName, version, ecosystem, AllowCaching.NONE);
             if (vulnVerdict.isBlocked()) {
                 return vulnVerdict;
             }
@@ -271,8 +299,9 @@ public class SecurityService {
     // verdict is deliberately NEVER written to api_cache : caching it would keep allowing (or
     // blocking) for the whole TTL after the API recovers, turning a transient outage into a
     // 24h security hole.
-    // cacheAllow=false never writes an ALLOW verdict to api_cache (a BLOCK is still cached).
-    private DecisionResult runFallbackChain(String packageName, String version, String ecosystem, boolean cacheAllow) {
+    // AllowCaching.NONE never writes an ALLOW verdict to api_cache (a BLOCK is still cached).
+    private DecisionResult runFallbackChain(String packageName, String version, String ecosystem,
+            AllowCaching allowCaching) {
         boolean anyAttempted = false;
         boolean anyFailClosed = false;
         // The live APIs report every advisory : the same threshold as the local tables decides
@@ -289,7 +318,7 @@ public class SecurityService {
             logApiCall(source.source().name(), packageName, ecosystem, version, result);
             if (!result.isError()) {
                 return resolveFallbackVerdict(packageName, version, ecosystem, source.source(),
-                        source.providerLabel(), result, cacheAllow);
+                        source.providerLabel(), result, allowCaching);
             }
             anyAttempted = true;
             anyFailClosed |= !sourceProps.failOpen();
@@ -309,11 +338,26 @@ public class SecurityService {
         }
 
         // If no fallback enabled, authorize by default
-        if (cacheAllow && properties.apiCache().cacheAllowVerdict()) {
-            Instant expiresAt = Instant.now().plus(properties.apiCache().allowVerdictTtlMinutes(), ChronoUnit.MINUTES);
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true, DecisionSource.DEFAULT.name(), expiresAt);
-        }
+        cacheAllowVerdict(packageName, version, ecosystem, DecisionSource.DEFAULT, List.of(), allowCaching);
         return DecisionResult.allow(DecisionSource.DEFAULT, "Allowed by default (no blocking rule).");
+    }
+
+    // ALLOW TTL = min(api-cache.allow-verdict-ttl-minutes, allowCaching.cap) ; nothing is written
+    // when ALLOW caching is disabled or that TTL is already over.
+    private void cacheAllowVerdict(String packageName, String version, String ecosystem, DecisionSource ruling,
+            List<String> vulnerabilityIds, AllowCaching allowCaching) {
+        if (!allowCaching.enabled() || !properties.apiCache().cacheAllowVerdict()) {
+            return;
+        }
+        Instant now = Instant.now();
+        Instant expiresAt = now.plus(properties.apiCache().allowVerdictTtlMinutes(), ChronoUnit.MINUTES);
+        if (allowCaching.cap().isBefore(expiresAt)) {
+            expiresAt = allowCaching.cap();
+        }
+        if (expiresAt.isAfter(now)) {
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, true,
+                    allowCaching.sourceOr(ruling).name(), expiresAt, vulnerabilityIds);
+        }
     }
 
     private void logApiCall(String apiSource, String packageName, String ecosystem, String version,
@@ -327,18 +371,16 @@ public class SecurityService {
 
     private DecisionResult resolveFallbackVerdict(
             String packageName, String version, String ecosystem, DecisionSource source, String providerLabel,
-            ApiCheckResult result, boolean cacheAllow) {
+            ApiCheckResult result, AllowCaching allowCaching) {
         boolean isSecure = !result.vulnerable();
 
-        // Configurable different TTL for BLOCK and ALLOW (0 = do not cache)
-        int ttlMinutes = isSecure
-            ? properties.apiCache().allowVerdictTtlMinutes()
-            : properties.apiCache().blockVerdictTtlMinutes();
-
-        // Cache the verdict if TTL > 0 (BLOCK always, ALLOW only if configured and TTL > 0)
-        if (ttlMinutes > 0 && (!isSecure || cacheAllow && properties.apiCache().cacheAllowVerdict())) {
-            Instant expiresAt = Instant.now().plus(ttlMinutes, ChronoUnit.MINUTES);
-            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, isSecure, source.name(), expiresAt,
+        // Configurable different TTL for BLOCK and ALLOW (0 = do not cache) : BLOCK always,
+        // ALLOW only if configured
+        if (isSecure) {
+            cacheAllowVerdict(packageName, version, ecosystem, source, result.vulnerabilityIds(), allowCaching);
+        } else if (properties.apiCache().blockVerdictTtlMinutes() > 0) {
+            Instant expiresAt = Instant.now().plus(properties.apiCache().blockVerdictTtlMinutes(), ChronoUnit.MINUTES);
+            caches.metadataCacheDao().saveApiCache(packageName, ecosystem, version, false, source.name(), expiresAt,
                     result.vulnerabilityIds());
         }
 
