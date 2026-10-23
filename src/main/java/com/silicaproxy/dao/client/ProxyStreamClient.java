@@ -67,7 +67,13 @@ public class ProxyStreamClient {
             if (!headerName.equalsIgnoreCase("Host") 
                     && !headerName.equalsIgnoreCase("Connection")
                     && !headerName.toLowerCase(Locale.ROOT).startsWith("x-forwarded-")
-                    && !headerName.equalsIgnoreCase("x-real-ip")) {
+                    && !headerName.equalsIgnoreCase("x-real-ip")
+                    // Hop-by-hop, meant for this proxy : the client's proxy credential must never
+                    // reach the registry (RFC 9110 11.7.2)
+                    && !headerName.equalsIgnoreCase(HttpHeaders.PROXY_AUTHORIZATION)
+                    && !headerName.equalsIgnoreCase("Proxy-Connection")
+                    // Client identity meant for this proxy only (audit log), never for the registry
+                    && !headerName.toLowerCase(Locale.ROOT).startsWith("x-silica-")) {
                 request.getHeaders().addAll(headerName, headerValues);
             }
         });

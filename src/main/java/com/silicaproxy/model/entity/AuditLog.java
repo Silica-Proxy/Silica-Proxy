@@ -35,5 +35,9 @@ public record AuditLog(
     String verdict,
     @Nullable String reason,
     int executionTimeMs,
-    String fullUrl
+    String fullUrl,
+    // Who downloaded the package (see ClientIdentity), null when unknown
+    @Nullable String clientIp,
+    @Nullable String userAgent,
+    @Nullable String clientId
 ) {}

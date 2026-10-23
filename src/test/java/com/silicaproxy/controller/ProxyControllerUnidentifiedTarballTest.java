@@ -20,6 +20,7 @@ package com.silicaproxy.controller;
 import com.silicaproxy.service.interception.ResponseIdentificationService;
 import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.properties.NpmPackumentIndexProperties.UnidentifiedTarballAction;
@@ -91,7 +92,7 @@ class ProxyControllerUnidentifiedTarballTest {
         verify(proxyStreamClient, never()).streamContent(anyString(), any(HttpHeaders.class));
         verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
         verify(auditLogService).logAudit(anyString(), anyString(), eq("npm"), eq("UNIDENTIFIED_ARTIFACT"),
-                eq("BLOCK"), anyString(), anyInt(), anyString());
+                eq("BLOCK"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test

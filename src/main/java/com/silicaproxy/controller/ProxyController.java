@@ -18,6 +18,7 @@
 package com.silicaproxy.controller;
 
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.service.audit.AuditLogService;
@@ -29,12 +30,14 @@ import com.silicaproxy.service.interception.PackageIdentificationService.Identif
 import com.silicaproxy.service.interception.PackageIdentificationService.Outcome;
 import com.silicaproxy.service.interception.ChecksumVerifyingRelay;
 import com.silicaproxy.service.interception.ChecksumVerifyingRelay.ChecksumMismatchException;
+import com.silicaproxy.service.interception.ClientIdentityResolver;
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.ResponseIdentificationService;
 import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StreamUtils;
@@ -83,6 +86,8 @@ public class ProxyController {
     private final ResponseIdentificationService responseIdentification;
     private final ProxyControllerMetrics metrics;
     private final ObjectMapper objectMapper;
+    // Who sent the request, recorded in the audit log.
+    private final ClientIdentityResolver clientIdentityResolver;
 
     public ProxyController(
             SecurityService securityService,
@@ -94,6 +99,22 @@ public class ProxyController {
             ResponseIdentificationService responseIdentification,
             ProxyControllerMetrics metrics,
             ObjectMapper objectMapper) {
+        this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
+                httpsUpgradePolicy, responseIdentification, metrics, objectMapper, ClientIdentityResolver.untrusting());
+    }
+
+    @Autowired
+    public ProxyController(
+            SecurityService securityService,
+            AuditLogService auditLogService,
+            ProxyStreamClient proxyStreamClient,
+            PackageIdentificationService packageIdentification,
+            NpmPackumentIndex npmPackumentIndex,
+            HttpsUpgradePolicy httpsUpgradePolicy,
+            ResponseIdentificationService responseIdentification,
+            ProxyControllerMetrics metrics,
+            ObjectMapper objectMapper,
+            ClientIdentityResolver clientIdentityResolver) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -103,6 +124,7 @@ public class ProxyController {
         this.responseIdentification = responseIdentification;
         this.metrics = metrics;
         this.objectMapper = objectMapper;
+        this.clientIdentityResolver = clientIdentityResolver;
     }
 
     @GetMapping("/**")
@@ -133,6 +155,7 @@ public class ProxyController {
         // Extracted once : the npm metadata detector reads the client hints (Accept / User-Agent /
         // npm-*) and the forwarder replays the same headers upstream.
         HttpHeaders headers = extractHeaders(request);
+        ClientIdentity client = clientIdentityResolver.resolve(request.getRemoteAddr(), request.getRemotePort(), headers);
         String forwardUrl = httpsUpgradePolicy.upgrade(fullUrl, request.getLocalPort());
         Identification identification = packageIdentification.identify(fullUrl, forwardUrl, headers);
         ParsedPackage parsed = identification.pkg();
@@ -142,7 +165,7 @@ public class ProxyController {
 
         if (identification.outcome() == Outcome.BYPASS) {
             if (responseIdentification.isEnabled()) {
-                forwardIdentifyingResponse(fullUrl, forwardUrl, headers, response, identification, startTime);
+                forwardIdentifyingResponse(fullUrl, forwardUrl, headers, client, response, identification, startTime);
             } else {
                 recordBypass(parsed, forwardUrl);
                 forwardRequest(forwardUrl, headers, response, identification.learnPackument());
@@ -153,7 +176,7 @@ public class ProxyController {
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
                 : securityService.getDecision(packageName, version, ecosystem, fullUrl);
-        if (applyDecision(decision, parsed, fullUrl, startTime, response)) {
+        if (applyDecision(decision, parsed, fullUrl, client, startTime, response)) {
             return;
         }
 
@@ -180,8 +203,8 @@ public class ProxyController {
      *
      * @return whether the request was blocked (the response is then already written)
      */
-    private boolean applyDecision(DecisionResult decision, ParsedPackage pkg, String fullUrl, long startTime,
-            HttpServletResponse response) throws IOException {
+    private boolean applyDecision(DecisionResult decision, ParsedPackage pkg, String fullUrl, ClientIdentity client,
+            long startTime, HttpServletResponse response) throws IOException {
         String packageName = pkg.packageName();
         String version = pkg.version();
         String ecosystem = pkg.ecosystem();
@@ -201,7 +224,8 @@ public class ProxyController {
                 decision.result().name(),
                 decision.reason(),
                 (int) executionTimeMs,
-                fullUrl
+                fullUrl,
+                client
         );
 
         if (decision.isBlocked()) {
@@ -220,8 +244,8 @@ public class ProxyController {
      * relayed ; an allowed one is relayed while its digest is recomputed, and the connection is
      * cut if it does not match the announced one.
      */
-    private void forwardIdentifyingResponse(String fullUrl, String forwardUrl, HttpHeaders headers, HttpServletResponse response, Identification identification,
-            long startTime) throws IOException {
+    private void forwardIdentifyingResponse(String fullUrl, String forwardUrl, HttpHeaders headers, ClientIdentity client,
+            HttpServletResponse response, Identification identification, long startTime) throws IOException {
         String ecosystem = identification.pkg().ecosystem();
         try (ProxyStreamClient.StreamResponse streamResponse = proxyStreamClient.streamContent(forwardUrl, headers)) {
             Optional<ResponseIdentification> found = responseIdentification.identify(streamResponse.status(), streamResponse.headers());
@@ -233,7 +257,7 @@ public class ProxyController {
             ParsedPackage pkg = found.get().pkg();
             ecosystem = pkg.ecosystem();
             DecisionResult decision = securityService.getDecision(pkg.packageName(), pkg.version(), ecosystem, fullUrl);
-            if (applyDecision(decision, pkg, fullUrl, startTime, response)) {
+            if (applyDecision(decision, pkg, fullUrl, client, startTime, response)) {
                 // The upstream body is dropped unread : try-with-resources releases the connection.
                 return;
             }

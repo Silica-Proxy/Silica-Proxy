@@ -20,6 +20,7 @@ import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.npm.NpmTarballIndexDao;
+import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.Verdict;
@@ -147,7 +148,7 @@ class ProxyControllerResponseIdentificationTest {
                 .andExpect(jsonPath("$.ecosystem").value("maven"));
 
         verify(auditLogService).logAudit(eq("org.example:lib"), eq("1.0.0"), eq("maven"), eq("COMPANY_POLICY"),
-                eq("BLOCK"), anyString(), anyInt(), eq(URL));
+                eq("BLOCK"), anyString(), anyInt(), eq(URL), any(ClientIdentity.class));
         assertThat(meterRegistry.find(Metrics.BYPASS_METRIC).counter()).isNull();
     }
 
@@ -162,7 +163,7 @@ class ProxyControllerResponseIdentificationTest {
                 .andExpect(content().bytes(body));
 
         verify(auditLogService).logAudit(eq("org.example:lib"), eq("1.0.0"), eq("maven"), anyString(),
-                eq("ALLOW"), anyString(), anyInt(), eq(URL));
+                eq("ALLOW"), anyString(), anyInt(), eq(URL), any(ClientIdentity.class));
     }
 
     @Test
