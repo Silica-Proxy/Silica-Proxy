@@ -434,6 +434,60 @@ class DecisionDaoTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldAlwaysBlockMalwareAnomalyWithoutScoreWhenUnknownSeverityIsAllowed() {
+        // blockingFrom() allows unknown scores (unknown-severity-action: ALLOW) : a MAL- anomaly
+        // carries no score, yet must still be blocked as a malware.
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('MAL-anomaly-1', 'OSV', 'gradio', 'pypi', '@gradio/malware-unscored@1.0.0', NULL)
+            """).update();
+
+        Optional<DecisionResult> decision =
+                decisionDao.evaluateDecision("@gradio/malware-unscored", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
+    }
+
+    @Test
+    void shouldAlwaysBlockMalwareAnomalyWhenSeverityThresholdIsDisabled() {
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('MAL-anomaly-2', 'OSV', 'gradio', 'pypi', '@gradio/malware-disabled@1.0.0', NULL),
+                   ('PYSEC-anomaly-disabled', 'OSV', 'gradio', 'pypi', '@gradio/plain-disabled@1.0.0', 9.8)
+            """).update();
+
+        Optional<DecisionResult> malware =
+                decisionDao.evaluateDecision("@gradio/malware-disabled", "1.0.0", "npm", SeverityThreshold.disabled());
+
+        assertThat(malware).isPresent();
+        assertThat(malware.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(malware.get().result()).isEqualTo(Verdict.BLOCK);
+        // severity-threshold.enabled=false : a plain (non-malware) anomaly is no longer blocked.
+        assertThat(decisionDao.evaluateDecision("@gradio/plain-disabled", "1.0.0", "npm", SeverityThreshold.disabled()))
+                .isEmpty();
+    }
+
+    @Test
+    void shouldAlwaysBlockOpenSsfAnomalyRegardlessOfItsId() {
+        jdbcClient.sql("""
+            INSERT INTO vulnerability_ingestion_anomalies
+                (vulnerability_id, source, package_name, ecosystem, suspicious_version, cvss_score)
+            VALUES ('OSSF-anomaly-1', 'OPENSSF', 'gradio', 'pypi', '@gradio/openssf-flagged@1.0.0', NULL)
+            """).update();
+
+        Optional<DecisionResult> decision =
+                decisionDao.evaluateDecision("@gradio/openssf-flagged", "1.0.0", "npm", SeverityThreshold.disabled());
+
+        assertThat(decision).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN_MALWARE);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
+    }
+
+    @Test
     void shouldNotMatchXWildcardPatternForDifferentMajor() {
         // Stored (already-translated) pattern '4.%' must not match '3.0.0'.
         jdbcClient.sql("""

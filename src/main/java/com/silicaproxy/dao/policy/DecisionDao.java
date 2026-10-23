@@ -46,12 +46,20 @@ public class DecisionDao {
     // from its aliases when it has none (VulnerabilityDao.refreshInheritedScores) ; no score at
     // all is an unknown severity, blocked when :blockUnknown. Malwares (MAL-/OPENSSF) are always
     // blocked : they usually carry no score.
-    private static final String SEVERITY_PREDICATE = """
-            (id LIKE 'MAL-%' OR source = 'OPENSSF'
+    private static final String SEVERITY_PREDICATE = "(" + malwarePredicate("id", "source") + """
+
                    OR COALESCE(cvss_score, inherited_cvss_score) > :maxAllowedCvss::numeric
                    OR COALESCE(cvss_score, inherited_cvss_score) >= :severityFloor::numeric
                    OR (:blockUnknown::boolean AND cvss_score IS NULL AND inherited_cvss_score IS NULL))
             """;
+
+    // Malware advisory (MAL- id or OpenSSF source), on the given id/source columns : shared by
+    // SEVERITY_PREDICATE, the PUBLIC_VULN_MALWARE source type and the anomaly branch, so a
+    // malware is recognised the same way wherever it is matched. Parenthesized because a text
+    // block strips the trailing space before it (e.g. "CASE WHEN """ + ...).
+    private static String malwarePredicate(String idColumn, String sourceColumn) {
+        return "(" + idColumn + " LIKE 'MAL-%' OR " + sourceColumn + " = 'OPENSSF')";
+    }
 
     private final JdbcClient jdbcClient;
 
@@ -119,8 +127,8 @@ public class DecisionDao {
                 -- from a plain CVSS-threshold block, so downstream metrics/dashboards can tell a
                 -- genuine malware detection apart from a severity-policy call.
                 SELECT 2 AS priority, 0 AS specificity,
-                       CASE WHEN id LIKE 'MAL-%' OR source = 'OPENSSF' THEN 'PUBLIC_VULN_MALWARE'
-                            ELSE 'PUBLIC_VULN' END AS source_type,
+                       CASE WHEN """ + malwarePredicate("id", "source") + """
+                             THEN 'PUBLIC_VULN_MALWARE' ELSE 'PUBLIC_VULN' END AS source_type,
                        'BLOCK' AS result, summary AS reason
                 FROM public_vulnerabilities, checked_package
                 WHERE package_name = p_name
@@ -138,12 +146,16 @@ public class DecisionDao {
                 -- reflect that WRONG outer advisory, not the embedded package, so we deliberately
                 -- do NOT filter on them here -- only suspicious_version, matched as a literal
                 -- "name@version" string against the actual request, carries the real signal.
+                -- Like PUBLIC_VULN, an anomaly of a malware advisory is always blocked and
+                -- reported as PUBLIC_VULN_MALWARE.
                 SELECT 2 AS priority, 0 AS specificity,
-                       'PUBLIC_VULN_ANOMALY' AS source_type, 'BLOCK' AS result,
+                       CASE WHEN """ + malwarePredicate("anomaly.vulnerability_id", "anomaly.source") + """
+                             THEN 'PUBLIC_VULN_MALWARE' ELSE 'PUBLIC_VULN_ANOMALY' END AS source_type,
+                       'BLOCK' AS result,
                        'Data-quality anomaly during OSV ingestion: this exact package/version was '
                        || 'listed as affected inside advisory ' || vulnerability_id AS reason
                 -- Same threshold as PUBLIC_VULN, on the anomaly's own score or, when it has none,
-                -- on the (possibly inherited) score of its advisory.
+                -- on the (possibly inherited) score of its advisory ; malwares bypass it.
                 FROM vulnerability_ingestion_anomalies anomaly
                 CROSS JOIN checked_package
                 CROSS JOIN LATERAL (
@@ -152,7 +164,9 @@ public class DecisionDao {
                     WHERE pv.id = anomaly.vulnerability_id
                 ) advisory
                 WHERE suspicious_version = p_name || '@' || p_version
-                  AND (advisory.score > :maxAllowedCvss::numeric
+                  AND (""" + malwarePredicate("anomaly.vulnerability_id", "anomaly.source") + """
+
+                       OR advisory.score > :maxAllowedCvss::numeric
                        OR advisory.score >= :severityFloor::numeric
                        OR (:blockUnknown::boolean AND advisory.score IS NULL))
 
