@@ -62,6 +62,11 @@ silicaproxy:
     # Comma-separated list of hosts that must stay in HTTP (not converted to HTTPS).
     # Use this to exclude specific registries that don't support HTTPS or have issues with it.
     http-only-hosts: "${SILICAPROXY_HTTP_ONLY_HOSTS:}"
+    # Comma-separated IPs or CIDR ranges (e.g. "10.0.0.5,10.1.0.0/16") of the HTTP reverse
+    # proxies / load balancers whose X-Forwarded-For is trusted to give the client address
+    # recorded in the audit log (right-most untrusted hop). Empty = X-Forwarded-For ignored.
+    # Artifactory / Nexus never relay the end client's address : listing them here is useless.
+    trusted-proxies: "${SILICAPROXY_PROXY_TRUSTED_PROXIES:}"
 
   # 1. Temporal quarantine configuration (Anti-Typosquatting)
   quarantine:

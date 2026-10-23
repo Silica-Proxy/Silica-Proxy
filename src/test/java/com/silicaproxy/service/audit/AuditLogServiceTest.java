@@ -19,6 +19,7 @@ package com.silicaproxy.service.audit;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.audit.AuditLogDao;
+import com.silicaproxy.model.dto.ClientIdentity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -74,7 +75,8 @@ class AuditLogServiceTest extends BaseIntegrationTest {
                 "ALLOW",
                 "Passed checks",
                 15,
-                "https://registry.npmjs.org/async-pkg/-/async-pkg-1.0.0.tgz"
+                "https://registry.npmjs.org/async-pkg/-/async-pkg-1.0.0.tgz",
+                ClientIdentity.UNKNOWN
         );
 
         // Attente de l'insertion asynchrone (Awaitility-like loop)
@@ -97,6 +99,40 @@ class AuditLogServiceTest extends BaseIntegrationTest {
         assertThat(logRow.get("verdict")).isEqualTo("ALLOW");
         assertThat(logRow.get("reason")).isEqualTo("Passed checks");
         assertThat((Integer) logRow.get("execution_time_ms")).isEqualTo(15);
+        assertThat(logRow.get("client_ip")).isNull();
+        assertThat(logRow.get("user_agent")).isNull();
+        assertThat(logRow.get("client_id")).isNull();
+    }
+
+    @Test
+    void shouldPersistClientIdentity() throws Exception {
+        auditLogService.logAudit(
+                "client-pkg",
+                "3.0.0",
+                "pypi",
+                "COMPANY_POLICY",
+                "ALLOW",
+                "Passed checks",
+                5,
+                "https://files.pythonhosted.org/packages/client_pkg-3.0.0.tar.gz",
+                new ClientIdentity("2001:db8:0:0:0:0:0:1", "pip/24.2 " + "x".repeat(1000), "ci-runner-42")
+        );
+
+        int attempts = 0;
+        List<Map<String, Object>> logs = List.of();
+        while (attempts < 50) {
+            logs = jdbcClient.sql("SELECT * FROM proxy_audit_logs WHERE package_name = 'client-pkg'").query().listOfRows();
+            if (!logs.isEmpty()) {
+                break;
+            }
+            Thread.sleep(50);
+            attempts++;
+        }
+
+        assertThat(logs).hasSize(1);
+        assertThat(logs.get(0).get("client_ip")).isEqualTo("2001:db8:0:0:0:0:0:1");
+        assertThat((String) logs.get(0).get("user_agent")).startsWith("pip/24.2 ").hasSize(ClientIdentity.MAX_USER_AGENT_LENGTH);
+        assertThat(logs.get(0).get("client_id")).isEqualTo("ci-runner-42");
     }
 
     @Test
@@ -109,7 +145,8 @@ class AuditLogServiceTest extends BaseIntegrationTest {
                 "ALLOW",
                 "Passed checks",
                 10,
-                "https://registry.npmjs.org/url-pkg/-/url-pkg-2.0.0.tgz"
+                "https://registry.npmjs.org/url-pkg/-/url-pkg-2.0.0.tgz",
+                ClientIdentity.UNKNOWN
         );
 
         int attempts = 0;

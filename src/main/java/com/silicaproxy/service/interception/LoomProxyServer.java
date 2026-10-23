@@ -18,10 +18,12 @@
 package com.silicaproxy.service.interception;
 
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.server.context.WebServerInitializedEvent;
 import org.springframework.context.ApplicationListener;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
 import com.silicaproxy.properties.SilicaProxyProperties;
@@ -57,7 +59,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
     private static final Logger LOG = LoggerFactory.getLogger(LoomProxyServer.class);
 
     // Caps a single request-line/header line (readLine has no other bound on how far it reads
-    // looking for '\n') and the number of header lines skipHeaders will consume before giving up
+    // looking for '\n') and the number of header lines readConnectUser will consume before giving up
     // -- both generous relative to real HTTP traffic (Tomcat/Apache default per-field limits are
     // in the same ~8 KB range, and real requests rarely carry more than a few dozen headers).
     private static final int MAX_LINE_LENGTH = 8192;
@@ -79,9 +81,13 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
     // resets the clock for the next read(); only a connection that goes completely silent for
     // the full duration (a truly stuck/abandoned tunnel) gets closed.
     private final int relayIdleTimeoutMs;
+    // Client address / CONNECT username of each relay, for the audit log (ClientIdentityResolver).
+    private final ProxyConnectionRegistry connectionRegistry;
 
-    public LoomProxyServer(SilicaProxyProperties properties, SslMitmService sslMitmService, MeterRegistry meterRegistry) {
+    public LoomProxyServer(SilicaProxyProperties properties, SslMitmService sslMitmService, MeterRegistry meterRegistry,
+            ProxyConnectionRegistry connectionRegistry) {
         this.proxyPort = properties.proxy().port();
+        this.connectionRegistry = connectionRegistry;
         this.sslMitmService = sslMitmService;
         this.headerReadTimeoutMs = properties.proxy().headerReadTimeoutSeconds() * 1000;
         this.relayIdleTimeoutMs = properties.proxy().relayIdleTimeoutSeconds() * 1000;
@@ -121,7 +127,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             clientSocket.setSoTimeout(headerReadTimeoutMs);
             // Buffered so the request line/headers aren't parsed one syscall-backed read() per
             // byte. Threaded through as-is into handleConnect/forwardToTomcat afterwards so any
-            // bytes it read ahead into its internal buffer (beyond what readLine/skipHeaders
+            // bytes it read ahead into its internal buffer (beyond what readLine/readConnectUser
             // consumed) aren't lost -- see the createSocket(clientSocket, clientIn, false) call
             // in handleConnect, which relies on this same instance to recover them.
             InputStream clientIn = new BufferedInputStream(clientSocket.getInputStream());
@@ -132,10 +138,11 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
                 return;
             }
 
+            String peerAddress = clientSocket.getInetAddress().getHostAddress();
             if (firstLine.startsWith("CONNECT")) {
-                handleConnect(firstLine, clientSocket, clientIn, clientOut);
+                handleConnect(firstLine, peerAddress, clientSocket, clientIn, clientOut);
             } else {
-                forwardToTomcat(firstLine, clientSocket, clientIn, clientOut);
+                forwardToTomcat(firstLine, new ProxyConnectionRegistry.Peer(peerAddress, null, false), clientSocket, clientIn, clientOut);
             }
         } catch (IOException e) {
             if (LOG.isDebugEnabled()) {
@@ -144,7 +151,8 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         }
     }
 
-    private void handleConnect(String firstLine, Socket clientSocket, InputStream clientIn, OutputStream clientOut) throws IOException {
+    private void handleConnect(String firstLine, String peerAddress, Socket clientSocket, InputStream clientIn,
+            OutputStream clientOut) throws IOException {
         String[] parts = firstLine.split(" ");
         if (parts.length < 2) {
             clientOut.write("HTTP/1.1 400 Bad Request\r\n\r\n".getBytes(StandardCharsets.UTF_8));
@@ -155,7 +163,9 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         String target = parts[1];
         String host = parseConnectHost(target);
 
-        skipHeaders(clientIn);
+        // The tunnelled requests never carry the Proxy-Authorization sent on the CONNECT : only its
+        // username is kept, for the audit log of each of them.
+        String connectUser = readConnectUser(clientIn);
 
         clientOut.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.UTF_8));
         clientOut.flush();
@@ -168,7 +178,7 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         // is already owned and closed by the try-with-resources in handleClient(). Passing
         // clientIn (rather than a fresh clientSocket.getInputStream()) matters now that it's
         // buffered: any TLS ClientHello bytes it already read ahead into its internal buffer
-        // while skipHeaders was consuming the CONNECT headers must still reach the handshake.
+        // while readConnectUser was consuming the CONNECT headers must still reach the handshake.
         try (SSLSocket sslSocket = (SSLSocket) sslMitmService.getContextForHost(host)
                 .getSocketFactory()
                 .createSocket(clientSocket, clientIn, false)) {
@@ -186,7 +196,8 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
             InputStream sslIn = new BufferedInputStream(sslSocket.getInputStream());
             String httpFirstLine = readLine(sslIn);
             if (!httpFirstLine.isEmpty()) {
-                forwardToTomcat(httpFirstLine, sslSocket, sslIn, sslSocket.getOutputStream());
+                forwardToTomcat(httpFirstLine, new ProxyConnectionRegistry.Peer(peerAddress, connectUser, true), sslSocket, sslIn,
+                        sslSocket.getOutputStream());
             }
         } catch (Exception e) {
             LOG.warn("SSL MITM failed for {} : {} — is the CA imported in the artifacts repository ?", host, e.getMessage());
@@ -207,12 +218,19 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         return lastColon > 0 ? target.substring(0, lastColon) : target;
     }
 
-    private void forwardToTomcat(String firstLine, Socket clientSideSocket, InputStream clientIn, OutputStream clientOut) {
+    // Tomcat only sees a connection from 127.0.0.1 : the client is registered under the local port
+    // of this connection for as long as it is relayed (every request of a keep-alive connection),
+    // before the first byte reaches Tomcat.
+    private void forwardToTomcat(String firstLine, ProxyConnectionRegistry.Peer peer, Socket clientSideSocket,
+            InputStream clientIn, OutputStream clientOut) {
         if (LOG.isDebugEnabled()) {
             LOG.debug("HTTP request forwarded to Tomcat: {}", firstLine);
         }
 
+        int tomcatSidePort = -1;
         try (Socket tomcatSocket = new Socket("127.0.0.1", tomcatPort)) {
+            tomcatSidePort = tomcatSocket.getLocalPort();
+            connectionRegistry.register(tomcatSidePort, peer);
             // Switch both ends from the short header-read timeout to the longer relay idle
             // timeout now that the binary transfer (headers already parsed) is about to start.
             tomcatSocket.setSoTimeout(relayIdleTimeoutMs);
@@ -229,6 +247,10 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
                 clientOut.write("HTTP/1.1 502 Bad Gateway\r\n\r\n".getBytes(StandardCharsets.UTF_8));
                 clientOut.flush();
             } catch (IOException ignored) {
+            }
+        } finally {
+            if (tomcatSidePort != -1) {
+                connectionRegistry.unregister(tomcatSidePort);
             }
         }
     }
@@ -251,13 +273,28 @@ public class LoomProxyServer implements ApplicationListener<WebServerInitialized
         return sb.toString().trim();
     }
 
-    private void skipHeaders(InputStream in) throws IOException {
+    // Consumes the CONNECT headers, returning the Proxy-Authorization username, if any.
+    private @Nullable String readConnectUser(InputStream in) throws IOException {
         int lineCount = 0;
-        while (!readLine(in).isEmpty()) {
+        String user = null;
+        String line;
+        while (!(line = readLine(in)).isEmpty()) {
             if (++lineCount > MAX_HEADER_LINES) {
                 throw new IOException("Too many header lines (> " + MAX_HEADER_LINES + ")");
             }
+            if (user == null) {
+                user = proxyAuthorizationUser(line);
+            }
         }
+        return user;
+    }
+
+    static @Nullable String proxyAuthorizationUser(String headerLine) {
+        int colon = headerLine.indexOf(':');
+        if (colon < 0 || !headerLine.substring(0, colon).strip().equalsIgnoreCase(HttpHeaders.PROXY_AUTHORIZATION)) {
+            return null;
+        }
+        return ClientHeaders.basicAuthUser(headerLine.substring(colon + 1));
     }
 
     // Relays both directions of a TCP tunnel in parallel (virtual threads), then closes both 

@@ -64,14 +64,18 @@ public record SilicaProxyProperties(
         // time, so a large file downloaded slowly but continuously never trips it.
         @DefaultValue("60") int relayIdleTimeoutSeconds,
         // Comma-separated list of hosts that should stay in HTTP (not converted to HTTPS)
-        @DefaultValue("") String httpOnlyHosts
+        @DefaultValue("") String httpOnlyHosts,
+        // Comma-separated IPs or CIDR ranges of the reverse proxies / load balancers allowed to
+        // report the client address in X-Forwarded-For (see ClientIdentityResolver). Empty:
+        // X-Forwarded-For is never trusted and the audit log records the socket peer address.
+        @DefaultValue("") String trustedProxies
     ) {
         @ConstructorBinding
         public ProxyProperties {
         }
 
         public ProxyProperties(int port, int headerReadTimeoutSeconds, int relayIdleTimeoutSeconds) {
-            this(port, headerReadTimeoutSeconds, relayIdleTimeoutSeconds, "");
+            this(port, headerReadTimeoutSeconds, relayIdleTimeoutSeconds, "", "");
         }
     }
 

@@ -70,6 +70,30 @@ class ProxyStreamClientTest {
     }
 
     @Test
+    void shouldNotForwardTheClientIdentityHeadersMeantForTheProxyUpstream() throws Exception {
+        ClientHttpRequestFactory requestFactory = mock(ClientHttpRequestFactory.class);
+        ClientHttpRequest request = mock(ClientHttpRequest.class);
+        ClientHttpResponse response = mock(ClientHttpResponse.class);
+        HttpHeaders upstreamHeaders = new HttpHeaders();
+        when(requestFactory.createRequest(any(URI.class), any(HttpMethod.class))).thenReturn(request);
+        when(request.getHeaders()).thenReturn(upstreamHeaders);
+        when(request.execute()).thenReturn(response);
+        when(response.getStatusCode()).thenReturn(HttpStatusCode.valueOf(200));
+        when(response.getHeaders()).thenReturn(new HttpHeaders());
+
+        HttpHeaders clientHeaders = new HttpHeaders();
+        clientHeaders.add("X-Silica-Client", "project-a");
+        clientHeaders.add("Proxy-Authorization", "Basic Y2ktcnVubmVyOnMzY3JldA==");
+        clientHeaders.add("Proxy-Connection", "keep-alive");
+        clientHeaders.add("User-Agent", "npm/10.8.2");
+
+        try (ProxyStreamClient.StreamResponse ignored = new ProxyStreamClient(requestFactory, mock(SsrfValidator.class))
+                .streamContent("https://registry.npmjs.org/lodash", clientHeaders)) {
+            assertThat(upstreamHeaders.headerNames()).containsExactly("User-Agent");
+        }
+    }
+
+    @Test
     void shouldNotThrowWhenClosingAResponseBuiltWithoutAnUnderlyingResponse() throws Exception {
         // Simulates a caller (e.g. a test double elsewhere) with no real ClientHttpResponse to
         // release -- the 3-arg constructor must make close() a safe no-op.
