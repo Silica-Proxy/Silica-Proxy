@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.simple.JdbcClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -36,15 +37,20 @@ class SecurityConfigurationTest extends BaseIntegrationTest {
 
     private final org.springframework.web.client.RestClient restClient = org.springframework.web.client.RestClient.create();
     private final SsrfValidator ssrfValidator;
+    private final JdbcClient jdbcClient;
 
     @Autowired
-    SecurityConfigurationTest(SsrfValidator ssrfValidator) {
+    SecurityConfigurationTest(SsrfValidator ssrfValidator, JdbcClient jdbcClient) {
         this.ssrfValidator = ssrfValidator;
+        this.jdbcClient = jdbcClient;
     }
 
     @BeforeEach
     void setUpSsrf() {
         ssrfValidator.setEnabled(true);
+        // The database is shared by every test context : a context closed earlier may have left a
+        // sync FAILED (interrupted by its shutdown), which would turn the health DOWN.
+        jdbcClient.sql("UPDATE sync_status SET status = 'PENDING', error_message = NULL WHERE status = 'FAILED'").update();
     }
 
     @AfterEach

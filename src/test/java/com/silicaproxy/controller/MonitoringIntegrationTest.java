@@ -20,6 +20,7 @@ package com.silicaproxy.controller;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.service.policy.GitOpsSyncService;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncScheduler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -296,6 +297,7 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
 
     @Test
     void shouldReturnVulnerabilitySyncStatusCorrectly() {
+        holdSchedulerLock(jdbcClient, VulnerabilitySyncScheduler.SYNC_LOCK_NAME);
         jdbcClient.sql("""
             UPDATE sync_status
             SET status = 'RUNNING',
@@ -319,6 +321,12 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
         assertThat(body).contains("\"status\":\"PENDING\"");
     }
 
+    @AfterEach
+    void releaseLocks() {
+        releaseSchedulerLock(jdbcClient, VulnerabilitySyncScheduler.SYNC_LOCK_NAME);
+        releaseSchedulerLock(jdbcClient, "gitops_sync_lock");
+    }
+
     private ResponseEntity<String> postForce(String path) {
         try {
             return restClient.post()
@@ -332,6 +340,7 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
 
     @Test
     void shouldReturnConflictOnForceVulnerabilitySyncWhenRunning() {
+        holdSchedulerLock(jdbcClient, VulnerabilitySyncScheduler.SYNC_LOCK_NAME);
         jdbcClient.sql("UPDATE sync_status SET status = 'RUNNING', last_start_time = CURRENT_TIMESTAMP WHERE job_id = 'osv-npm'").update();
 
         ResponseEntity<String> response = postForce("/api/vulnerabilities/sync/force");
@@ -350,6 +359,7 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
 
     @Test
     void shouldReturnConflictOnForceGitOpsSyncWhenRunning() {
+        holdSchedulerLock(jdbcClient, "gitops_sync_lock");
         jdbcClient.sql("UPDATE sync_status SET status = 'RUNNING', last_start_time = CURRENT_TIMESTAMP WHERE job_id = 'gitops-sync'").update();
 
         ResponseEntity<String> response = postForce("/api/gitops/sync/force");

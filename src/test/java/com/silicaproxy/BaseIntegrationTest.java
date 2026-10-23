@@ -19,9 +19,11 @@ package com.silicaproxy;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import com.silicaproxy.dao.sync.SchedulerLockDao;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -80,6 +82,26 @@ public abstract class BaseIntegrationTest {
         registry.add("silicaproxy.http-client.connect-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.registries-read-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.security-apis-read-timeout-seconds", () -> 2);
+    }
+
+    // A RUNNING sync_status row only counts while the ShedLock lock it runs under is held.
+    protected static void holdSchedulerLock(JdbcClient jdbcClient, String lockName) {
+        setSchedulerLockUntil(jdbcClient, lockName, 600);
+    }
+
+    protected static void releaseSchedulerLock(JdbcClient jdbcClient, String lockName) {
+        setSchedulerLockUntil(jdbcClient, lockName, -1);
+    }
+
+    // Written like ShedLock writes it (SchedulerLockDao.SHEDLOCK_NOW), whatever the time zone of the JVM.
+    private static void setSchedulerLockUntil(JdbcClient jdbcClient, String lockName, int secondsFromNow) {
+        jdbcClient.sql("INSERT INTO shedlock (name, lock_until, locked_at, locked_by)"
+                        + " VALUES (:name, " + SchedulerLockDao.SHEDLOCK_NOW + " + make_interval(secs => :seconds), "
+                        + SchedulerLockDao.SHEDLOCK_NOW + ", 'test')"
+                        + " ON CONFLICT (name) DO UPDATE SET lock_until = EXCLUDED.lock_until")
+                .param("name", lockName)
+                .param("seconds", secondsFromNow)
+                .update();
     }
 
     // Load a sample of real data (extract from a real ArtifactSentry instance

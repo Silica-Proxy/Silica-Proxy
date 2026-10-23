@@ -23,7 +23,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.time.Instant;
+import java.util.Optional;
 
 /**
  * Persists the execution history of each synchronization job in
@@ -93,6 +95,22 @@ public class SyncRunHistoryDao {
                 .update();
     }
 
+    // Closes the RUNNING runs left by a crash, or by a failure failRun could not record : the ones
+    // of the jobs that run no longer (SyncStatusDao.NOT_RUNNING), whatever their sync_status row
+    // says (failTask may have succeeded where failRun failed).
+    public int failOrphanedRuns(@Nullable String ownLockName, String errorMessage) {
+        return jdbcClient.sql("UPDATE sync_run_history"
+                + " SET status = 'FAILED',"
+                + " ended_at = CURRENT_TIMESTAMP,"
+                + " duration_ms = ROUND(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000)::BIGINT,"
+                + " error_message = :errorMessage"
+                + " WHERE sync_run_history.status = 'RUNNING' AND EXISTS (SELECT 1 FROM sync_status"
+                + " WHERE sync_status.job_id = sync_run_history.job_id AND " + SyncStatusDao.NOT_RUNNING + ")")
+                .param("ownLockName", ownLockName, Types.VARCHAR)
+                .param("errorMessage", errorMessage)
+                .update();
+    }
+
     public void failRun(long runId, @Nullable String errorMessage, long itemsFailed) {
         jdbcClient.sql("""
                 UPDATE sync_run_history
@@ -107,5 +125,35 @@ public class SyncRunHistoryDao {
                 .param("failed", itemsFailed)
                 .param("errorMessage", errorMessage)
                 .update();
+    }
+
+    // The watermark of the hourly sync : the start of its last successful run. A failed run does not
+    // move it, and starting from the start (the CSV is read then) leaves no gap while a run lasts.
+    public Optional<Instant> findLastSuccessfulStart(String jobId) {
+        return jdbcClient.sql("""
+                SELECT started_at FROM sync_run_history
+                WHERE job_id = :jobId AND status = 'SUCCESS'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """)
+                .param("jobId", jobId)
+                .query(Timestamp.class)
+                .optional()
+                .map(Timestamp::toInstant);
+    }
+
+    // The end of the last successful run : sorted by started_at, which the index covers (the runs
+    // of one job never overlap, so the last one started is also the last one ended).
+    public Optional<Instant> findLastSuccessfulEnd(String jobId) {
+        return jdbcClient.sql("""
+                SELECT ended_at FROM sync_run_history
+                WHERE job_id = :jobId AND status = 'SUCCESS'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """)
+                .param("jobId", jobId)
+                .query(Timestamp.class)
+                .optional()
+                .map(Timestamp::toInstant);
     }
 }
