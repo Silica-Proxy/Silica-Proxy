@@ -42,3 +42,6 @@ out/
 
 # Clé privée du CA MITM — ne jamais committer
 certs/ca.p12
+
+# docker/ compose secrets
+docker/.env

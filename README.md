@@ -394,21 +394,6 @@ The proxy listens on **port 8080**. Configure your artifact repository to route 
 
 Pre-built images are available on [Docker Hub](https://hub.docker.com/r/silicaproxy/silicaproxy).
 
-```bash
-docker build -t silicaproxy .
-```
-
-Multi-arch release build — reuses the layer cache stored in the registry and compresses layers with zstd (requires Docker 23+ / containerd 1.5+ on the hosts that pull the image):
-
-```bash
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  --cache-from type=registry,ref=silicaproxy/silicaproxy:buildcache \
-  --cache-to type=registry,ref=silicaproxy/silicaproxy:buildcache,mode=max \
-  --output type=image,name=silicaproxy/silicaproxy:latest,push=true,compression=zstd,oci-mediatypes=true \
-  .
-```
-
 All configuration is passed as environment variables. Minimum required set:
 
 ```bash
@@ -422,12 +407,31 @@ docker run -d \
   -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/data/silicaproxy-ca.p12 \
   -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=changeme \
   -v /data/silicaproxy:/data \
-  silicaproxy
+  silicaproxy/silicaproxy
 ```
 
 > **Memory:** allocate at least 2 GB to the container — see [Recommended JVM flags](#recommended-jvm-flags-production) to tune the JVM via `JDK_JAVA_OPTIONS`.
 
 > **CA keystore persistence:** without `-e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH`, a new CA is generated at every container restart — breaking your artifact repository's SSL trust until the certificate is re-imported. Mount a volume and set this variable in production.
+
+---
+
+### Production — Docker Compose
+
+[`docker/compose.yaml`](docker/compose.yaml) starts SilicaProxy with a dedicated PostgreSQL 18, the CA keystore and the logs on named volumes, and the API protected by keys:
+
+```bash
+cd docker
+cp .env.example .env   # set the passwords, API keys and GitOps repository URL
+docker compose up -d
+```
+
+- Only port `8080` is published (`SILICAPROXY_PROXY_PORT` to change the host port): it serves both the proxy and the REST API / actuator.
+- Retrieve the CA certificate to import into your artifact repository with `curl -H "Authorization: Bearer $SILICAPROXY_API_KEY_ACTION" http://localhost:8080/api/monitoring/ca-cert > silicaproxy-ca.crt` (or with `SILICAPROXY_API_KEY_READ`, optional, if you set one).
+- [PackageNameGuardian](https://hub.docker.com/r/silicaproxy/packagenameguardian) (typosquatting detection, called as a sync [external validation service](#4-external-validation-services--on-demand-sync-or-async)) is optional: set `PACKAGENAMEGUARDIAN_ENABLED=true`, `PACKAGENAMEGUARDIAN_API_KEY` and `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=false` in `.env` (the service is reached on the private Docker network, which the SSRF protection blocks), then run `docker compose --profile packagenameguardian up -d`.
+- The databases (`db_silica`, `db_packagenameguardian`) are created by [`docker/postgres/init-multiple-dbs.sh`](docker/postgres/init-multiple-dbs.sh) on the first start only, when the `postgres-data` volume is empty.
+
+The `compose.yaml` at the repository root is for [development](#development) only.
 
 ---
 
@@ -447,7 +451,7 @@ All instances behind a load balancer **must use the same CA keystore file** — 
      -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/data/silicaproxy-ca.p12 \
      -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=<strong-password> \
      -v "$(pwd)/ca-seed:/data" \
-     silicaproxy
+     silicaproxy/silicaproxy
    docker rm -f ca-seed   # once it logged "CA certificate generated and saved"
    ```
 2. Copy `ca-seed/silicaproxy-ca.p12` to the same path on every server (`scp`, config management, secrets manager), with the same `ca-keystore-password`. Never generate it again per-server.
@@ -963,7 +967,7 @@ The Docker image sets these flags through `JDK_JAVA_OPTIONS` (plus `-XX:ErrorFil
 docker run -d \
   -e JDK_JAVA_OPTIONS="-XX:+UseG1GC -XX:MaxRAMPercentage=60.0 -XX:+UseCompactObjectHeaders -Dsun.net.inetaddr.ttl=60" \
   ... \
-  silicaproxy
+  silicaproxy/silicaproxy
 ```
 
 ---
