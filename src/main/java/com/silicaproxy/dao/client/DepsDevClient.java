@@ -22,6 +22,7 @@ import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.HashLookup;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -83,6 +84,9 @@ public class DepsDevClient {
     }
 
     @SuppressWarnings("unchecked")
+    @Timed(value = "silicaproxy.dao.depsdev.checkvulnerability",
+            description = "Duration of checking a package version against deps.dev",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public ApiCheckResult checkVulnerability(String packageName, String version, String ecosystem) {
         SilicaProxyProperties.ApiFallbackProperties depsDevProps = properties.apiFallback().get("deps-dev");
         if (depsDevProps == null || !depsDevProps.enabled()) {
@@ -143,6 +147,9 @@ public class DepsDevClient {
      * @param hex digest in hex, already checked against {@code type} by the caller
      */
     @SuppressWarnings("unchecked")
+    @Timed(value = "silicaproxy.dao.depsdev.querybyhash",
+            description = "Duration of identifying a package file by its digest on deps.dev",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public HashLookup queryByHash(HashType type, String hex) {
         SilicaProxyProperties.ApiFallbackProperties depsDevProps = properties.apiFallback().get("deps-dev");
         if (depsDevProps == null || !depsDevProps.enabled()) {

@@ -17,6 +17,7 @@
 
 package com.silicaproxy.dao.audit;
 
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -46,6 +47,9 @@ public class PartitionMaintenanceDao {
      * doesn't already exist. Idempotent: PostgreSQL's {@code CREATE TABLE IF NOT EXISTS} applies
      * to the {@code PARTITION OF} form too, so calling this repeatedly for the same month is safe.
      */
+    @Timed(value = "silicaproxy.dao.partition.ensuremonthlypartitionexists",
+            description = "Duration of creating a monthly table partition if missing",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void ensureMonthlyPartitionExists(String parentTable, YearMonth month) {
         String partitionName = partitionName(parentTable, month);
         LocalDate start = month.atDay(1);

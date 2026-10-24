@@ -19,6 +19,7 @@ package com.silicaproxy.dao.client;
 
 import com.silicaproxy.config.SsrfInterceptor;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -62,6 +63,9 @@ public class ExternalValidationClient {
     // Sync call: POST and wait for {verdict, reason} response body, at most timeoutSeconds.
     // Returns verdict string ("ALLOWED"/"BLOCKED") or null on error.
     @Nullable
+    @Timed(value = "silicaproxy.dao.extvalidation.client.callsync",
+            description = "Duration of a synchronous call to an external validation service",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public ExternalValidationResult callSync(
             String url, @Nullable String apiKey, int timeoutSeconds,
             String packageName, String version, String ecosystem, String fullUrl) {
@@ -111,6 +115,9 @@ public class ExternalValidationClient {
 
     // Async call: POST with callbackUrl. Returns true if the service acknowledged (2xx).
     // The service will call back later with the verdict.
+    @Timed(value = "silicaproxy.dao.extvalidation.client.callasync",
+            description = "Duration of triggering an asynchronous external validation",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public boolean callAsync(
             String url, @Nullable String apiKey,
             String packageName, String version, String ecosystem, String callbackUrl,

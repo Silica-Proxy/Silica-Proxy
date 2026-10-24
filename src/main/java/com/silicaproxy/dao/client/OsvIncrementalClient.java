@@ -59,7 +59,8 @@ public class OsvIncrementalClient {
      * without going through the entire file.
      */
     @Timed(value = "silicaproxy.dao.osv.incremental.fetchids",
-            description = "Duration of downloading and filtering OSV modified_id.csv")
+            description = "Duration of downloading and filtering OSV modified_id.csv",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<String> fetchModifiedIdsSince(String gcsBaseUrl, String ecosystemPath, Instant since) {
         String url = gcsBaseUrl + "/" + ecosystemPath + "/modified_id.csv";
         String csv = restClient.get().uri(url).retrieve().body(String.class);
@@ -96,7 +97,8 @@ public class OsvIncrementalClient {
      * Returns an empty string in case of HTTP error.
      */
     @Timed(value = "silicaproxy.dao.osv.incremental.fetchjson",
-            description = "Duration of downloading an individual OSV advisory")
+            description = "Duration of downloading an individual OSV advisory",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public String fetchAdvisoryJson(String gcsBaseUrl, String ecosystemPath, String id) {
         String url = gcsBaseUrl + "/" + ecosystemPath + "/" + id + ".json";
         String json = restClient.get().uri(url).retrieve().body(String.class);

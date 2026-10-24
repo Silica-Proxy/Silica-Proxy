@@ -20,6 +20,7 @@ package com.silicaproxy.dao.policy;
 import com.silicaproxy.model.dto.ApiCacheHit;
 import com.silicaproxy.model.dto.PublicVulnerabilityRow;
 import com.silicaproxy.model.entity.CompanyPolicy;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -40,6 +41,9 @@ public class PackageSearchDao {
         this.jdbcClient = jdbcClient;
     }
 
+    @Timed(value = "silicaproxy.dao.packagesearch.searchcompanypolicies",
+            description = "Duration of searching company policies",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<CompanyPolicy> searchCompanyPolicies(
             String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
         StringBuilder sql = new StringBuilder("""
@@ -80,6 +84,9 @@ public class PackageSearchDao {
     // matching enumerated versions, and range-only advisories (npm/Maven, affected_versions = []) are
     // kept since a regex cannot be tested against a range. Exact-version filtering, which needs
     // OsvRangeEvaluator, is left to PackageSearchService.
+    @Timed(value = "silicaproxy.dao.packagesearch.findpublicvulnerabilities",
+            description = "Duration of searching public vulnerabilities",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<PublicVulnerabilityRow> findPublicVulnerabilities(
             String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
         String versionsColumn = versionRegex != null
@@ -139,6 +146,9 @@ public class PackageSearchDao {
         );
     }
 
+    @Timed(value = "silicaproxy.dao.packagesearch.searchapicache",
+            description = "Duration of searching the API verdict cache",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<ApiCacheHit> searchApiCache(
             String packageName, @Nullable String ecosystem, @Nullable String exactVersion, @Nullable String versionRegex) {
         StringBuilder sql = new StringBuilder("""

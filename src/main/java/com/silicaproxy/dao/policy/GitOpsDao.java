@@ -19,6 +19,7 @@ package com.silicaproxy.dao.policy;
 
 import com.silicaproxy.model.dto.MatchedPolicyDto;
 import com.silicaproxy.model.entity.CompanyPolicy;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -45,6 +46,9 @@ public class GitOpsDao {
         this.jdbcClient = jdbcClient;
     }
 
+    @Timed(value = "silicaproxy.dao.gitops.countpoliciesbyecosystem",
+            description = "Duration of counting company policies by ecosystem",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Map<String, Long> countPoliciesByEcosystem() {
         List<Map<String, Object>> rows = jdbcClient.sql(
                 "SELECT ecosystem, count(*) AS cnt FROM company_policies GROUP BY ecosystem ORDER BY ecosystem")
@@ -59,6 +63,9 @@ public class GitOpsDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.gitops.replacecompanypolicies",
+            description = "Duration of replacing the company policies of an ecosystem",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void replaceCompanyPolicies(String ecosystem, List<CompanyPolicy> policies) {
         jdbcClient.sql("DELETE FROM company_policies WHERE ecosystem = :ecosystem")
                 .param("ecosystem", ecosystem)
@@ -108,6 +115,9 @@ public class GitOpsDao {
     // Returns all company_policies rules matching the package/version/ecosystem, sorted by
     // specificity (exact package beats wildcard package, exact version beats wildcard version),
     // to visualize conflict resolution.
+    @Timed(value = "silicaproxy.dao.gitops.findmatchingpolicies",
+            description = "Duration of finding the company policies matching a package",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<MatchedPolicyDto> findMatchingPolicies(String packageName, String version, String ecosystem) {
         return jdbcClient.sql("""
                 SELECT package_name AS "packageName",
