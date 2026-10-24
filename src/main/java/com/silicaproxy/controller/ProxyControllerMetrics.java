@@ -68,12 +68,12 @@ public class ProxyControllerMetrics {
                 .increment();
     }
 
-    // Tracks how much traffic skips SecurityService entirely (unparseable/direct-resource
-    // requests never reach getDecision), i.e. the proxy's security blind spot by ecosystem.
+    // Tracks how much traffic skips SecurityService entirely. Under a known ecosystem this is
+    // expected metadata/index traffic ; ecosystem="unknown" is the proxy's security blind spot.
     public void recordBypass(String ecosystem) {
         Counter.builder(Metrics.BYPASS_METRIC)
-                .description("Total number of requests that bypassed the security check "
-                        + "(unknown ecosystem/package/version), by ecosystem")
+                .description("Total number of requests that bypassed the security check, by ecosystem "
+                        + "(metadata/index traffic under a known ecosystem, blind spot under \"unknown\")")
                 .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
                 .register(meterRegistry)
                 .increment();

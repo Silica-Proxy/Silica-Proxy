@@ -17,6 +17,7 @@
 
 package com.silicaproxy.dao.sync;
 
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -31,6 +32,9 @@ public class HealthCheckDao {
         this.jdbcClient = jdbcClient;
     }
 
+    @Timed(value = "silicaproxy.dao.healthcheck.isdatabasereachable",
+            description = "Duration of the database reachability check",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public boolean isDatabaseReachable() {
         Integer result = jdbcClient.sql("SELECT 1").query(Integer.class).single();
         return result == 1;

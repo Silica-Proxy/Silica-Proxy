@@ -17,6 +17,7 @@
 package com.silicaproxy.dao.identification;
 
 import com.silicaproxy.model.dto.HashType;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -45,6 +46,9 @@ public class FileDigestIndexDao {
     /**
      * @param hex lower-case hex digest
      */
+    @Timed(value = "silicaproxy.dao.filedigestindex.find",
+            description = "Duration of looking up a package by file digest",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<DigestEntry> find(HashType type, String hex) {
         return jdbcClient.sql(
                 "SELECT ecosystem, package_name, package_version FROM file_digest_index " +
@@ -65,6 +69,9 @@ public class FileDigestIndexDao {
      *
      * @param hex lower-case hex digest
      */
+    @Timed(value = "silicaproxy.dao.filedigestindex.save",
+            description = "Duration of indexing a file digest",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void save(HashType type, String hex, String ecosystem, String packageName, String version) {
         jdbcClient.sql(
                 "INSERT INTO file_digest_index (hash_type, digest, ecosystem, package_name, package_version) " +

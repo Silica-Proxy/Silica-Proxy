@@ -17,6 +17,7 @@
 
 package com.silicaproxy.dao.sync;
 
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -47,6 +48,9 @@ public class SchedulerLockDao {
     }
 
     // The time left before lockName is released, negative once it is.
+    @Timed(value = "silicaproxy.dao.schedulerlock.findremaininglock",
+            description = "Duration of reading the remaining duration of a ShedLock lock",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Duration> findRemainingLock(String lockName) {
         return jdbcClient.sql("SELECT EXTRACT(EPOCH FROM (lock_until - " + SHEDLOCK_NOW + ")) FROM shedlock WHERE name = :name")
                 .param("name", lockName)

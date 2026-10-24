@@ -19,6 +19,7 @@ package com.silicaproxy.dao.audit;
 
 import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -71,6 +72,9 @@ public class ApiCallLogDao {
         this.buffer = new LinkedBlockingQueue<>(properties.apiCallLog().bufferCapacity());
     }
 
+    @Timed(value = "silicaproxy.dao.apicalllog.logcall",
+            description = "Duration of buffering an external API call log entry",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void logCall(
             String apiSource,
             String packageName,
@@ -92,6 +96,9 @@ public class ApiCallLogDao {
     }
 
     @Scheduled(fixedDelayString = "${silicaproxy.api-call-log.flush-interval-seconds:30}000")
+    @Timed(value = "silicaproxy.dao.apicalllog.flushbuffer",
+            description = "Duration of flushing buffered API call log entries to the database",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void flushBuffer() {
         if (!properties.apiCallLog().enabled() || buffer.isEmpty()) {
             return;

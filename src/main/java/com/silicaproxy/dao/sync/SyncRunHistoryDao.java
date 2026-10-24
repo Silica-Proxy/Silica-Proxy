@@ -17,6 +17,7 @@
 
 package com.silicaproxy.dao.sync;
 
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -41,6 +42,9 @@ public class SyncRunHistoryDao {
         this.jdbcClient = jdbcClient;
     }
 
+    @Timed(value = "silicaproxy.dao.syncrunhistory.startrun",
+            description = "Duration of recording the start of a sync run",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public long startRun(
             String jobId,
             String syncType,
@@ -63,6 +67,9 @@ public class SyncRunHistoryDao {
                 .single();
     }
 
+    @Timed(value = "silicaproxy.dao.syncrunhistory.completerun",
+            description = "Duration of recording the completion of a sync run",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void completeRun(
             long runId,
             @Nullable Long itemsDiscovered,
@@ -98,6 +105,9 @@ public class SyncRunHistoryDao {
     // Closes the RUNNING runs left by a crash, or by a failure failRun could not record : the ones
     // of the jobs that run no longer (SyncStatusDao.NOT_RUNNING), whatever their sync_status row
     // says (failTask may have succeeded where failRun failed).
+    @Timed(value = "silicaproxy.dao.syncrunhistory.failorphanedruns",
+            description = "Duration of failing orphaned sync runs",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public int failOrphanedRuns(@Nullable String ownLockName, String errorMessage) {
         return jdbcClient.sql("UPDATE sync_run_history"
                 + " SET status = 'FAILED',"
@@ -111,6 +121,9 @@ public class SyncRunHistoryDao {
                 .update();
     }
 
+    @Timed(value = "silicaproxy.dao.syncrunhistory.failrun",
+            description = "Duration of recording a failed sync run",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void failRun(long runId, @Nullable String errorMessage, long itemsFailed) {
         jdbcClient.sql("""
                 UPDATE sync_run_history
@@ -129,6 +142,9 @@ public class SyncRunHistoryDao {
 
     // The watermark of the hourly sync : the start of its last successful run. A failed run does not
     // move it, and starting from the start (the CSV is read then) leaves no gap while a run lasts.
+    @Timed(value = "silicaproxy.dao.syncrunhistory.findlastsuccessfulstart",
+            description = "Duration of reading the last successful sync run start",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Instant> findLastSuccessfulStart(String jobId) {
         return jdbcClient.sql("""
                 SELECT started_at FROM sync_run_history
@@ -144,6 +160,9 @@ public class SyncRunHistoryDao {
 
     // The end of the last successful run : sorted by started_at, which the index covers (the runs
     // of one job never overlap, so the last one started is also the last one ended).
+    @Timed(value = "silicaproxy.dao.syncrunhistory.findlastsuccessfulend",
+            description = "Duration of reading the last successful sync run end",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Instant> findLastSuccessfulEnd(String jobId) {
         return jdbcClient.sql("""
                 SELECT ended_at FROM sync_run_history

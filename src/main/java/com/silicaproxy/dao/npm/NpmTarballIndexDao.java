@@ -18,6 +18,7 @@
 package com.silicaproxy.dao.npm;
 
 import com.silicaproxy.model.dto.PackageMetadataResult;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -73,6 +74,9 @@ public class NpmTarballIndexDao {
      * Upserts many entries in JDBC batches : a large packument (thousands of versions) costs a few
      * round trips instead of one per version.
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.saveall",
+            description = "Duration of batch indexing npm tarball URLs",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void saveAll(List<PendingEntry> entries) {
         for (int from = 0; from < entries.size(); from += BATCH_SIZE) {
             List<PendingEntry> chunk = entries.subList(from, Math.min(from + BATCH_SIZE, entries.size()));
@@ -103,6 +107,9 @@ public class NpmTarballIndexDao {
     /**
      * Remembers a tarball URL and its package/version/metadata. Expires after the TTL.
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.save",
+            description = "Duration of indexing an npm tarball URL",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void save(String tarballUrl, String packageName, String packageVersion,
                      @Nullable Instant publishedAt, boolean deprecated, @Nullable String deprecationReason,
                      String packumentUrl, Instant expiresAt) {
@@ -134,6 +141,9 @@ public class NpmTarballIndexDao {
      * Resolves a tarball URL previously indexed: package name, version, and metadata.
      * Returns empty if not found or expired.
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.findbyurl",
+            description = "Duration of looking up an npm tarball by URL",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<NpmTarballEntry> findByUrl(String tarballUrl) {
         return jdbcClient.sql(
                 "SELECT tarball_url, package_name, package_version, published_at, " +
@@ -158,6 +168,9 @@ public class NpmTarballIndexDao {
      * Queries by package@version (fallback when tarball URL layout is not recognized).
      * Returns the metadata if found and not expired.
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.findmetadatabypackage",
+            description = "Duration of looking up indexed npm metadata by package version",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<PackageMetadataResult> findMetadataByPackage(String packageName, String packageVersion) {
         return jdbcClient.sql(
                 "SELECT published_at, deprecated, deprecation_reason " +
@@ -181,6 +194,9 @@ public class NpmTarballIndexDao {
      * Origin packument URL for a package@version, if known. Used by SecurityService to query
      * the origin registry's full packument when the abbreviated one lacked "time".
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.findpackumenturl",
+            description = "Duration of looking up the packument URL of an npm package version",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<String> findPackumentUrl(String packageName, String packageVersion) {
         return jdbcClient.sql(
                 "SELECT packument_url FROM npm_tarball_index " +
@@ -202,6 +218,9 @@ public class NpmTarballIndexDao {
      * Evicts entries that have expired (past the expires_at timestamp).
      * Called by a scheduled cleanup job (see NpmTarballIndexCleanupService).
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.evictexpired",
+            description = "Duration of evicting expired npm tarball index entries",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public int evictExpired() {
         return jdbcClient.sql("DELETE FROM npm_tarball_index WHERE expires_at <= NOW()")
                 .update();
@@ -210,6 +229,9 @@ public class NpmTarballIndexDao {
     /**
      * Current count of non-expired entries (for monitoring).
      */
+    @Timed(value = "silicaproxy.dao.npmtarballindex.count",
+            description = "Duration of counting npm tarball index entries",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public int count() {
         return jdbcClient.sql("SELECT COUNT(*) FROM npm_tarball_index WHERE expires_at > NOW()")
                 .query(Integer.class)

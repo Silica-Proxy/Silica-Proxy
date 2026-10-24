@@ -18,6 +18,7 @@
 package com.silicaproxy.dao.sync;
 
 import com.silicaproxy.model.dto.SyncStatusRow;
+import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -59,6 +60,9 @@ public class SyncStatusDao {
 
     // ownLockName : the lock the caller holds before starting its jobs, or null.
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.failorphanedjobs",
+            description = "Duration of failing orphaned sync jobs",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public int failOrphanedJobs(@Nullable String ownLockName, String errorMessage) {
         return jdbcClient.sql("UPDATE sync_status"
                 + " SET status = 'FAILED',"
@@ -71,6 +75,9 @@ public class SyncStatusDao {
                 .update();
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.isjobrunning",
+            description = "Duration of checking whether a sync job is running",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public boolean isJobRunning(String jobId) {
         Long count = jdbcClient.sql("SELECT count(*) FROM sync_status"
                 + " WHERE job_id = :jobId AND status = 'RUNNING' AND " + LOCK_HELD)
@@ -80,12 +87,18 @@ public class SyncStatusDao {
         return count != null && count > 0;
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.countrunning",
+            description = "Duration of counting running sync jobs",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public long countRunning() {
         return jdbcClient.sql("SELECT count(*) FROM sync_status WHERE status = 'RUNNING' AND " + LOCK_HELD)
                 .query(Long.class)
                 .single();
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.countrunningunderlock",
+            description = "Duration of counting sync jobs running under a lock",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public long countRunningUnderLock(String lockName) {
         return jdbcClient.sql("SELECT count(*) FROM sync_status"
                 + " WHERE status = 'RUNNING' AND lock_name = :lockName AND " + LOCK_HELD)
@@ -94,6 +107,9 @@ public class SyncStatusDao {
                 .single();
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.findalljobs",
+            description = "Duration of listing sync jobs",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public List<SyncStatusRow> findAllJobs() {
         List<Map<String, Object>> rows = jdbcClient.sql("""
                 SELECT job_id, status, last_start_time, last_end_time, duration_ms, error_message, items_processed, next_run_time, items_total
@@ -128,6 +144,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.starttask",
+            description = "Duration of marking a sync task as started",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void startTask(String taskId, String lockName) {
         jdbcClient.sql("""
                 UPDATE sync_status
@@ -148,6 +167,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.incrementitemsprocessed",
+            description = "Duration of incrementing the processed items of a sync task",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void incrementItemsProcessed(String taskId, int count) {
         jdbcClient.sql("""
                 UPDATE sync_status
@@ -161,6 +183,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.setitemstotal",
+            description = "Duration of setting the total items of a sync task",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void setItemsTotal(String taskId, long itemsTotal) {
         jdbcClient.sql("""
                 UPDATE sync_status
@@ -174,6 +199,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.updateprogress",
+            description = "Duration of updating the progress of a sync task",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void updateProgress(String taskId, long itemsProcessed, long itemsTotal) {
         jdbcClient.sql("""
                 UPDATE sync_status
@@ -188,6 +216,9 @@ public class SyncStatusDao {
                 .update();
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.findlaststarttime",
+            description = "Duration of reading the last start time of a sync task",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Instant> findLastStartTime(String taskId) {
         return jdbcClient.sql("SELECT last_start_time FROM sync_status WHERE job_id = :jobId")
                 .param("jobId", taskId)
@@ -196,6 +227,9 @@ public class SyncStatusDao {
                 .map(Timestamp::toInstant);
     }
 
+    @Timed(value = "silicaproxy.dao.syncstatus.findlastendtime",
+            description = "Duration of reading the last end time of a sync task",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public Optional<Instant> findLastEndTime(String taskId) {
         return jdbcClient.sql("SELECT last_end_time FROM sync_status WHERE job_id = :jobId")
                 .param("jobId", taskId)
@@ -205,6 +239,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.completetask",
+            description = "Duration of marking a sync task as completed",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void completeTask(String taskId, Instant endTime, @Nullable Long durationMs, @Nullable Instant nextRunTime) {
         jdbcClient.sql("""
                 UPDATE sync_status
@@ -223,6 +260,9 @@ public class SyncStatusDao {
     }
 
     @Transactional
+    @Timed(value = "silicaproxy.dao.syncstatus.failtask",
+            description = "Duration of marking a sync task as failed",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
     public void failTask(String taskId, Instant endTime, @Nullable Long durationMs, @Nullable String errorMessage, @Nullable Instant nextRunTime) {
         jdbcClient.sql("""
                 UPDATE sync_status
