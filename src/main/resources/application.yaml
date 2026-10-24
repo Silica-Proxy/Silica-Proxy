@@ -101,8 +101,9 @@ silicaproxy:
     # decides) ; BLOCK = always blocked (REGISTRY_NOT_FOUND)
     unknown-version-action: FOLLOW_FAIL_OPEN
     # When fail-open allows a package whose publication date could not be resolved, still query
-    # the live vulnerability APIs (OSV/deps.dev) : a BLOCK wins, an ALLOW is never cached
-    check-vulnerabilities-on-registry-error: false
+    # the live vulnerability APIs (OSV/deps.dev) : a BLOCK wins, an ALLOW is never cached.
+    # The external validation services run regardless of this flag.
+    check-vulnerabilities-on-registry-error: true
     # Ecosystem-specific thresholds and activation
     ecosystems:
       npm:
