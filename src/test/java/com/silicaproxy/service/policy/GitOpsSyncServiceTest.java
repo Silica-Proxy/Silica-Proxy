@@ -21,6 +21,14 @@ import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
+import com.silicaproxy.dao.policy.DecisionDao;
+import com.silicaproxy.dao.policy.GitOpsDao;
+import com.silicaproxy.model.dto.DecisionResult;
+import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.model.dto.SeverityThreshold;
+import com.silicaproxy.model.dto.Verdict;
+import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +44,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -51,6 +60,9 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
     private final JdbcClient jdbcClient;
     private final VulnerabilitySyncStatusService syncStatusService;
     private final MeterRegistry meterRegistry;
+    private final SilicaProxyProperties properties;
+    private final GitOpsDao gitOpsDao;
+    private final DecisionDao decisionDao;
 
     @MockitoBean
     private VulnerabilityGitClient gitClient;
@@ -60,11 +72,17 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
             GitOpsSyncService gitOpsSyncService,
             JdbcClient jdbcClient,
             VulnerabilitySyncStatusService syncStatusService,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            SilicaProxyProperties properties,
+            GitOpsDao gitOpsDao,
+            DecisionDao decisionDao) {
         this.gitOpsSyncService = gitOpsSyncService;
         this.jdbcClient = jdbcClient;
         this.syncStatusService = syncStatusService;
         this.meterRegistry = meterRegistry;
+        this.properties = properties;
+        this.gitOpsDao = gitOpsDao;
+        this.decisionDao = decisionDao;
     }
 
     @DynamicPropertySource
@@ -165,4 +183,89 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
         assertThat(job.progressPercent()).isEqualTo(100.0);
     }
 
+    @Test
+    void shouldBlockInternalNamespacesOfEveryEcosystemAgainstDependencyConfusion() throws Exception {
+        // Behind a repository manager, only its remote repositories reach the proxy : an internal
+        // package name requested here is necessarily fetched from a public registry. These
+        // namespace rules, as documented in the README, must block it whatever the version.
+        Path npmYaml = Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "@moncorp/*"
+                    version: "*"
+                    action: "block"
+                    reason: "Internal npm scope"
+                  - package: "moncorp-*"
+                    version: "*"
+                    action: "block"
+                    reason: "Internal unscoped npm prefix"
+                """);
+        Path pypiYaml = Files.writeString(tempDir.resolve("pypi.yaml"), """
+                rules:
+                  - package: "MonCorp_*"
+                    version: "*"
+                    action: "block"
+                    reason: "Internal PyPI prefix"
+                """);
+        Path mavenYaml = Files.writeString(tempDir.resolve("maven.yaml"), """
+                rules:
+                  - package: "com.moncorp:*"
+                    version: "*"
+                    action: "block"
+                    reason: "Internal Maven groupId"
+                  - package: "com.moncorp.*"
+                    version: "*"
+                    action: "block"
+                    reason: "Internal Maven sub-groups"
+                """);
+        doAnswer(invocation -> null).when(gitClient).syncRepository(any(), any(), any());
+
+        try {
+            // Built outside Spring, hence without the ShedLock aspect : the lock row the other
+            // sync of this class leaves behind (or the setup truncates) cannot skip this run.
+            new GitOpsSyncService(properties, gitClient, gitOpsDao, syncStatusService, meterRegistry)
+                    .syncCompanyPolicies();
+        } finally {
+            // tempDir is shared by the whole class : the other test expects npm.yaml alone.
+            Files.delete(npmYaml);
+            Files.delete(pypiYaml);
+            Files.delete(mavenYaml);
+        }
+
+        // The PyPI rule is stored PEP 503-normalized, like the names the proxy identifies.
+        assertThat(jdbcClient.sql("SELECT package_name FROM company_policies WHERE ecosystem = 'pypi'")
+                .query(String.class).list()).containsExactly("moncorp-*");
+
+        assertBlocked(new ParsedPackage("@moncorp/utils", "99.0.0", "npm"), "Internal npm scope");
+        assertBlocked(new ParsedPackage("moncorp-auth", "99.0.0", "npm"), "Internal unscoped npm prefix");
+        // Any spelling a PyPI client may request is normalized before the decision.
+        assertBlocked(new ParsedPackage("MonCorp.Auth", "99.0.0", "pypi"), "Internal PyPI prefix");
+        assertBlocked(new ParsedPackage("moncorp_auth", "99.0.0", "pypi"), "Internal PyPI prefix");
+        assertBlocked(new ParsedPackage("com.moncorp:auth", "99.0.0", "maven"), "Internal Maven groupId");
+        assertBlocked(new ParsedPackage("com.moncorp.platform:auth", "99.0.0", "maven"), "Internal Maven sub-groups");
+
+        // Names merely sharing the prefix are not internal.
+        assertNoDecision(new ParsedPackage("@moncorpevil/utils", "1.0.0", "npm"));
+        assertNoDecision(new ParsedPackage("moncorpauth", "1.0.0", "npm"));
+        assertNoDecision(new ParsedPackage("moncorpauth", "1.0.0", "pypi"));
+        assertNoDecision(new ParsedPackage("com.moncorpevil:auth", "1.0.0", "maven"));
+        // A rule is scoped to its own ecosystem.
+        assertNoDecision(new ParsedPackage("@moncorp/utils", "1.0.0", "pypi"));
+    }
+
+    private void assertBlocked(ParsedPackage pkg, String reason) {
+        Optional<DecisionResult> decision = evaluate(pkg);
+        assertThat(decision).as("%s/%s", pkg.ecosystem(), pkg.packageName()).isPresent();
+        assertThat(decision.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(decision.get().result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.get().reason()).isEqualTo(reason);
+    }
+
+    private void assertNoDecision(ParsedPackage pkg) {
+        assertThat(evaluate(pkg)).as("%s/%s", pkg.ecosystem(), pkg.packageName()).isEmpty();
+    }
+
+    private Optional<DecisionResult> evaluate(ParsedPackage pkg) {
+        return decisionDao.evaluateDecision(pkg.packageName(), pkg.version(), pkg.ecosystem(),
+                SeverityThreshold.blockingFrom(7.0));
+    }
 }

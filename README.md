@@ -16,6 +16,7 @@ It sits between your artifact repository and the public registries (npm, PyPI, M
 | Typosquatting / supply-chain attacks    | Quarantines packages published less than N days ago |
 | Deprecated / yanked packages            | Blocks packages flagged as deprecated (npm) or yanked (PyPI) |
 | Custom internal rules                   | Company-level allow/block list synchronized from a Git repository (GitOps) |
+| Dependency confusion                    | Blocks public packages named after your internal namespaces (see [Dependency confusion](#dependency-confusion-internal-namespaces)) |
 | Custom deep scanning                    | Integrates any external validation service (sync or async) — SBOM scanners, licence checkers, proprietary scanners |
 
 ---
@@ -733,6 +734,71 @@ A row matches this bypass if its advisory `id` starts with `MAL-` (the OSV malwa
 #### PyPI package names (PEP 503)
 
 PyPI treats `PyYAML`, `pyyaml` and `py_yaml` as the same project, but file names keep the spelling of the upload (`PyYAML-6.0.2-…whl`, `typing_extensions-4.12.2-…whl`) while OSV stores the normalized name (`pyyaml`). Every PyPI name is therefore normalized as defined by [PEP 503](https://peps.python.org/pep-0503/#normalized-names) (lower case, runs of `-`, `_`, `.` replaced by a single `-`) : the identified request, the ingested advisories, the GitOps rules of `pypi.yaml` (`typing_extensions` is stored as `typing-extensions`, `*` wildcards are kept), the policy evaluation and package search endpoints. The `V17` migration renames the rows already stored ; when two spellings collide, the normalized one (or, for GitOps rules, the most restrictive one) is kept.
+
+#### Dependency confusion (internal namespaces)
+
+In a dependency confusion attack, someone publishes a package named after one of your internal
+packages (`@moncorp/utils`, `moncorp-auth`, `com.moncorp:auth`) on a public registry, with a
+higher version number than the internal one. A repository manager that merges an internal
+(*hosted*) repository and a public (*remote*) one into a single *virtual* repository may then
+resolve the public, malicious version.
+
+Behind a repository manager, **plain `block` rules on your internal namespaces are enough** :
+internal packages are served by the hosted repositories and never go through SilicaProxy, which
+only sees the traffic of the remote repositories. An internal package name reaching SilicaProxy is
+therefore necessarily fetched from an external registry, and must be blocked whatever its version :
+
+```yaml
+# npm.yaml
+rules:
+  - package: "@moncorp/*"        # internal scope
+    version: "*"
+    action: "block"
+    reason: "Internal npm scope : never fetched from a public registry"
+  - package: "moncorp-*"         # unscoped internal packages, if any
+    version: "*"
+    action: "block"
+    reason: "Internal npm prefix : never fetched from a public registry"
+
+# pypi.yaml
+rules:
+  - package: "moncorp-*"         # PEP 503-normalized : also matches MonCorp_Auth, moncorp.auth...
+    version: "*"
+    action: "block"
+    reason: "Internal PyPI prefix : never fetched from a public registry"
+
+# maven.yaml
+rules:
+  - package: "com.moncorp:*"     # artifacts of the com.moncorp groupId
+    version: "*"
+    action: "block"
+    reason: "Internal Maven groupId : never fetched from a public registry"
+  - package: "com.moncorp.*"     # artifacts of its sub-groups (com.moncorp.platform:...)
+    version: "*"
+    action: "block"
+    reason: "Internal Maven groupIds : never fetched from a public registry"
+```
+
+The client (or the virtual repository) still receives the public metadata, so it may pick the
+higher public version, but downloading it fails with a `403` (`step: COMPANY_POLICY`) instead of
+silently installing it.
+
+- Keep a separator in the pattern (`@moncorp/*`, `moncorp-*`, `com.moncorp:*` / `com.moncorp.*`) :
+  `moncorp*` or `com.moncorp*` would also block unrelated public packages such as `moncorpus` or
+  `com.moncorpus:lib`.
+- A Maven package name is `groupId:artifactId`, hence one rule for the groupId itself and one for
+  its sub-groups.
+- **Do not add an `allow` rule for a package of these namespaces** : an exact package name beats a
+  wildcard pattern (see [conflict resolution](#conflict-resolution-when-multiple-rules-match)), so
+  `allow @moncorp/utils` would reopen the hole for that package.
+- **This relies on internal packages never going through SilicaProxy.** If some of them are
+  fetched through a remote repository (internal packages published on GitHub Packages
+  `npm.pkg.github.com`, a GitLab package registry, a subsidiary's repository manager), or if
+  clients use SilicaProxy directly as their HTTP(S) proxy without excluding the internal registry
+  (`NO_PROXY`), these rules block those internal packages too.
+- Repository managers can also exclude these namespaces natively, repository by repository
+  (Artifactory *exclude patterns* on remote repositories, Nexus *routing rules*) ; the GitOps rules
+  above apply the same protection centrally, versioned in Git.
 
 ---
 
