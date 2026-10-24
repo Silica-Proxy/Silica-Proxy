@@ -1,0 +1,9 @@
+                                             ${AnsiColor.66} ____  ____   ___ __   __ __   __
+${AnsiColor.24}███████ ${AnsiColor.25}██ ${AnsiColor.31}██      ${AnsiColor.32}██ ${AnsiColor.38} ██████ ${AnsiColor.25}    ▟▌ ${AnsiColor.45}▐▙      ${AnsiColor.66}|  _ \|  _ \ / _ \\ \ / / \ \ / /
+${AnsiColor.24}██      ${AnsiColor.25}██ ${AnsiColor.31}██      ${AnsiColor.32}██ ${AnsiColor.38}██      ${AnsiColor.25}   ▟█▌ ${AnsiColor.45}▐█▙     ${AnsiColor.66}| |_) | |_) | | | |\ V /   \ V /
+${AnsiColor.24}███████ ${AnsiColor.25}██ ${AnsiColor.31}██      ${AnsiColor.32}██ ${AnsiColor.38}██      ${AnsiColor.25}  ▟██▌ ${AnsiColor.45}▐██▙    ${AnsiColor.66}|  __/|  _ <| | | | > <     | |
+${AnsiColor.24}     ██ ${AnsiColor.25}██ ${AnsiColor.31}██      ${AnsiColor.32}██ ${AnsiColor.38}██      ${AnsiColor.25} ▟███▌ ${AnsiColor.45}▐███▙   ${AnsiColor.66}| |   | |\ \| |_| |/ . \    | |
+${AnsiColor.24}███████ ${AnsiColor.25}██ ${AnsiColor.31}███████ ${AnsiColor.32}██ ${AnsiColor.38} ██████ ${AnsiColor.25}▟████▌ ${AnsiColor.45}▐████▙  ${AnsiColor.66}|_|   |_| \_\\___//_/ \_\   |_|
+${AnsiColor.250}           A r t i f a c t   F i r e w a l l   P r o x y${AnsiColor.DEFAULT}
+${AnsiColor.244}  :: Silica Proxy ::${application.formatted-version:}  ·  Spring Boot${spring-boot.formatted-version}${AnsiColor.DEFAULT}
+
