@@ -1,0 +1,119 @@
+# Production-like SilicaProxy stack: proxy + PostgreSQL, with optional services behind profiles.
+#
+#   cp .env.example .env            # then set the passwords, API keys and GitOps repository
+#   docker compose up -d                                  # proxy + PostgreSQL
+#   docker compose --profile packagenameguardian up -d    # + PackageNameGuardian
+#
+# For local development, use the compose.yaml at the repository root instead.
+
+name: silicaproxy
+
+services:
+  silicaproxy:
+    image: ${SILICAPROXY_IMAGE:-silicaproxy/silicaproxy:latest}
+    restart: unless-stopped
+    ports:
+      - ${SILICAPROXY_PROXY_PORT:-8080}:8080
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgresdb:5432/db_silica
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - SILICAPROXY_GITOPS_REPOSITORY_URL=${SILICAPROXY_GITOPS_REPOSITORY_URL:?SILICAPROXY_GITOPS_REPOSITORY_URL must be set in .env}
+      - SILICAPROXY_GITOPS_CLONE_TOKEN=${SILICAPROXY_GITOPS_CLONE_TOKEN:-}
+      - SILICAPROXY_GITOPS_SYNC_INTERVAL_MINUTES=${SILICAPROXY_GITOPS_SYNC_INTERVAL_MINUTES:-10}
+      # The CA keystore lives on the "silicaproxy-certs" volume: the MITM CA survives restarts
+      - SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/app/certs/silicaproxy-ca.p12
+      - SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=${SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD:?SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD must be set in .env}
+      - SILICAPROXY_SSL_MITM_CA_CERT_EXPORT_PATH=/app/certs/silicaproxy-ca.crt
+      - SILICAPROXY_SECURITY_API_AUTH_ENABLED=true
+      # Optional: when empty, READ endpoints only accept the action key
+      - SILICAPROXY_API_KEY_READ=${SILICAPROXY_API_KEY_READ:-}
+      - SILICAPROXY_API_KEY_ACTION=${SILICAPROXY_API_KEY_ACTION:?SILICAPROXY_API_KEY_ACTION must be set in .env}
+      # Must be false to call a validation service on the private Docker network (PackageNameGuardian)
+      - SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=${SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED:-true}
+      - SILICAPROXY_QUARANTINE_FAIL_OPEN=${SILICAPROXY_QUARANTINE_FAIL_OPEN:-true}
+      - SILICAPROXY_API_CALL_LOG_ENABLED=${SILICAPROXY_API_CALL_LOG_ENABLED:-false}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_ENABLED=${PACKAGENAMEGUARDIAN_ENABLED:-false}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_URL=http://packagenameguardian:8100/v1/check
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_APIKEY=${PACKAGENAMEGUARDIAN_API_KEY:-}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_MODE=sync
+      - LOGGING_LEVEL_COM_SILICAPROXY=${SILICAPROXY_LOG_LEVEL:-INFO}
+    volumes:
+      - silicaproxy-certs:/app/certs
+      - silicaproxy-logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: ${SILICAPROXY_MEMORY_LIMIT:-2g}
+    networks:
+      - silicaproxy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://localhost:8089/actuator/health/readiness']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+
+  postgresdb:
+    image: postgres:18
+    restart: unless-stopped
+    shm_size: 1g
+    command: postgres -c max_connections=400
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - POSTGRES_MULTIPLE_DATABASES=db_silica,db_packagenameguardian
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./postgres/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT:-1g}
+    networks:
+      - silicaproxy
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d db_silica']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Typosquatting detection service, called by SilicaProxy as a SYNC external validation.
+  # Requires PACKAGENAMEGUARDIAN_ENABLED=true and SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=false.
+  packagenameguardian:
+    image: ${PACKAGENAMEGUARDIAN_IMAGE:-silicaproxy/packagenameguardian:latest}
+    profiles: [packagenameguardian]
+    restart: unless-stopped
+    ports:
+      - ${PACKAGENAMEGUARDIAN_PORT:-8100}:8100
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgresdb:5432/db_packagenameguardian
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - PACKAGENAMEGUARDIAN_API_KEY=${PACKAGENAMEGUARDIAN_API_KEY:-}
+    deploy:
+      resources:
+        limits:
+          memory: ${PACKAGENAMEGUARDIAN_MEMORY_LIMIT:-1g}
+    networks:
+      - silicaproxy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://localhost:8100/actuator/health/readiness']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+
+networks:
+  silicaproxy:
+    name: silicaproxy
+
+volumes:
+  silicaproxy-certs:
+  silicaproxy-logs:
+  postgres-data:
