@@ -23,9 +23,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.validation.annotation.Validated;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -46,7 +48,7 @@ public record SilicaProxyProperties(
     @NotNull HttpClientProperties httpClient,
     @NotNull SslMitmProperties sslMitm,
     @NotNull ApiCacheProperties apiCache,
-    @NotNull OsvIncrementalProperties osvIncremental,
+    @NotNull @Valid OsvIncrementalProperties osvIncremental,
     @NotNull ApiCallLogProperties apiCallLog,
     @NotNull @DefaultValue HealthProperties health,
     @NotNull ExternalValidationProperties externalValidation
@@ -237,7 +239,12 @@ public record SilicaProxyProperties(
     public record OsvIncrementalProperties(
         boolean enabled,
         @NotBlank String gcsBaseUrl,
-        int initialLookbackHours
+        int initialLookbackHours,
+        // Each run reads back this far before the start of the last successful one : OSV may list
+        // an advisory in modified_id.csv after a run read it, with a modified time before that run.
+        @DefaultValue("15") @PositiveOrZero int overlapMinutes,
+        // A failed advisory is retried at each hourly run, then given up on (the nightly zip covers it).
+        @DefaultValue("24") @Positive int maxRetryAttempts
     ) {}
 
     // Audit of calls to external security APIs in api_call_log.

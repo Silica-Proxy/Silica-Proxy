@@ -24,11 +24,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Downloads lists of modified OSV advisories ({@code modified_id.csv}) and individual JSONs 
@@ -94,14 +96,23 @@ public class OsvIncrementalClient {
 
     /**
      * Downloads the JSON of an individual OSV advisory from GCS.
-     * Returns an empty string in case of HTTP error.
+     * Empty when OSV no longer serves it (HTTP 404) ; any other HTTP error, or an empty body, throws.
      */
     @Timed(value = "silicaproxy.dao.osv.incremental.fetchjson",
             description = "Duration of downloading an individual OSV advisory",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public String fetchAdvisoryJson(String gcsBaseUrl, String ecosystemPath, String id) {
+    public Optional<String> fetchAdvisoryJson(String gcsBaseUrl, String ecosystemPath, String id) {
         String url = gcsBaseUrl + "/" + ecosystemPath + "/" + id + ".json";
-        String json = restClient.get().uri(url).retrieve().body(String.class);
-        return json != null ? json : "";
+        String json;
+        try {
+            json = restClient.get().uri(url).retrieve().body(String.class);
+        } catch (HttpClientErrorException.NotFound e) {
+            return Optional.empty();
+        }
+        // A truncated response must fail, to be retried, not pass for an advisory OSV withdrew.
+        if (json == null || json.isBlank()) {
+            throw new IllegalStateException("Empty OSV advisory body: " + url);
+        }
+        return Optional.of(json);
     }
 }
