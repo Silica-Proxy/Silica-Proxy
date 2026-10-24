@@ -67,7 +67,7 @@ class UnknownSeverityDecisionTest extends BaseIntegrationTest {
             String... advisories) throws Exception {
         for (String advisory : advisories) {
             OsvParseResult parsed = ingestionService.parseOsvJson("pypi", advisory);
-            vulnerabilityDao.replaceAdvisories("pypi", parsed.advisoryIds(), parsed.upserts());
+            vulnerabilityDao.replaceAdvisories("pypi", parsed.advisoryIds(), parsed.upserts(), parsed.anomalies());
         }
         vulnerabilityDao.refreshInheritedScores("pypi");
     }
