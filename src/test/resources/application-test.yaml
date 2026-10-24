@@ -93,6 +93,10 @@ silicaproxy:
     gcs-base-url: "https://storage.googleapis.com/osv-vulnerabilities"
     # Initial catch-up window (hours) on first startup without sync history
     initial-lookback-hours: 25
+    # Each run reads back this many minutes before the start of the last successful one
+    overlap-minutes: 15
+    # Hourly retries of an advisory that failed, before leaving it to the nightly zip
+    max-retry-attempts: 24
 
   # 5. Cache configuration for external API results
   api-cache:

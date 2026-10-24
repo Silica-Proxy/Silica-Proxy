@@ -59,7 +59,7 @@ class ExternalValidationServiceStartupTest {
             new SilicaProxyProperties.HttpClientProperties(5, 5, 5, 1),
             new SilicaProxyProperties.SslMitmProperties(null, null, null, 2000),
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),
-            new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25),
+            new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25, 15, 24),
             new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100),
             new SilicaProxyProperties.HealthProperties(48),
             new SilicaProxyProperties.ExternalValidationProperties(callbackBaseUrl, false, Map.of(

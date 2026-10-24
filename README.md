@@ -175,7 +175,7 @@ SemVer version ranges from the advisories are flattened into a concrete list of 
 
 #### 2.1 Incremental OSV updates — hourly sync (between nightly batches)
 
-Between nightly batch syncs, SilicaProxy fetches the `modified_id.csv` index files published by Google on the same GCS bucket. These files list every advisory modified in the last N hours, sorted newest-first. The service reads them from the top and stops as soon as it reaches an entry older than the previous `last_end_time` watermark (stored in `sync_status`), so only the delta is downloaded.
+Between nightly batch syncs, SilicaProxy fetches the `modified_id.csv` index files published by Google on the same GCS bucket. These files list every advisory modified in the last N hours, sorted newest-first. The service reads them from the top and stops as soon as it reaches an entry older than its watermark, so only the delta is downloaded. The watermark is the start of the last successful run (in `sync_run_history`) less `overlap-minutes` (default: 15): OSV may list an advisory in the CSV after a run read it, with an earlier modified time, and replaying the overlap is harmless. A failed run does not move it.
 
 | Ecosystem | GCS index file |
 |---|---|
@@ -183,7 +183,7 @@ Between nightly batch syncs, SilicaProxy fetches the `modified_id.csv` index fil
 | PyPI | `https://storage.googleapis.com/osv-vulnerabilities/PyPI/modified_id.csv` |
 | Maven | `https://storage.googleapis.com/osv-vulnerabilities/Maven/modified_id.csv` |
 
-For each advisory ID in the delta, the service fetches the corresponding JSON file and upserts it into `public_vulnerabilities`. A failure on a single advisory is logged and skipped — the others are still processed. Three new `sync_status` job IDs track these runs: `osv-npm-incremental`, `osv-pypi-incremental`, `osv-maven-incremental`.
+For each advisory ID in the delta, the service fetches the corresponding JSON file and upserts it into `public_vulnerabilities`. An advisory OSV no longer serves (HTTP 404) is skipped, not counted as a failure. A failure on a single advisory (any other HTTP error, an empty body, an unparsable JSON) is logged and recorded in `osv_incremental_failed_advisories` — the others are still processed. Each run retries the recorded advisories first, until they succeed, a nightly zip of the ecosystem started after their last failure succeeds, or they have been retried `max-retry-attempts` times (default: 24, logged as a warning and counted with outcome `ABANDONED`). Three new `sync_status` job IDs track these runs: `osv-npm-incremental`, `osv-pypi-incremental`, `osv-maven-incremental`.
 
 The incremental sync runs **every hour** under ShedLock (`osv-incremental-sync`). On first run (no watermark), it fetches the last `initial-lookback-hours` of changes (default: 25 h) to bridge the gap until the next nightly batch.
 
@@ -591,6 +591,8 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **OSV incremental** | `silicaproxy.osv-incremental.enabled` | `SILICAPROXY_OSV_INCREMENTAL_ENABLED`                             | `true` | Enable hourly incremental OSV sync |
 | | `silicaproxy.osv-incremental.gcs-base-url` | `SILICAPROXY_OSV_INCREMENTAL_GCS_BASE_URL`                        | `https://storage.googleapis.com/osv-vulnerabilities` | GCS base URL for `modified_id.csv` files |
 | | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS`              | `25` | Window fetched on first run (before any watermark) |
+| | `silicaproxy.osv-incremental.overlap-minutes` | `SILICAPROXY_OSV_INCREMENTAL_OVERLAP_MINUTES`                     | `15` | Minutes read back before the start of the last successful run |
+| | `silicaproxy.osv-incremental.max-retry-attempts` | `SILICAPROXY_OSV_INCREMENTAL_MAX_RETRY_ATTEMPTS`                  | `24` | Hourly retries of a failed advisory before leaving it to the nightly zip |
 | **Health** | `silicaproxy.health.osv-max-staleness-hours` | `SILICAPROXY_HEALTH_OSV_MAX_STALENESS_HOURS`                      | `48` | The `vulnerabilitySync` health component turns `DOWN` only when no OSV source (nightly zip or hourly incremental) has succeeded for this many hours; a single failed or late job is `DEGRADED`. Never used by the liveness/readiness probes — see [Health probes](#health-probes) |
 | **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED`                            | `true` | Enable Google OSV Live API (free) |
 | | `silicaproxy.api-fallback.osv.url` | —                                                                 | `https://api.osv.dev/v1/query` | OSV API endpoint |

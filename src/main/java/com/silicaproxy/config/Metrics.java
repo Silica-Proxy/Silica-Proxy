@@ -89,6 +89,7 @@ public final class Metrics {
     public static final String OUTCOME_FAILED = "FAILED";
     public static final String OUTCOME_INSERTED = "INSERTED";
     public static final String OUTCOME_UPDATED = "UPDATED";
+    public static final String OUTCOME_ABANDONED = "ABANDONED";
 
     // ---- GitOpsSyncService ----
     public static final String GITOPS_POLICIES_METRIC = "silicaproxy.gitops.sync.policies";
