@@ -105,7 +105,7 @@ public class SecurityService {
         RegistryLookup resolution = resolvePackageMetadata(packageName, version, ecosystem, fullUrl);
         Optional<PackageMetadataResult> metadataOpt = resolution.metadata();
         if (metadataOpt.isEmpty()) {
-            return unresolvedPublishDateVerdict(packageName, version, ecosystem, resolution.status());
+            return unresolvedPublishDateVerdict(packageName, version, ecosystem, fullUrl, resolution.status());
         }
         PackageMetadataResult metadata = metadataOpt.get();
 
@@ -224,7 +224,7 @@ public class SecurityService {
 
     // Never cached : the version may appear on the registry (or the registry recover) any time.
     private DecisionResult unresolvedPublishDateVerdict(
-            String packageName, String version, String ecosystem, RegistryLookup.Status status) {
+            String packageName, String version, String ecosystem, String fullUrl, RegistryLookup.Status status) {
         if (status == RegistryLookup.Status.NOT_FOUND
                 && properties.quarantine().unknownVersionAction() == SilicaProxyProperties.UnknownVersionAction.BLOCK) {
             LOG.warn("{}/{} ({}) is unknown to every registry consulted : blocked (unknown-version-action=BLOCK)",
@@ -236,13 +236,25 @@ public class SecurityService {
         boolean failOpen = properties.quarantine().failOpen();
         LOG.warn("Unable to retrieve registry metadata for {}/{} ({}). failOpen={}",
                 ecosystem, packageName, version, failOpen);
-        metrics.recordPublishDateUnresolved(ecosystem, (failOpen ? Verdict.ALLOW : Verdict.BLOCK).name());
-        if (!failOpen) {
-            return DecisionResult.block(DecisionSource.REGISTRY_ERROR, "Public registry is unreachable and proxy is configured in fail-closed.");
+        DecisionResult verdict = failOpen
+                ? failOpenVerdict(packageName, version, ecosystem, fullUrl)
+                : DecisionResult.block(DecisionSource.REGISTRY_ERROR, "Public registry is unreachable and proxy is configured in fail-closed.");
+        metrics.recordPublishDateUnresolved(ecosystem, verdict.result().name());
+        return verdict;
+    }
+
+    // Fail-open only skips the checks that need the publish date (deprecation, quarantine) : the
+    // external validation services, then the live vulnerability APIs, still run and a BLOCK from
+    // either wins. Nothing is written to api_cache on ALLOW (allowCacheableUntil ignored,
+    // AllowCaching.NONE) : a cached ALLOW would short-circuit the quarantine check for the whole
+    // TTL once the registry recovers.
+    private DecisionResult failOpenVerdict(String packageName, String version, String ecosystem, String fullUrl) {
+        Optional<ExternalValidationOutcome> extResult =
+                externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
+        if (extResult.isPresent() && extResult.get().decision().isBlocked()) {
+            return extResult.get().decision();
         }
         if (properties.quarantine().checkVulnerabilitiesOnRegistryError()) {
-            // AllowCaching.NONE : an ALLOW cached here would short-circuit the quarantine check
-            // for the whole TTL once the registry recovers.
             DecisionResult vulnVerdict = runFallbackChain(packageName, version, ecosystem, AllowCaching.NONE);
             if (vulnVerdict.isBlocked()) {
                 return vulnVerdict;

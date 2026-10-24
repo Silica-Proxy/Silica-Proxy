@@ -20,8 +20,11 @@ import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.policy.DecisionDao;
+import com.silicaproxy.dao.vulnerability.VulnerabilityDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.RangeCandidate;
+import com.silicaproxy.model.dto.VulnerabilityUpsertRequest;
+import com.silicaproxy.model.dto.VulnerabilityVersionAnomaly;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -29,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -39,12 +43,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DecisionDaoTest extends BaseIntegrationTest {
 
     private final DecisionDao decisionDao;
+    private final VulnerabilityDao vulnerabilityDao;
     private final JdbcClient jdbcClient;
     private final JdbcTemplate jdbcTemplate;
 
     @Autowired
-    DecisionDaoTest(DecisionDao decisionDao, JdbcClient jdbcClient, JdbcTemplate jdbcTemplate) {
+    DecisionDaoTest(DecisionDao decisionDao, VulnerabilityDao vulnerabilityDao, JdbcClient jdbcClient,
+                    JdbcTemplate jdbcTemplate) {
         this.decisionDao = decisionDao;
+        this.vulnerabilityDao = vulnerabilityDao;
         this.jdbcClient = jdbcClient;
         this.jdbcTemplate = jdbcTemplate;
     }
@@ -521,5 +528,39 @@ class DecisionDaoTest extends BaseIntegrationTest {
                 .containsExactlyInAnyOrder("GHSA-range-high", "MAL-range-0001");
         assertThat(candidates).filteredOn(c -> c.id().equals("GHSA-range-high")).singleElement()
                 .satisfies(c -> assertThat(c.rangesJson()).contains("2.0.0"));
+    }
+
+    @Test
+    void shouldStopBlockingAnAnomalyOnceItsAdvisoryIsReingestedWithoutIt() {
+        VulnerabilityUpsertRequest advisory = new VulnerabilityUpsertRequest(
+                "PYSEC-reingested", "OSV", "gradio", "pypi", "S", "D", "[\"3.50.2\"]", "[]", 8.1, Instant.now());
+        vulnerabilityDao.replaceAdvisories("pypi", List.of("PYSEC-reingested"), List.of(advisory), List.of(
+                new VulnerabilityVersionAnomaly("PYSEC-reingested", "OSV", "gradio", "pypi", "@gradio/reingested@0.4.2", 8.1)));
+        assertThat(decisionDao.evaluateDecision("@gradio/reingested", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isPresent();
+
+        vulnerabilityDao.replaceAdvisories("pypi", List.of("PYSEC-reingested"), List.of(advisory), List.of());
+
+        assertThat(decisionDao.evaluateDecision("@gradio/reingested", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isEmpty();
+    }
+
+    @Test
+    void shouldStopBlockingTheAnomaliesOfAWithdrawnAdvisory() {
+        // Once its public_vulnerabilities rows are gone, an anomaly still blocked on its own score.
+        vulnerabilityDao.replaceAdvisories("pypi", List.of("PYSEC-withdrawn", "MAL-withdrawn"), List.of(), List.of(
+                new VulnerabilityVersionAnomaly("PYSEC-withdrawn", "OSV", "gradio", "pypi", "@gradio/withdrawn@0.4.2", 9.0),
+                new VulnerabilityVersionAnomaly("MAL-withdrawn", "OSV", "gradio", "pypi", "@gradio/withdrawn-mal@0.4.2", null)));
+        assertThat(decisionDao.evaluateDecision("@gradio/withdrawn", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isPresent();
+        assertThat(decisionDao.evaluateDecision("@gradio/withdrawn-mal", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isPresent();
+
+        vulnerabilityDao.deleteByIds(List.of("PYSEC-withdrawn", "MAL-withdrawn"));
+
+        assertThat(decisionDao.evaluateDecision("@gradio/withdrawn", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isEmpty();
+        assertThat(decisionDao.evaluateDecision("@gradio/withdrawn-mal", "0.4.2", "npm", SeverityThreshold.blockingFrom(7.0)))
+                .isEmpty();
     }
 }

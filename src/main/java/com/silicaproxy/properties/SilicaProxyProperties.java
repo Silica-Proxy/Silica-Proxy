@@ -126,7 +126,8 @@ public record SilicaProxyProperties(
         @DefaultValue("FOLLOW_FAIL_OPEN") UnknownVersionAction unknownVersionAction,
         // When failOpen lets a package through without a publish date, still run the live
         // vulnerability APIs (OSV/deps.dev) : a BLOCK from them wins, an ALLOW is never cached.
-        @DefaultValue("false") boolean checkVulnerabilitiesOnRegistryError
+        // The external validation services run regardless of this flag.
+        @DefaultValue("true") boolean checkVulnerabilitiesOnRegistryError
     ) {
         @ConstructorBinding
         public QuarantineProperties {
@@ -135,7 +136,7 @@ public record SilicaProxyProperties(
 
         public QuarantineProperties(boolean enabled, int defaultMinAgeDays, boolean failOpen,
                 Map<String, EcosystemQuarantineProperties> ecosystems) {
-            this(enabled, defaultMinAgeDays, failOpen, ecosystems, UnknownVersionAction.FOLLOW_FAIL_OPEN, false);
+            this(enabled, defaultMinAgeDays, failOpen, ecosystems, UnknownVersionAction.FOLLOW_FAIL_OPEN, true);
         }
     }
 

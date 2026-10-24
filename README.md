@@ -123,25 +123,32 @@ For quarantine, `silicaproxy.quarantine.fail-open` (default `true`) decides the 
 the **publication date cannot be resolved** at all : registry unreachable, package/version
 unknown to the registry (and to the origin registry for npm), and no date already cached in
 `package_metadata`. Such packages skip the age check entirely, so every occurrence is counted in
-`silicaproxy.quarantine.publish_date.unresolved` (tagged with the applied verdict) — see
+`silicaproxy.quarantine.publish_date.unresolved` (tagged with the final verdict) — see
 [Metrics](#metrics) for a ready-to-use alert.
 
-Two options narrow that gap without turning the whole quarantine fail-closed (both keep the
-historical behavior by default) :
+Fail-open only skips the checks that need the publication date (age, deprecation) : the
+[external validation services](#4-external-validation-services--on-demand-sync-or-async) still
+run, each under its own `fail-open` policy, and a BLOCK from any of them wins. A service
+configured `fail-open: false` that cannot vet the package during a public registry outage (for
+instance because it downloads it from that registry) therefore blocks it. A service that cannot
+fetch a package should answer with an error, never `BLOCKED` : a `BLOCKED` verdict is permanent.
+
+Two options narrow that gap without turning the whole quarantine fail-closed :
 
 - **`silicaproxy.quarantine.unknown-version-action`** — a version that every registry consulted
   answered it does **not know** (HTTP 404, version absent from the release list) is not an outage.
   `FOLLOW_FAIL_OPEN` (default) treats it like one, so `fail-open` decides ; `BLOCK` always blocks
   it with `step: REGISTRY_NOT_FOUND`. A registry that could not answer (5xx, timeout, network
   error, unparseable response) still follows `fail-open`.
-- **`silicaproxy.quarantine.check-vulnerabilities-on-registry-error`** — by default, a package let
-  through by `fail-open` skips the live vulnerability APIs too. With `true`, the
-  [OSV/deps.dev chain](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)
-  still runs : a BLOCK wins, otherwise the verdict stays `REGISTRY_ERROR` ALLOW. That ALLOW is
-  **never cached** : caching it would skip the quarantine check for the whole TTL once the
-  registry recovers.
+- **`silicaproxy.quarantine.check-vulnerabilities-on-registry-error`** — with `true` (default), a
+  package let through by `fail-open` still goes through the
+  [OSV/deps.dev chain](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3) :
+  a BLOCK wins, otherwise the verdict stays `REGISTRY_ERROR` ALLOW. `false` skips the live
+  vulnerability APIs for such packages.
 
-Neither verdict is cached : the next request re-evaluates the package.
+Neither verdict is cached : the next request re-evaluates the package. The `REGISTRY_ERROR` ALLOW
+in particular is **never cached**, even when every external validation service allowed the
+package : caching it would skip the quarantine check for the whole TTL once the registry recovers.
 
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
@@ -523,7 +530,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.quarantine.ecosystems.maven.enabled` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_ENABLED`                 | `false` | |
 | | `silicaproxy.quarantine.ecosystems.maven.min-age-days` | `SILICAPROXY_QUARANTINE_ECOSYSTEMS_MAVEN_MIN_AGE_DAYS`            | `5` | |
 | | `silicaproxy.quarantine.unknown-version-action` | `SILICAPROXY_QUARANTINE_UNKNOWN_VERSION_ACTION`                   | `FOLLOW_FAIL_OPEN` | Version unknown to every registry consulted (404) : `FOLLOW_FAIL_OPEN` = treated like an outage (`fail-open` decides), `BLOCK` = blocked (`REGISTRY_NOT_FOUND`) |
-| | `silicaproxy.quarantine.check-vulnerabilities-on-registry-error` | `SILICAPROXY_QUARANTINE_CHECK_VULNERABILITIES_ON_REGISTRY_ERROR` | `false` | Still run OSV/deps.dev when `fail-open` allows a package without publish date ; a BLOCK wins, an ALLOW is never cached |
+| | `silicaproxy.quarantine.check-vulnerabilities-on-registry-error` | `SILICAPROXY_QUARANTINE_CHECK_VULNERABILITIES_ON_REGISTRY_ERROR` | `true` | Still run OSV/deps.dev when `fail-open` allows a package without publish date ; a BLOCK wins, an ALLOW is never cached |
 | **Deprecation** | `silicaproxy.deprecation.enabled` | `SILICAPROXY_DEPRECATION_ENABLED`                                 | `true` | Block deprecated/yanked packages |
 | | `silicaproxy.deprecation.ecosystems.npm` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_NPM`                          | `true` | |
 | | `silicaproxy.deprecation.ecosystems.pypi` | `SILICAPROXY_DEPRECATION_ECOSYSTEMS_PYPI`                         | `true` | |
