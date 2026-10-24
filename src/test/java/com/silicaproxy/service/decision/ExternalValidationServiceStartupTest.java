@@ -61,6 +61,7 @@ class ExternalValidationServiceStartupTest {
             new SilicaProxyProperties.ApiCacheProperties(true, 1440, 1440),
             new SilicaProxyProperties.OsvIncrementalProperties(false, "http://example.com", 25),
             new SilicaProxyProperties.ApiCallLogProperties(false, 30, 100),
+            new SilicaProxyProperties.HealthProperties(48),
             new SilicaProxyProperties.ExternalValidationProperties(callbackBaseUrl, false, Map.of(
                 "test-service", new SilicaProxyProperties.ExternalValidationServiceProperties(
                     true, "http://example.com/validate", null, serviceMode, 1, true, true, 60, 30)))

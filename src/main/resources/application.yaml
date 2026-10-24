@@ -36,8 +36,28 @@ management:
   endpoint:
     health:
       show-details: always
+      # Kubernetes / load balancer probes : /actuator/health/liveness and /actuator/health/readiness
+      # only depend on the JVM and the database, never on a background synchronization. A failed
+      # sync (gitlab.com outage...) must not take the proxy out of the service : the decisions keep
+      # using the data already in the database. The syncs and the MITM CA are reported apart, by
+      # /actuator/health/sync (monitoring/alerting only, not a probe).
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          include: readinessState,db,ping
+        sync:
+          include: vulnerabilitySync,gitopsSync,osvIncrementalSync,caCertificate
       status:
         order: down,out-of-service,degraded,up,unknown
+        # DEGRADED (a failed or late sync job) answers 200 : it is a warning, never a probe failure.
+        # Setting a mapping replaces the defaults, hence DOWN and OUT_OF_SERVICE restated.
+        http-mapping:
+          down: 503
+          out-of-service: 503
+          degraded: 200
   metrics:
     distribution:
       # Exposes http.server.requests as a Prometheus histogram (_bucket samples), needed for
@@ -138,6 +158,12 @@ silicaproxy:
     gcs-base-url: "https://storage.googleapis.com/osv-vulnerabilities"
     # Initial catch-up window (hours) on first startup without sync history
     initial-lookback-hours: 25
+
+  # Health of the synchronizations (/actuator/health/sync, /api/monitoring/health). A failed or
+  # late job is DEGRADED ; vulnerabilitySync is DOWN only when no OSV source (nightly zip or
+  # hourly incremental) has succeeded for this many hours. Never used by the liveness/readiness probes.
+  health:
+    osv-max-staleness-hours: ${SILICAPROXY_HEALTH_OSV_MAX_STALENESS_HOURS:48}
 
   # 5. Cache configuration for external API results
   api-cache:
