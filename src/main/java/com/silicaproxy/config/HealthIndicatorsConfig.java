@@ -32,6 +32,9 @@ import org.springframework.context.annotation.Configuration;
  * they also appear under {@code GET /actuator/health} (component keys: {@code database},
  * {@code vulnerabilitySync}, {@code gitopsSync}, {@code osvIncrementalSync}, {@code caCertificate}).
  * No check logic is duplicated here -- each bean only adapts {@link ComponentHealth} to {@link Health}.
+ * The sync and CA beans form the {@code sync} health group ({@code /actuator/health/sync}) and stay
+ * out of the {@code liveness} and {@code readiness} groups (see {@code management.endpoint.health.group}
+ * in application.yaml) : a failed synchronization must never take the proxy out of the service.
  */
 @Configuration
 @NullMarked

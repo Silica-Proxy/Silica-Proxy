@@ -22,6 +22,7 @@ import com.zaxxer.hikari.HikariPoolMXBean;
 import com.silicaproxy.dao.sync.HealthCheckDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.GitOpsProperties;
+import com.silicaproxy.properties.SilicaProxyProperties.HealthProperties;
 import com.silicaproxy.properties.SilicaProxyProperties.OsvIncrementalProperties;
 import com.silicaproxy.service.interception.SslMitmService;
 import com.silicaproxy.service.monitoring.MonitoringService.HealthReport;
@@ -36,6 +37,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -75,6 +77,9 @@ class MonitoringServiceTest {
         OsvIncrementalProperties osvIncrementalProps = mock(OsvIncrementalProperties.class);
         when(osvIncrementalProps.enabled()).thenReturn(true);
         when(properties.osvIncremental()).thenReturn(osvIncrementalProps);
+
+        // Sync health is DOWN only when no OSV source succeeded for 48h
+        when(properties.health()).thenReturn(new HealthProperties(48));
 
         // Default: CA certificate healthy, far from its 10-year expiry
         when(sslMitmService.getCaCertNotAfter()).thenReturn(Instant.now().plus(300, ChronoUnit.DAYS));
@@ -136,18 +141,159 @@ class MonitoringServiceTest {
     }
 
     @Test
-    void shouldReturnDownWhenVulnerabilitySyncHasFailedJob() {
+    void shouldReturnDegradedWhenVulnerabilitySyncHasFailedJob() {
+        // A failed job (gitlab.com outage) is a warning : the data already ingested keeps being used.
         mockDatabaseOk();
         Map<String, JobStatus> jobs = createDefaultOkJobs();
-        // Update a job to failed status
         jobs.put("gitlab", new JobStatus("FAILED", Instant.now(), Instant.now(), 200L, "Git connection reset", 0L, null, null));
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("vulnerabilitySync").details().get("gitlab_error")).isEqualTo("Git connection reset");
+    }
+
+    @Test
+    void shouldReturnDegradedWhenEveryGitSourceAndOsvZipFailedButIncrementalIsFresh() {
+        // The hourly incremental jobs refresh the OSV data : the OSV data is not stale.
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant now = Instant.now();
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven", "ghsa", "openssf", "gitlab"}) {
+            jobs.put(jobId, new JobStatus("FAILED", now, now, 200L, "boom", 0L, null, null));
+        }
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
+    }
+
+    @Test
+    void shouldReturnDownWhenEveryOsvSourceIsStaleForMoreThan48Hours() {
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant now = Instant.now();
+        Instant longAgo = now.minus(50, ChronoUnit.HOURS);
+        // The zips succeeded 50h ago ; the incremental jobs keep failing, their last success is 49h old.
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven"}) {
+            jobs.put(jobId, new JobStatus("SUCCESS", longAgo, longAgo, 5000L, null, 100L, null, null));
+        }
+        for (String jobId : new String[]{"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("FAILED", now, now, 500L, "GCS unreachable", 0L, null, null));
+            when(statusService.getLastSuccessfulEnd(jobId)).thenReturn(Optional.of(now.minus(49, ChronoUnit.HOURS)));
+        }
         when(statusService.getJobs()).thenReturn(jobs);
 
         HealthReport report = monitoringService.checkHealth();
 
         assertThat(report.status()).isEqualTo("DOWN");
         assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DOWN");
-        assertThat(report.components().get("vulnerabilitySync").details().get("gitlab_error")).isEqualTo("Git connection reset");
+        assertThat(report.components().get("vulnerabilitySync").details().get("message"))
+                .isEqualTo("No OSV source has synchronized successfully for more than 48h");
+        assertThat(report.components().get("vulnerabilitySync").details().get("osvLastSuccessfulSync"))
+                .isEqualTo(now.minus(49, ChronoUnit.HOURS).toString());
+        // The incremental component itself is only DEGRADED
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DEGRADED");
+    }
+
+    @Test
+    void shouldStayDegradedWhenOneOsvSourceSucceededWithin48Hours() {
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant now = Instant.now();
+        Instant longAgo = now.minus(50, ChronoUnit.HOURS);
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven"}) {
+            jobs.put(jobId, new JobStatus("SUCCESS", longAgo, longAgo, 5000L, null, 100L, null, null));
+        }
+        for (String jobId : new String[]{"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("FAILED", now, now, 500L, "GCS unreachable", 0L, null, null));
+        }
+        // One incremental job, failing now, still succeeded 47h ago (sync_run_history).
+        when(statusService.getLastSuccessfulEnd("osv-maven-incremental"))
+                .thenReturn(Optional.of(now.minus(47, ChronoUnit.HOURS)));
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
+    }
+
+    @Test
+    void shouldReturnDownWhenEveryOsvZipIsStaleAndIncrementalSyncIsDisabled() {
+        mockDatabaseOk();
+        OsvIncrementalProperties disabledProps = mock(OsvIncrementalProperties.class);
+        when(disabledProps.enabled()).thenReturn(false);
+        when(properties.osvIncremental()).thenReturn(disabledProps);
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant longAgo = Instant.now().minus(50, ChronoUnit.HOURS);
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven"}) {
+            jobs.put(jobId, new JobStatus("SUCCESS", longAgo, longAgo, 5000L, null, 100L, null, null));
+        }
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DOWN");
+    }
+
+    @Test
+    void shouldHonorConfiguredOsvStalenessThreshold() {
+        mockDatabaseOk();
+        when(properties.health()).thenReturn(new HealthProperties(72));
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant longAgo = Instant.now().minus(50, ChronoUnit.HOURS);
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven",
+                "osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("SUCCESS", longAgo, longAgo, 5000L, null, 100L, null, null));
+        }
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        // 50h < 72h : late (DEGRADED), not stale enough for DOWN
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
+    }
+
+    @Test
+    void shouldNotReturnDownBeforeTheFirstOsvSync() {
+        // Fresh install : no OSV source has run yet, there is nothing stale to report.
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven",
+                "osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("PENDING", null, null, null, null, 0L, null, null));
+        }
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.components().get("vulnerabilitySync").status()).isNotEqualTo("DOWN");
+    }
+
+    @Test
+    void shouldReturnDegradedWhenTheFirstOsvSyncsFailed() {
+        // Fresh install whose first runs failed or are still running : no data yet, but nothing
+        // older than 48h either -- DEGRADED, the errors are in the details.
+        mockDatabaseOk();
+        Map<String, JobStatus> jobs = createDefaultOkJobs();
+        Instant now = Instant.now();
+        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven", "osv-npm-incremental"}) {
+            jobs.put(jobId, new JobStatus("FAILED", now, now, 200L, "boom", 0L, null, null));
+        }
+        for (String jobId : new String[]{"osv-pypi-incremental", "osv-maven-incremental"}) {
+            jobs.put(jobId, new JobStatus("RUNNING", now, null, null, null, 0L, null, null));
+        }
+        when(statusService.getJobs()).thenReturn(jobs);
+
+        HealthReport report = monitoringService.checkHealth();
+
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DEGRADED");
     }
 
     @Test
@@ -167,7 +313,7 @@ class MonitoringServiceTest {
     }
 
     @Test
-    void shouldReturnDownWhenGitopsSyncHasFailed() {
+    void shouldReturnDegradedWhenGitopsSyncHasFailed() {
         mockDatabaseOk();
         Map<String, JobStatus> jobs = createDefaultOkJobs();
         jobs.put("gitops-sync", new JobStatus("FAILED", Instant.now(), Instant.now(), 100L, "Auth failed on policies repository", 0L, null, null));
@@ -175,8 +321,9 @@ class MonitoringServiceTest {
 
         HealthReport report = monitoringService.checkHealth();
 
-        assertThat(report.status()).isEqualTo("DOWN");
-        assertThat(report.components().get("gitopsSync").status()).isEqualTo("DOWN");
+        // The policies already loaded keep applying
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("gitopsSync").status()).isEqualTo("DEGRADED");
         assertThat(report.components().get("gitopsSync").details().get("error")).isEqualTo("Auth failed on policies repository");
     }
 
@@ -265,9 +412,9 @@ class MonitoringServiceTest {
     }
 
     @Test
-    void shouldReturnDownWhenVulnerabilityJobIsMissing() {
-        // If a vulnerability job is missing from the map (spec §6.2), the status must be DOWN
-        // with the detail containing "MISSING" (MonitoringService L120-123).
+    void shouldReturnDegradedWhenVulnerabilityJobIsMissing() {
+        // If a vulnerability job is missing from the map (spec §6.2), the status is DEGRADED
+        // with the detail containing "MISSING" : the other OSV sources are fresh.
         mockDatabaseOk();
         Map<String, JobStatus> jobs = createDefaultOkJobs();
         // Remove a vulnerability job
@@ -276,8 +423,8 @@ class MonitoringServiceTest {
 
         HealthReport report = monitoringService.checkHealth();
 
-        assertThat(report.status()).isEqualTo("DOWN");
-        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DOWN");
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("vulnerabilitySync").status()).isEqualTo("DEGRADED");
         assertThat(report.components().get("vulnerabilitySync").details()).containsEntry("osv-npm", "MISSING");
     }
 
@@ -298,7 +445,7 @@ class MonitoringServiceTest {
     }
 
     @Test
-    void shouldReturnDownWhenOsvIncrementalJobIsMissing() {
+    void shouldReturnDegradedWhenOsvIncrementalJobIsMissing() {
         mockDatabaseOk();
         Map<String, JobStatus> jobs = createDefaultOkJobs();
         jobs.remove("osv-pypi-incremental");
@@ -306,8 +453,8 @@ class MonitoringServiceTest {
 
         HealthReport report = monitoringService.checkHealth();
 
-        assertThat(report.status()).isEqualTo("DOWN");
-        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DOWN");
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("osvIncrementalSync").status()).isEqualTo("DEGRADED");
         assertThat(report.components().get("osvIncrementalSync").details()).containsEntry("osv-pypi-incremental", "MISSING");
     }
 
@@ -328,9 +475,9 @@ class MonitoringServiceTest {
     }
 
     @Test
-    void shouldReturnDownWhenGitOpsSyncJobIsMissing() {
-        // If the gitops-sync job is missing from the map (spec §6.2), the status must be DOWN
-        // with message "GitOps sync status row missing" (MonitoringService L170-173).
+    void shouldReturnDegradedWhenGitOpsSyncJobIsMissing() {
+        // If the gitops-sync job is missing from the map (spec §6.2), the status is DEGRADED
+        // with message "GitOps sync status row missing".
         mockDatabaseOk();
         Map<String, JobStatus> jobs = createDefaultOkJobs();
         // Retirer le job gitops-sync
@@ -339,8 +486,8 @@ class MonitoringServiceTest {
 
         HealthReport report = monitoringService.checkHealth();
 
-        assertThat(report.status()).isEqualTo("DOWN");
-        assertThat(report.components().get("gitopsSync").status()).isEqualTo("DOWN");
+        assertThat(report.status()).isEqualTo("DEGRADED");
+        assertThat(report.components().get("gitopsSync").status()).isEqualTo("DEGRADED");
         assertThat(report.components().get("gitopsSync").details().get("message"))
                 .isEqualTo("GitOps sync status row missing");
     }

@@ -48,6 +48,7 @@ public record SilicaProxyProperties(
     @NotNull ApiCacheProperties apiCache,
     @NotNull OsvIncrementalProperties osvIncremental,
     @NotNull ApiCallLogProperties apiCallLog,
+    @NotNull @DefaultValue HealthProperties health,
     @NotNull ExternalValidationProperties externalValidation
 ) {
     public SilicaProxyProperties {
@@ -245,6 +246,13 @@ public record SilicaProxyProperties(
         boolean enabled,
         int flushIntervalSeconds,
         int bufferCapacity
+    ) {}
+
+    // Health of the synchronizations (MonitoringService, "sync" health group). The sync health is
+    // DOWN only when no OSV source (nightly zip or hourly incremental) has succeeded for this long ;
+    // a single failed or late job is DEGRADED. Never part of the liveness/readiness probes.
+    public record HealthProperties(
+        @DefaultValue("48") @Positive int osvMaxStalenessHours
     ) {}
 
     // Cache of results from external APIs (OSV Live, deps.dev).

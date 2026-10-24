@@ -583,6 +583,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | **OSV incremental** | `silicaproxy.osv-incremental.enabled` | `SILICAPROXY_OSV_INCREMENTAL_ENABLED`                             | `true` | Enable hourly incremental OSV sync |
 | | `silicaproxy.osv-incremental.gcs-base-url` | `SILICAPROXY_OSV_INCREMENTAL_GCS_BASE_URL`                        | `https://storage.googleapis.com/osv-vulnerabilities` | GCS base URL for `modified_id.csv` files |
 | | `silicaproxy.osv-incremental.initial-lookback-hours` | `SILICAPROXY_OSV_INCREMENTAL_INITIAL_LOOKBACK_HOURS`              | `25` | Window fetched on first run (before any watermark) |
+| **Health** | `silicaproxy.health.osv-max-staleness-hours` | `SILICAPROXY_HEALTH_OSV_MAX_STALENESS_HOURS`                      | `48` | The `vulnerabilitySync` health component turns `DOWN` only when no OSV source (nightly zip or hourly incremental) has succeeded for this many hours; a single failed or late job is `DEGRADED`. Never used by the liveness/readiness probes — see [Health probes](#health-probes) |
 | **Fallback APIs** | `silicaproxy.api-fallback.osv.enabled` | `SILICAPROXY_API_FALLBACK_OSV_ENABLED`                            | `true` | Enable Google OSV Live API (free) |
 | | `silicaproxy.api-fallback.osv.url` | —                                                                 | `https://api.osv.dev/v1/query` | OSV API endpoint |
 | | `silicaproxy.api-fallback.osv.fail-open` | `SILICAPROXY_API_FALLBACK_OSV_FAIL_OPEN`                          | `true` | Verdict when OSV fails **and** no later source in the chain concludes either (see [Live security API fallback](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3)) |
@@ -760,6 +761,10 @@ intentionally out of scope.
 | `POST /api/policies/simulate` | READ | Simulate a policy set against a package without persisting rules |
 | `POST /external-validation/callback/{token}` | — | Async validation callback — called by external services to deliver a verdict |
 | `GET /actuator/prometheus` | — | Prometheus metrics |
+| `GET /actuator/health/liveness` | — | Liveness probe (JVM only) — see [Health probes](#health-probes) |
+| `GET /actuator/health/readiness` | — | Readiness probe (database) — see [Health probes](#health-probes) |
+| `GET /actuator/health/sync` | — | Synchronizations and MITM CA health, for monitoring only |
+| `GET /actuator/health` | — | Every health component (probes + syncs + CA) |
 
 **Blocked package response (RFC 7807):**
 
@@ -801,6 +806,46 @@ The `step` field indicates which pipeline stage made the blocking decision:
 - **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
 - **External validation callback log** (`INFO`): every async callback received at `POST /external-validation/callback/{token}` logs the originating service, package, and verdict before it's applied.
 - **Sync progress** visible in `/api/vulnerabilities/sync/status` with per-job `progressPercent`.
+
+### Health probes
+
+The liveness and readiness probes never depend on a background synchronization: a failed sync
+(gitlab.com outage, GCS timeout…) leaves the decisions running on the data already in the
+database, so it must not take the proxy out of the load balancer.
+
+| URL | Components | Use it for |
+|---|---|---|
+| `/actuator/health/liveness` | `livenessState`, `ping` | Kubernetes `livenessProbe` — the JVM is alive. Does not check the database: a restart would not fix it |
+| `/actuator/health/readiness` | `readinessState`, `db`, `ping` | Kubernetes `readinessProbe`, load balancer health check — `DOWN` (HTTP `503`) when PostgreSQL is unreachable |
+| `/actuator/health/sync` | `vulnerabilitySync`, `osvIncrementalSync`, `gitopsSync`, `caCertificate` | Monitoring / alerting only, never a probe |
+| `/actuator/health` | all of the above (plus the `database` component) | Overview; prefer the groups above for probes |
+
+Status rules of the sync components:
+
+- A failed, missing or late job (GHSA, OpenSSF, GitLab, OSV zip, OSV incremental, GitOps) is
+  `DEGRADED`, answered with HTTP `200`.
+- `vulnerabilitySync` is `DOWN` (HTTP `503`) only when **no** OSV source — nightly zip or hourly
+  incremental — has succeeded for `silicaproxy.health.osv-max-staleness-hours` (default `48`).
+  A fresh install whose first sync has not succeeded yet (pending, running or failed) is never `DOWN`.
+- `caCertificate` is `DEGRADED` within 30 days of its expiry, `DOWN` once expired.
+
+Kubernetes example (the actuator answers on `server.port`, `8089` by default):
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8089
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8089
+  periodSeconds: 5
+  failureThreshold: 3
+```
 
 ### Client identity in the audit log
 

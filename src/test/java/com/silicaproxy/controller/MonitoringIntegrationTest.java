@@ -194,7 +194,7 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
     }
 
     @Test
-    void shouldReturnDownWhenVulnerabilitySyncJobHasFailed() {
+    void shouldReturnDegradedWhenVulnerabilitySyncJobHasFailed() {
         setAllJobsSuccess();
 
         // Mark Gitlab job as FAILED
@@ -213,8 +213,8 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         String body = response.getBody();
         assertThat(body).isNotNull();
-        assertThat(body).contains("\"status\":\"DOWN\"");
-        assertThat(body).contains("\"vulnerabilitySync\":{\"status\":\"DOWN\"");
+        assertThat(body).contains("\"status\":\"DEGRADED\"");
+        assertThat(body).contains("\"vulnerabilitySync\":{\"status\":\"DEGRADED\"");
         assertThat(body).contains("Failed to clone gitlab repository");
     }
 
@@ -245,7 +245,7 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
     }
 
     @Test
-    void shouldReturnDownWhenGitOpsSyncHasFailed() {
+    void shouldReturnDegradedWhenGitOpsSyncHasFailed() {
         setAllJobsSuccess();
 
         // Mark gitops-sync as FAILED
@@ -264,8 +264,8 @@ class MonitoringIntegrationTest extends BaseIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         String body = response.getBody();
         assertThat(body).isNotNull();
-        assertThat(body).contains("\"status\":\"DOWN\"");
-        assertThat(body).contains("\"gitopsSync\":{\"status\":\"DOWN\"");
+        assertThat(body).contains("\"status\":\"DEGRADED\"");
+        assertThat(body).contains("\"gitopsSync\":{\"status\":\"DEGRADED\"");
         assertThat(body).contains("Invalid policy schema");
     }
 

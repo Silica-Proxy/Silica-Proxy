@@ -38,8 +38,11 @@ import java.util.Map;
 
 /**
  * Aggregates the global health status of the proxy (DB, vulnerabilities sync, GitOps sync) into a
- * UP/DOWN/DEGRADED status. Called only by {@code MonitoringController}, on demand, via
- * {@code GET /api/monitoring/health} .
+ * UP/DOWN/DEGRADED status. Called by {@code MonitoringController}, on demand, via
+ * {@code GET /api/monitoring/health}, and by the {@code HealthIndicatorsConfig} beans.
+ * A failed, missing or late synchronization job only makes its component DEGRADED : the proxy
+ * keeps deciding from the data already in the database. A sync component is DOWN only when every
+ * OSV source is stale (no successful run for {@code silicaproxy.health.osv-max-staleness-hours}).
  */
 @Service
 @NullMarked
@@ -50,6 +53,15 @@ public class MonitoringService {
     // so 30 days is a wide enough window to rotate it well before every intercepted TLS
     // connection starts failing client-side.
     private static final long CA_CERT_EXPIRY_WARNING_DAYS = 30;
+
+    // The nightly OSV zips, and the hourly OSV incremental jobs which refresh the same data
+    // in between : as long as one of them succeeded recently, the decisions use fresh OSV data.
+    private static final String[] OSV_ZIP_JOBS = {"osv-npm", "osv-pypi", "osv-maven"};
+    private static final String[] OSV_INCREMENTAL_JOBS =
+            {"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"};
+    // Supplementary Git sources (GHSA, OpenSSF, GitLab), all ingested since #113. Their failure
+    // makes the sync DEGRADED, never DOWN : the OSV zips already cover most of their data.
+    private static final String[] GIT_SOURCE_JOBS = {"ghsa", "openssf", "gitlab"};
 
     private final HealthCheckDao healthCheckDao;
     private final VulnerabilitySyncStatusService statusService;
@@ -167,11 +179,11 @@ public class MonitoringService {
         Instant limit = Instant.now().minus(26, ChronoUnit.HOURS);
         Instant earliestNextRun = null;
 
-        for (String jobId : new String[]{"osv-npm", "osv-pypi", "osv-maven", "ghsa", "openssf", "gitlab"}) {
+        for (String jobId : concat(OSV_ZIP_JOBS, GIT_SOURCE_JOBS)) {
             JobStatus job = jobs.get(jobId);
             if (job == null) {
                 details.put(jobId, "MISSING");
-                status = "DOWN";
+                status = "DEGRADED";
                 continue;
             }
 
@@ -191,28 +203,75 @@ public class MonitoringService {
             }
 
             if ("FAILED".equals(job.status())) {
-                status = "DOWN";
+                status = "DEGRADED";
                 details.put(jobId + "_error", job.errorMessage());
-            } else if ("SUCCESS".equals(job.status())) {
-                Instant jobLastEndTime = job.lastEndTime();
-                if (jobLastEndTime != null && jobLastEndTime.isBefore(limit)) {
-                    if (!"DOWN".equals(status)) {
-                        status = "DEGRADED";
-                    }
-                    details.put(jobId + "_stale", true);
-                }
+            } else if (isStaleSuccess(job, limit)) {
+                status = "DEGRADED";
+                details.put(jobId + "_stale", true);
             }
         }
 
         Instant scheduledSync = earliestNextRun != null ? earliestNextRun : nextVulnerabilityCronExecution();
         details.put("nextScheduledSync", scheduledSync.toString());
 
+        if (allOsvSourcesStale(jobs, details)) {
+            status = "DOWN";
+            details.put("message", "No OSV source has synchronized successfully for more than "
+                    + properties.health().osvMaxStalenessHours() + "h");
+        }
+
         return new ComponentHealth(status, details);
+    }
+
+    private static String[] concat(String[] first, String[] second) {
+        String[] result = new String[first.length + second.length];
+        System.arraycopy(first, 0, result, 0, first.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
+    }
+
+    private static boolean isStaleSuccess(JobStatus job, Instant limit) {
+        Instant lastEndTime = job.lastEndTime();
+        return "SUCCESS".equals(job.status()) && lastEndTime != null && lastEndTime.isBefore(limit);
+    }
+
+    // True when the freshest successful run of the OSV sources (nightly zip, or hourly incremental
+    // when enabled) is older than osv-max-staleness-hours. Without any successful run yet (fresh
+    // install, first sync still running or failed), the data is not "stale" : the failed or
+    // never-run jobs already make the component DEGRADED. A job that is not SUCCESS right now
+    // (FAILED, RUNNING) is judged on its last successful run, from sync_run_history.
+    private boolean allOsvSourcesStale(Map<String, JobStatus> jobs, Map<String, Object> details) {
+        Instant limit = Instant.now().minus(properties.health().osvMaxStalenessHours(), ChronoUnit.HOURS);
+        String[] osvJobs = properties.osvIncremental().enabled()
+                ? concat(OSV_ZIP_JOBS, OSV_INCREMENTAL_JOBS)
+                : OSV_ZIP_JOBS;
+        Instant freshest = null;
+        for (String jobId : osvJobs) {
+            JobStatus job = jobs.get(jobId);
+            Instant lastSuccess = job != null ? lastSuccessfulEnd(jobId, job) : null;
+            if (lastSuccess != null && (freshest == null || lastSuccess.isAfter(freshest))) {
+                freshest = lastSuccess;
+            }
+        }
+        if (freshest == null) {
+            return false;
+        }
+        details.put("osvLastSuccessfulSync", freshest.toString());
+        return freshest.isBefore(limit);
+    }
+
+    private @Nullable Instant lastSuccessfulEnd(String jobId, JobStatus job) {
+        Instant lastEndTime = job.lastEndTime();
+        if ("SUCCESS".equals(job.status()) && lastEndTime != null) {
+            return lastEndTime;
+        }
+        return statusService.getLastSuccessfulEnd(jobId).orElse(null);
     }
 
     // Same shape as checkVulnerabilitySyncHealth(), but for the hourly OSV incremental jobs
     // (a much shorter staleness window than the 26h one used for the daily batch sync above --
-    // an hourly job that hasn't succeeded in 3h has already missed at least one run).
+    // an hourly job that hasn't succeeded in 3h has already missed at least one run). Never DOWN :
+    // the staleness of the whole OSV data is judged by checkVulnerabilitySyncHealth().
     private ComponentHealth checkOsvIncrementalSyncHealth() {
         Map<String, Object> details = new HashMap<>();
         if (!properties.osvIncremental().enabled()) {
@@ -224,11 +283,11 @@ public class MonitoringService {
         String status = "UP";
         Instant limit = Instant.now().minus(3, ChronoUnit.HOURS);
 
-        for (String jobId : new String[]{"osv-npm-incremental", "osv-pypi-incremental", "osv-maven-incremental"}) {
+        for (String jobId : OSV_INCREMENTAL_JOBS) {
             JobStatus job = jobs.get(jobId);
             if (job == null) {
                 details.put(jobId, "MISSING");
-                status = "DOWN";
+                status = "DEGRADED";
                 continue;
             }
 
@@ -238,16 +297,11 @@ public class MonitoringService {
             }
 
             if ("FAILED".equals(job.status())) {
-                status = "DOWN";
+                status = "DEGRADED";
                 details.put(jobId + "_error", job.errorMessage());
-            } else if ("SUCCESS".equals(job.status())) {
-                Instant jobLastEndTime = job.lastEndTime();
-                if (jobLastEndTime != null && jobLastEndTime.isBefore(limit)) {
-                    if (!"DOWN".equals(status)) {
-                        status = "DEGRADED";
-                    }
-                    details.put(jobId + "_stale", true);
-                }
+            } else if (isStaleSuccess(job, limit)) {
+                status = "DEGRADED";
+                details.put(jobId + "_stale", true);
             }
         }
 
@@ -264,9 +318,10 @@ public class MonitoringService {
         Map<String, JobStatus> jobs = statusService.getJobs();
         JobStatus gitopsJob = jobs.get("gitops-sync");
 
+        // The policies already loaded keep applying : a missing or failed GitOps sync is DEGRADED.
         if (gitopsJob == null) {
             details.put("message", "GitOps sync status row missing");
-            return new ComponentHealth("DOWN", details);
+            return new ComponentHealth("DEGRADED", details);
         }
 
         details.put("status", gitopsJob.status());
@@ -287,7 +342,7 @@ public class MonitoringService {
 
         if ("FAILED".equals(gitopsJob.status())) {
             details.put("error", gitopsJob.errorMessage());
-            return new ComponentHealth("DOWN", details);
+            return new ComponentHealth("DEGRADED", details);
         }
 
         if ("SUCCESS".equals(gitopsJob.status())) {
