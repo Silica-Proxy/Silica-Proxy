@@ -508,6 +508,7 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `spring.datasource.hikari.connection-timeout` | `HIKARI_CONNECTION_TIMEOUT`                                       | `1500` | ms to wait for a connection |
 | **Proxy** | `silicaproxy.proxy.port` | `SILICAPROXY_PROXY_PORT`                                          | `8080` | Public TCP entry point |
 | | `silicaproxy.proxy.http-only-hosts` | `SILICAPROXY_PROXY_HTTP_ONLY_HOSTS`                               | _(empty)_ | Comma-separated, case-insensitive list of hosts that stay on plain HTTP. Every other non-local `http://` request is upgraded to `https://`, both for the upstream relay and for the registry metadata lookups (some registries, e.g. `plugins.gradle.org`, answer 403 to plain HTTP). Use it for an internal registry that has no TLS |
+| | `silicaproxy.proxy.trusted-proxies` | `SILICAPROXY_PROXY_TRUSTED_PROXIES`                               | _(empty)_ | Comma-separated IPs or CIDR ranges of the HTTP reverse proxies / load balancers whose `X-Forwarded-For` gives the client address recorded in the audit log (right-most untrusted hop). Empty = `X-Forwarded-For` is ignored — see [Client identity in the audit log](#client-identity-in-the-audit-log) |
 | **Registries** | `silicaproxy.registries.npm-url` | `SILICAPROXY_REGISTRIES_NPM_URL`                                  | `https://registry.npmjs.org` | npm registry base URL for metadata resolution |
 | | `silicaproxy.registries.pypi-url` | `SILICAPROXY_REGISTRIES_PYPI_URL`                                 | `https://pypi.org` | PyPI registry base URL for metadata resolution |
 | | `silicaproxy.registries.maven-url` | `SILICAPROXY_REGISTRIES_MAVEN_URL`                                | `https://repo1.maven.org` | Maven Central base URL for metadata resolution |
@@ -800,6 +801,27 @@ The `step` field indicates which pipeline stage made the blocking decision:
 - **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
 - **External validation callback log** (`INFO`): every async callback received at `POST /external-validation/callback/{token}` logs the originating service, package, and verdict before it's applied.
 - **Sync progress** visible in `/api/vulnerabilities/sync/status` with per-job `progressPercent`.
+
+### Client identity in the audit log
+
+Each verdict written to `proxy_audit_logs` records who downloaded the package, so that a package
+allowed then flagged (malware) can be traced back to the affected workstations or CI runners :
+
+| Column | Source |
+|---|---|
+| `client_ip` | Socket peer address of the client. `X-Forwarded-For` is only honoured when that peer is listed in `silicaproxy.proxy.trusted-proxies` : the right-most hop that is not a trusted proxy is recorded (left-most ones are writable by any client) |
+| `user_agent` | `User-Agent` header (`npm/10.x`, `pip/24`, `Apache-Maven/3.9`…), truncated to 512 characters |
+| `client_id` | Optional `X-Silica-Client` header (CI runner, project…), else the username of a `Basic` `Proxy-Authorization` (sent on the `CONNECT` for HTTPS). The password is never stored |
+
+Behind a repository manager, these columns identify the repository manager, not the end client :
+Artifactory remote repositories and Nexus 3 proxy repositories fetch from SilicaProxy with their own
+HTTP client, on a cache miss only, and relay neither the client address, nor `X-Forwarded-For`, nor
+its `User-Agent` (they send `Artifactory/7.x` / `Nexus/3.x`). They can still tag their requests :
+an Artifactory remote repository accepts static custom headers (e.g. `X-Silica-Client: npm-remote`),
+Nexus 3 a global User-Agent suffix (*System > HTTP*). Per-workstation identity requires the clients
+to use SilicaProxy directly as their HTTP(S) proxy (or through an HTTP reverse proxy listed in
+`trusted-proxies`) ; inside an HTTPS tunnel, only the `CONNECT`'s `Proxy-Authorization` username is
+available, since no intermediate proxy can add `X-Forwarded-For` to encrypted traffic.
 
 ---
 

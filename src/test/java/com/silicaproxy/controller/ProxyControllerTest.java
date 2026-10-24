@@ -25,6 +25,7 @@ import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.config.Metrics;
 
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
@@ -54,6 +55,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -139,7 +142,7 @@ class ProxyControllerTest {
 
         verify(securityService).getDecision(eq("lodash"), eq("4.17.21"), eq("npm"), anyString());
         verify(proxyStreamClient).streamContent(eq("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"), any(HttpHeaders.class));
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test
@@ -188,7 +191,7 @@ class ProxyControllerTest {
 
         verify(securityService).getDecision(eq("lodash"), eq("4.17.20"), eq("npm"), anyString());
         verifyNoInteractions(proxyStreamClient);
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.20"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test
@@ -324,7 +327,7 @@ class ProxyControllerTest {
         mockMvc.perform(get("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))
                 .andExpect(status().isOk());
 
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test
@@ -340,7 +343,7 @@ class ProxyControllerTest {
                 .andExpect(jsonPath("$.detail").value("Banned by security team"));
 
         verifyNoInteractions(proxyStreamClient);
-        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLOCK"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("shelljs"), eq("0.8.5"), eq("npm"), eq("COMPANY_POLICY"), eq("BLOCK"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test
@@ -406,7 +409,7 @@ class ProxyControllerTest {
                 .andExpect(status().isBadGateway());
 
         // The decision was made and audited even if the upstream relay failed afterwards.
-        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString());
+        verify(auditLogService).logAudit(eq("lodash"), eq("4.17.21"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"), anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test
@@ -422,10 +425,30 @@ class ProxyControllerTest {
         ArgumentCaptor<Integer> executionTimeCaptor = ArgumentCaptor.forClass(Integer.class);
         verify(auditLogService).logAudit(
                 eq("vuln-pkg"), eq("1.0.0"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"),
-                reasonCaptor.capture(), executionTimeCaptor.capture(), anyString());
+                reasonCaptor.capture(), executionTimeCaptor.capture(), anyString(), any(ClientIdentity.class));
 
         assertThat(reasonCaptor.getValue()).isEqualTo("Known vulnerability CVE-9999");
         assertThat(executionTimeCaptor.getValue()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void shouldLogClientIdentity() throws Exception {
+        DecisionResult blocked = new DecisionResult(DecisionSource.PUBLIC_VULN, Verdict.BLOCK, "Known vulnerability CVE-9999");
+        when(securityService.getDecision(eq("vuln-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);
+        evaluate("vuln-pkg", "1.0.0", "npm");
+
+        // MockMvc's remote address is 127.0.0.1, on a connection LoomProxyServer did not register.
+        mockMvc.perform(get("http://registry.npmjs.org/vuln-pkg/-/vuln-pkg-1.0.0.tgz")
+                        .header("Proxy-Authorization", "Basic " + Base64.getEncoder().encodeToString("ci-runner:s3cret".getBytes(StandardCharsets.UTF_8)))
+                        .header("X-Forwarded-For", "6.6.6.6")
+                        .header("User-Agent", "npm/10.8.2 node/v22.11.0"))
+                .andExpect(status().isForbidden());
+
+        ArgumentCaptor<ClientIdentity> clientCaptor = ArgumentCaptor.forClass(ClientIdentity.class);
+        verify(auditLogService).logAudit(eq("vuln-pkg"), eq("1.0.0"), eq("npm"), eq("PUBLIC_VULN"), eq("BLOCK"),
+                anyString(), anyInt(), anyString(), clientCaptor.capture());
+        assertThat(clientCaptor.getValue())
+                .isEqualTo(new ClientIdentity("127.0.0.1", "npm/10.8.2 node/v22.11.0", "ci-runner"));
     }
 
     @Test
@@ -641,7 +664,7 @@ class ProxyControllerTest {
 
         verify(securityService).getDecision(eq("@jsr/zerun__group-deps"), eq("0.1.5"), eq("npm"), anyString());
         verify(auditLogService).logAudit(eq("@jsr/zerun__group-deps"), eq("0.1.5"), eq("npm"), eq("COMPANY_POLICY"), eq("ALLOW"),
-                anyString(), anyInt(), anyString());
+                anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
     @Test

@@ -48,8 +48,10 @@ public class AuditLogDao {
         jdbcClient.sql("SET LOCAL synchronous_commit = off").update();
 
         String sql = """
-            INSERT INTO proxy_audit_logs (timestamp, package_name, package_version, ecosystem, decision_source, verdict, reason, execution_time_ms, full_url)
-            VALUES (:timestamp, :packageName, :packageVersion, :ecosystem, :decisionSource, :verdict, :reason, :executionTimeMs, :fullUrl)
+            INSERT INTO proxy_audit_logs (timestamp, package_name, package_version, ecosystem, decision_source, verdict, reason, execution_time_ms, full_url,
+                client_ip, user_agent, client_id)
+            VALUES (:timestamp, :packageName, :packageVersion, :ecosystem, :decisionSource, :verdict, :reason, :executionTimeMs, :fullUrl,
+                :clientIp, :userAgent, :clientId)
             """;
 
         jdbcClient.sql(sql)
@@ -62,6 +64,9 @@ public class AuditLogDao {
                 .param("reason", auditLog.reason())
                 .param("executionTimeMs", auditLog.executionTimeMs())
                 .param("fullUrl", auditLog.fullUrl())
+                .param("clientIp", auditLog.clientIp())
+                .param("userAgent", auditLog.userAgent())
+                .param("clientId", auditLog.clientId())
                 .update();
     }
 }

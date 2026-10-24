@@ -19,6 +19,7 @@ package com.silicaproxy.service.audit;
 
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.audit.AuditLogDao;
+import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.entity.AuditLog;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -63,7 +64,8 @@ public class AuditLogService {
             String verdict,
             @Nullable String reason,
             int executionTimeMs,
-            String fullUrl) {
+            String fullUrl,
+            ClientIdentity client) {
 
         AuditLog auditLog = new AuditLog(
                 null,
@@ -75,7 +77,10 @@ public class AuditLogService {
                 verdict,
                 reason,
                 executionTimeMs,
-                fullUrl
+                fullUrl,
+                client.clientIp(),
+                client.userAgent(),
+                client.clientId()
         );
 
         // Runs on the audit executor (see AsyncConfig), whose default async-exception handler
