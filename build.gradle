@@ -4,7 +4,7 @@ plugins {
 	id 'checkstyle'
 	id 'pmd'
 	id 'com.github.spotbugs' version '6.5.13'
-	id 'org.springframework.boot' version '4.1.1'
+	id 'org.springframework.boot' version '4.1.2'
 	id 'io.spring.dependency-management' version '1.1.7'
 }
 
@@ -21,15 +21,6 @@ java {
 repositories {
 	mavenCentral()
 }
-
-// Override the Tomcat version managed by Spring Boot 4.1.1 to pick up security fixes.
-// Remove once Spring Boot ships Tomcat >= 11.0.26.
-ext['tomcat.version'] = '11.0.26'
-
-// Override the Jackson 3 version managed by Spring Boot 4.1.1 (3.1.5) : GHSA-cxp5-3px4-pw24
-// (quadratic CPU in jackson-databind forward-reference completion), fixed in 3.1.7.
-// Remove once Spring Boot ships Jackson >= 3.1.7.
-ext['jackson-bom.version'] = '3.1.7'
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-web'
