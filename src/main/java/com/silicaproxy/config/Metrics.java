@@ -104,6 +104,17 @@ public final class Metrics {
     public static final String AUDIT_LOG_WRITES_METRIC = "silicaproxy.service.auditlog.writes";
     public static final String OUTCOME_DROPPED = "DROPPED";
 
+    // ---- UpstreamThrottle (429 answers from registries / security APIs, and the suspensions they
+    // trigger). host is one of the configured upstreams, or "other" to bound the cardinality. ----
+    public static final String UPSTREAM_THROTTLED_METRIC = "silicaproxy.upstream.throttled";
+    public static final String UPSTREAM_SUSPENDED_HOSTS_METRIC = "silicaproxy.upstream.suspended_hosts";
+    public static final String TAG_HOST = "host";
+    public static final String TAG_ORIGIN = "origin";
+    public static final String HOST_OTHER = "other";
+    // RESPONSE : the host answered 429 ; SUSPENDED : the call was not even sent.
+    public static final String OUTCOME_RESPONSE = "RESPONSE";
+    public static final String OUTCOME_SUSPENDED = "SUSPENDED";
+
     // ---- SslMitmService ----
     public static final String CA_CERT_EXPIRY_METRIC = "silicaproxy.ssl.mitm.ca.seconds_until_expiry";
 }

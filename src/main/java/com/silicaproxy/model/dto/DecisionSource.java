@@ -32,6 +32,8 @@ public enum DecisionSource {
     API_CACHE,
     REGISTRY_NOT_FOUND,
     REGISTRY_ERROR,
+    // An upstream needed for the decision is rate-limiting the proxy (429) : temporary, never cached.
+    UPSTREAM_THROTTLED,
     REGISTRY_DEPRECATION,
     REGISTRY_QUARANTINE,
     EXTERNAL_VALIDATION,

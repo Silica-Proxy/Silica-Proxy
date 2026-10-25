@@ -286,6 +286,24 @@ silicaproxy:
   response-identification:
     enabled: true
 
+  # 8d. Upstream rate limiting (HTTP 429 from a registry, OSV or deps.dev). The host is left
+  # alone until its Retry-After (or a backoff doubled on each new 429), always within
+  # [min, max] : relayed requests get a 429 with the remaining Retry-After, publish-date and
+  # vulnerability lookups are not sent. Per instance, in memory.
+  upstream-throttle:
+    # false = a 429 is handled like any other upstream failure (fail-open decides)
+    enabled: true
+    # A decision that needed a rate-limited host (publish date without cached date, OSV/deps.dev,
+    # deps.dev digest lookup) : FAIL_CLOSED = blocked (UPSTREAM_THROTTLED, answered 429 +
+    # Retry-After, never cached) ; FOLLOW_FAIL_OPEN = treated like an outage, fail-open decides.
+    # FAIL_CLOSED by default : unlike an outage, a 429 can be provoked to skip quarantine.
+    on-throttle: FAIL_CLOSED
+    # Suspension when the host sent no usable Retry-After, doubled on each consecutive 429
+    default-backoff-seconds: 30
+    min-backoff-seconds: 5
+    # Upper bound of any suspension, Retry-After included (15 min)
+    max-backoff-seconds: 900
+
   # 9. Application security (anti-SSRF protection on outgoing HTTP calls,
   # shared API key protection on internal admin/API endpoints)
   security:

@@ -71,7 +71,7 @@ class RegistryClientHttpsFallbackTest {
     }
 
     private RegistryClient clientWith(HttpsUpgradePolicy policy) {
-        return new RegistryClient(properties(), factory, passThrough, new JsonMapper(), policy);
+        return new RegistryClient(properties(), factory, passThrough, new JsonMapper(), policy, UpstreamThrottle.standalone());
     }
 
     private static SilicaProxyProperties properties() {

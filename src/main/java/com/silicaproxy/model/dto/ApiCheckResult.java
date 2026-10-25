@@ -20,6 +20,7 @@ package com.silicaproxy.model.dto;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -60,5 +61,18 @@ public record ApiCheckResult(
     // otherwise an API outage silently reads as "not vulnerable".
     public boolean isError() {
         return errorMessage != null;
+    }
+
+    /** Failed because the API is rate-limiting the proxy : it answered 429, or is suspended after one. */
+    public boolean isThrottled() {
+        return isError() && httpStatus == THROTTLED_STATUS;
+    }
+
+    public static final int THROTTLED_STATUS = 429;
+
+    /** The call was not sent : {@code host} answered 429 and is suspended until {@code until}. */
+    public static ApiCheckResult suspended(String host, Instant until) {
+        return new ApiCheckResult(false, 0, THROTTLED_STATUS, 0,
+                host + " is rate-limiting the proxy, calls suspended until " + until);
     }
 }

@@ -24,6 +24,7 @@ import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -66,16 +67,20 @@ public class RegistryClient {
     private final ObjectMapper objectMapper;
     // Applies the configured http-only-hosts exemptions to the intercepted-URL fallback.
     private final HttpsUpgradePolicy httpsUpgradePolicy;
+    // A registry that answered 429 is not asked again before its suspension ends.
+    private final UpstreamThrottle upstreamThrottle;
 
     public RegistryClient(
             SilicaProxyProperties properties,
             @Qualifier("registriesRequestFactory") ClientHttpRequestFactory registriesRequestFactory,
             com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
             ObjectMapper objectMapper,
-            HttpsUpgradePolicy httpsUpgradePolicy) {
+            HttpsUpgradePolicy httpsUpgradePolicy,
+            UpstreamThrottle upstreamThrottle) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.httpsUpgradePolicy = httpsUpgradePolicy;
+        this.upstreamThrottle = upstreamThrottle;
 
         this.restClient = RestClient.builder()
                 .requestFactory(registriesRequestFactory)
@@ -124,7 +129,8 @@ public class RegistryClient {
      * Looks {@code packageName@version} up on the configured public npm registry, telling a
      * registry that does not know the package/version (404, or no {@code time} entry for that
      * version : {@code NOT_FOUND}) apart from one that could not answer (other non-2xx status,
-     * network error, timeout, unparseable body : {@code UNAVAILABLE}). {@code SecurityService}
+     * network error, timeout, unparseable body : {@code UNAVAILABLE}), and from one that is
+     * rate-limiting the proxy (429, or suspended after one : {@code THROTTLED}). {@code SecurityService}
      * only falls back to the less trusted origin registry on {@code NOT_FOUND}.
      */
     @Timed(value = "silicaproxy.dao.registry.lookupnpmpublic",
@@ -133,18 +139,26 @@ public class RegistryClient {
     public RegistryLookup lookupNpmPublic(String packageName, String version) {
         String url = properties.registries().npmUrl() + "/" + packageName;
         try {
+            URI uri = URI.create(url);
+            if (isSuspended(uri)) {
+                return RegistryLookup.throttled();
+            }
             return restClient.get()
-                    .uri(URI.create(url))
+                    .uri(uri)
                     .header("Accept", "application/json")
                     .exchange((request, response) -> {
                         if (response.getStatusCode().value() == HttpStatus.NOT_FOUND.value()) {
                             return RegistryLookup.notFound();
+                        }
+                        if (response.getStatusCode().value() == HttpStatus.TOO_MANY_REQUESTS.value()) {
+                            return throttled(uri, response.getHeaders());
                         }
                         if (!response.getStatusCode().is2xxSuccessful()) {
                             LOG.warn("Public npm registry answered {} for {} (version {})",
                                     response.getStatusCode().value(), packageName, version);
                             return RegistryLookup.unavailable();
                         }
+                        upstreamThrottle.recordSuccess(uri);
                         try (InputStream body = response.getBody()) {
                             return parseNpmPackument(body, version)
                                     .map(RegistryLookup::found)
@@ -273,21 +287,29 @@ public class RegistryClient {
 
     /**
      * Looks {@code packageName@version} up on the PyPI JSON API. {@code NOT_FOUND} when PyPI
-     * answers 404 or the release is absent / has no file ; {@code UNAVAILABLE} on any other
-     * failure, including a response whose shape is not understood (so an API format change
-     * follows the fail-open policy instead of looking like "unknown version").
+     * answers 404 or the release is absent / has no file ; {@code THROTTLED} on a 429 or while
+     * PyPI is suspended after one ; {@code UNAVAILABLE} on any other failure, including a
+     * response whose shape is not understood (so an API format change follows the fail-open
+     * policy instead of looking like "unknown version").
      */
     @SuppressWarnings("unchecked")
     public RegistryLookup lookupPypi(String packageName, String version, String fullUrl) {
         String url = properties.registries().pypiUrl() + "/pypi/" + packageName + "/json";
+        @Nullable URI uri = UpstreamThrottle.parse(properties.registries().pypiUrl()).orElse(null);
+        if (isSuspended(uri)) {
+            return RegistryLookup.throttled();
+        }
         try {
             Map<String, Object> response = restClient.get()
                     .uri(url)
                     .retrieve()
                     .body(Map.class);
+            recordSuccess(uri);
             return parsePypiRelease(response, version, fullUrl);
         } catch (HttpClientErrorException.NotFound e) {
             return RegistryLookup.notFound();
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            return throttled(uri, e.getResponseHeaders());
         } catch (Exception e) {
             LOG.warn("Error while retrieving PyPI metadata for {} ({}) : {}", packageName, version, e.getMessage());
             if (LOG.isDebugEnabled()) {
@@ -343,7 +365,9 @@ public class RegistryClient {
     /**
      * Resolves the publish date of a Maven artifact from the {@code Last-Modified} header of its
      * version directory on Maven Central, falling back to the URL the client actually requested.
-     * {@code NOT_FOUND} only when every attempted URL answered 404.
+     * {@code NOT_FOUND} only when every attempted URL answered 404 ; {@code THROTTLED} when no
+     * URL dated the artifact and one of them was rate-limiting the proxy. The fallback is not
+     * sent when its host is suspended -- most often the very Maven Central that answered 429.
      */
     public RegistryLookup lookupMaven(String packageName, String version, String fullUrl) {
         String[] parts = packageName.split(":");
@@ -370,15 +394,25 @@ public class RegistryClient {
         }
         boolean bothNotFound = central.status() == RegistryLookup.Status.NOT_FOUND
                 && intercepted.status() == RegistryLookup.Status.NOT_FOUND;
-        return bothNotFound ? RegistryLookup.notFound() : RegistryLookup.unavailable();
+        if (bothNotFound) {
+            return RegistryLookup.notFound();
+        }
+        boolean anyThrottled = central.status() == RegistryLookup.Status.THROTTLED
+                || intercepted.status() == RegistryLookup.Status.THROTTLED;
+        return anyThrottled ? RegistryLookup.throttled() : RegistryLookup.unavailable();
     }
 
     private RegistryLookup headLastModified(String url) {
+        @Nullable URI uri = UpstreamThrottle.parse(url).orElse(null);
+        if (isSuspended(uri)) {
+            return RegistryLookup.throttled();
+        }
         try {
             ResponseEntity<Void> response = restClient.head()
                     .uri(url)
                     .retrieve()
                     .toBodilessEntity();
+            recordSuccess(uri);
 
             String lastModifiedHeader = response.getHeaders().getFirst("Last-Modified");
             if (lastModifiedHeader == null) {
@@ -389,9 +423,35 @@ public class RegistryClient {
             return RegistryLookup.found(new PackageMetadataResult(zdt.toInstant(), false, null));
         } catch (HttpClientErrorException.NotFound e) {
             return RegistryLookup.notFound();
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            return throttled(uri, e.getResponseHeaders());
         } catch (Exception e) {
             LOG.debug("HEAD request failed for {} : {}", url, e.getMessage());
             return RegistryLookup.unavailable();
         }
+    }
+
+    private void recordSuccess(@Nullable URI uri) {
+        if (uri != null) {
+            upstreamThrottle.recordSuccess(uri);
+        }
+    }
+
+    // The call is not sent : the host answered 429 and its suspension is not over.
+    private boolean isSuspended(@Nullable URI uri) {
+        if (uri == null || upstreamThrottle.suspendedUntil(uri).isEmpty()) {
+            return false;
+        }
+        upstreamThrottle.recordSkipped(uri, UpstreamThrottle.Origin.REGISTRY);
+        return true;
+    }
+
+    private RegistryLookup throttled(@Nullable URI uri, @Nullable HttpHeaders headers) {
+        if (uri == null) {
+            return RegistryLookup.throttled();
+        }
+        upstreamThrottle.recordThrottled(uri, headers == null ? null : headers.getFirst(HttpHeaders.RETRY_AFTER),
+                UpstreamThrottle.Origin.REGISTRY);
+        return RegistryLookup.throttled();
     }
 }

@@ -150,6 +150,27 @@ Neither verdict is cached : the next request re-evaluates the package. The `REGI
 in particular is **never cached**, even when every external validation service allowed the
 package : caching it would skip the quarantine check for the whole TTL once the registry recovers.
 
+#### Upstream rate limiting (HTTP 429)
+
+A rate limit is not handled like an outage : whoever can send enough requests through the proxy
+can provoke one, and following `fail-open` would then let a freshly published version skip the
+quarantine — for good, since the artifacts repository in front keeps it in its cache.
+
+- **The host is left alone.** After a 429 from a registry, OSV or deps.dev, no call is sent to that
+  host until its `Retry-After` (seconds or HTTP date), or a backoff doubled on each new 429 when it
+  sent none — always within `[min-backoff-seconds, max-backoff-seconds]` (5 s – 15 min by
+  default). Meanwhile, relayed requests to it get a `429` with the remaining `Retry-After`, and
+  Maven's second publish-date lookup (on the requested URL) is skipped when it targets the same
+  host. Per instance, in memory ; the first 2xx after a suspension resets the backoff.
+- **The decision fails closed** with `upstream-throttle.on-throttle: FAIL_CLOSED` (default) : a
+  publish date that only a rate-limited registry could give (no cached date), an OSV/deps.dev check
+  that only failed on 429, or a deps.dev digest lookup that did, block with `step: UPSTREAM_THROTTLED`
+  — answered **`429` with `Retry-After` and `Cache-Control: no-store`** rather than 403, so the
+  artifacts repository retries later instead of remembering the artifact as forbidden. This verdict
+  is never cached. A cached publish date still lets the quarantine decide normally.
+  `FOLLOW_FAIL_OPEN` restores the previous behaviour (each source's `fail-open` decides). Only 429
+  counts : a 5xx, a timeout or a network error still follows `fail-open`.
+
 ### 1. Company policies — GitOps sync every 10 minutes (Priority 1)
 
 Internal allow/block rules are read from a Git repository containing one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`). The scheduler pulls changes every 10 minutes and synchronises the `company_policies` table. These rules have the **highest priority** in the decision pipeline and always override external vulnerability data.
@@ -570,6 +591,11 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.npm-packument-index.max-decoded-bytes` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_DECODED_BYTES`               | `134217728` | Same cap on the decompressed body (gzip bomb guard) |
 | | `silicaproxy.npm-packument-index.max-concurrent-indexing` | `SILICAPROXY_NPM_PACKUMENT_INDEX_MAX_CONCURRENT_INDEXING`         | `16` | Packuments indexed at once ; beyond, relayed without indexing |
 | | `silicaproxy.npm-packument-index.unidentified-tarball-action` | `SILICAPROXY_NPM_PACKUMENT_INDEX_UNIDENTIFIED_TARBALL_ACTION`     | `ALLOW` | npm `.tgz` identified neither by URL nor by index : `ALLOW` = relayed unchecked, `BLOCK` = 403 (`UNIDENTIFIED_ARTIFACT`) |
+| **Upstream rate limiting** | `silicaproxy.upstream-throttle.enabled` | `SILICAPROXY_UPSTREAM_THROTTLE_ENABLED` | `true` | Suspend calls to a host that answered 429 ([details](#upstream-rate-limiting-http-429)). `false` = a 429 is handled like any other upstream failure |
+| | `silicaproxy.upstream-throttle.on-throttle` | `SILICAPROXY_UPSTREAM_THROTTLE_ON_THROTTLE` | `FAIL_CLOSED` | Decision that needed a rate-limited host : `FAIL_CLOSED` = blocked (`UPSTREAM_THROTTLED`, answered 429 + `Retry-After`, never cached), `FOLLOW_FAIL_OPEN` = treated like an outage |
+| | `silicaproxy.upstream-throttle.default-backoff-seconds` | `SILICAPROXY_UPSTREAM_THROTTLE_DEFAULT_BACKOFF_SECONDS` | `30` | Suspension when the host sent no usable `Retry-After`, doubled on each consecutive 429 |
+| | `silicaproxy.upstream-throttle.min-backoff-seconds` | `SILICAPROXY_UPSTREAM_THROTTLE_MIN_BACKOFF_SECONDS` | `5` | Lower bound of a suspension |
+| | `silicaproxy.upstream-throttle.max-backoff-seconds` | `SILICAPROXY_UPSTREAM_THROTTLE_MAX_BACKOFF_SECONDS` | `900` | Upper bound of a suspension, `Retry-After` included |
 | **Response identification** | `silicaproxy.response-identification.enabled` | `SILICAPROXY_RESPONSE_IDENTIFICATION_ENABLED`                     | `true` | Identify unidentified downloads from the digest the upstream announces, via `file_digest_index` then deps.dev ([details](PACKAGE_IDENTIFICATION.md#identification-from-the-upstream-response)). `false` turns the feature off entirely |
 | **Corporate proxy** | `silicaproxy.corporate-proxy.enabled` | `SILICAPROXY_CORPORATE_PROXY_ENABLED`                             | `false` | Route outbound traffic through a corporate proxy |
 | | `silicaproxy.corporate-proxy.host` | `SILICAPROXY_CORPORATE_PROXY_HOST`                                | — | |
@@ -879,6 +905,7 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `OSV_LIVE` | Google OSV live API — first fallback |
 | `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
 | `API_FALLBACK_ERROR` | Every enabled live API fallback source failed — verdict decided by [`fail-open`](#what-fail-open--fail-closed-means), never cached |
+| `UPSTREAM_THROTTLED` | A registry, OSV or deps.dev needed for the decision is rate-limiting the proxy (429), with `upstream-throttle.on-throttle: FAIL_CLOSED` — answered **429** with `Retry-After` (not 403), never cached ([details](#upstream-rate-limiting-http-429)) |
 
 ---
 
@@ -1013,7 +1040,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 
 | Metric | Type | Tags | Description |
 |---|---|---|---|
-| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
+| `silicaproxy.controller.decisions` | Counter | `verdict` (`ALLOW`/`BLOCK`), `source` (`COMPANY_POLICY`, `PUBLIC_VULN`, `PUBLIC_VULN_MALWARE`, `API_CACHE`, `REGISTRY_QUARANTINE`, `REGISTRY_DEPRECATION`, `REGISTRY_ERROR`, `UPSTREAM_THROTTLED`, `REGISTRY_NOT_FOUND`, `UNIDENTIFIED_ARTIFACT`, `EXTERNAL_VALIDATION`, `OSV_LIVE`, `DEPS_DEV`, `DEFAULT`), `ecosystem` | Every finalized proxy decision. Sum for total analyses; filter by `verdict` for allow/block counts; filter by `source` for the reason breakdown. |
 | `silicaproxy.controller.security.bypass` | Counter | `ecosystem` | Requests that skipped `SecurityService` entirely. With a known `ecosystem`, this is expected metadata/index traffic (packuments, simple index, `maven-metadata.xml`…) ; `ecosystem="unknown"` is the proxy's security blind spot and should stay at 0. |
 | `silicaproxy.identification.response` | Counter | `outcome` (`identified_from_database`/`identified`/`not_found`/`ambiguous`/`unavailable`/`skipped`) | Identification attempts from the upstream response digest ([details](PACKAGE_IDENTIFICATION.md#identification-from-the-upstream-response)). `identified_from_database` : found in `file_digest_index`, no deps.dev call ; `identified` : found by deps.dev (then stored) ; `skipped` : not a package file or no usable digest announced. |
 | `silicaproxy.identification.checksum.mismatch` | Counter | `ecosystem` | Downloads identified from their announced digest whose body did not match it — the download was cut. Any increase deserves an investigation of the upstream. |
@@ -1026,6 +1053,13 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 |---|---|---|---|
 | `silicaproxy.quarantine.publish_date.lookups` | Counter | `ecosystem`, `source` (`PUBLIC_REGISTRY`/`ORIGIN_REGISTRY`/`LOCAL_CACHE`/`LOCAL_CACHE_NO_LOOKUP`/`UNRESOLVED`) | Where the publication date used by the quarantine check came from. `ORIGIN_REGISTRY` (npm only) means the public registry did not know the version and the registry the client resolved against was trusted instead ; `LOCAL_CACHE` means the registry could not answer but the date was already known ; `LOCAL_CACHE_NO_LOOKUP` means the registry was not queried at all, the cached date being enough (still quarantined, or no deprecation check for the ecosystem). |
 | `silicaproxy.quarantine.publish_date.unresolved` | Counter | `ecosystem`, `verdict` (`ALLOW`/`BLOCK`) | Packages whose publication date could not be resolved, with the verdict applied by `silicaproxy.quarantine.fail-open`. With the default fail-open, each `ALLOW` is a package that **skipped the quarantine** : alert on it, e.g. `increase(silicaproxy_quarantine_publish_date_unresolved_total{verdict="ALLOW"}[1h]) > 0`. |
+
+**Upstream rate limiting**
+
+| Metric | Type | Tags | Description |
+|---|---|---|---|
+| `silicaproxy.upstream.throttled` | Counter | `host` (a configured registry / security API host, or `other`), `origin` (`RELAY`/`REGISTRY`/`SECURITY_API`), `outcome` (`RESPONSE`/`SUSPENDED`) | `RESPONSE` : the host answered 429 ; `SUSPENDED` : the call was not sent because the host is still suspended. |
+| `silicaproxy.upstream.suspended_hosts` | Gauge | — | Hosts currently left alone after a 429. Alert when it stays above 0, e.g. `max_over_time(silicaproxy_upstream_suspended_hosts[5m]) > 0`. |
 
 **External vulnerability APIs (OSV live fallback, deps.dev)**
 

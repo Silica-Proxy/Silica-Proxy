@@ -28,14 +28,18 @@ import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
+import org.springframework.http.HttpHeaders;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
+import java.net.URI;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Queries the public Google OSV API (POST {@code /v1/query}) for a package/version missing 
@@ -52,14 +56,18 @@ public class OsvClient {
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
     private final AdvisorySeverityScorer severityScorer;
+    // OSV is not called again before the suspension that followed its 429 is over.
+    private final UpstreamThrottle upstreamThrottle;
 
     public OsvClient(
             SilicaProxyProperties properties,
             @Qualifier("securityApisRequestFactory") ClientHttpRequestFactory securityApisRequestFactory,
             com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
-            AdvisorySeverityScorer severityScorer) {
+            AdvisorySeverityScorer severityScorer,
+            UpstreamThrottle upstreamThrottle) {
         this.properties = properties;
         this.severityScorer = severityScorer;
+        this.upstreamThrottle = upstreamThrottle;
 
         this.restClient = RestClient.builder()
                 .requestFactory(securityApisRequestFactory)
@@ -82,6 +90,13 @@ public class OsvClient {
             "version", version
         );
 
+        Optional<URI> host = UpstreamThrottle.parse(url);
+        Optional<Instant> suspendedUntil = host.flatMap(upstreamThrottle::suspendedUntil);
+        if (host.isPresent() && suspendedUntil.isPresent()) {
+            upstreamThrottle.recordSkipped(host.get(), UpstreamThrottle.Origin.SECURITY_API);
+            return ApiCheckResult.suspended("OSV", suspendedUntil.get());
+        }
+
         long start = System.nanoTime();
         try {
             JsonNode response = restClient.post()
@@ -91,6 +106,7 @@ public class OsvClient {
                     .body(JsonNode.class);
 
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
+            host.ifPresent(upstreamThrottle::recordSuccess);
             if (response == null) {
                 return new ApiCheckResult(false, 0, 200, responseTimeMs, null);
             }
@@ -109,6 +125,12 @@ public class OsvClient {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from OSV API for {}/{} ({})", e.getStatusCode().value(),
                     ecosystem, packageName, version);
+            if (e.getStatusCode().value() == ApiCheckResult.THROTTLED_STATUS) {
+                HttpHeaders headers = e.getResponseHeaders();
+                host.ifPresent(uri -> upstreamThrottle.recordThrottled(uri,
+                        headers == null ? null : headers.getFirst(HttpHeaders.RETRY_AFTER),
+                        UpstreamThrottle.Origin.SECURITY_API));
+            }
             return new ApiCheckResult(false, 0, e.getStatusCode().value(), responseTimeMs, e.getMessage());
         } catch (Exception e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;

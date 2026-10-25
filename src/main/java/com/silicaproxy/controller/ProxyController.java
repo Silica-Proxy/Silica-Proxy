@@ -18,6 +18,7 @@
 package com.silicaproxy.controller;
 
 import com.silicaproxy.dao.client.ProxyStreamClient;
+import com.silicaproxy.dao.client.UpstreamThrottle;
 import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
@@ -34,6 +35,7 @@ import com.silicaproxy.service.interception.ClientIdentityResolver;
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.interception.ResponseIdentificationService;
 import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
+import com.silicaproxy.service.interception.ResponseIdentificationService.ThrottledException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.jspecify.annotations.NullMarked;
@@ -62,7 +64,8 @@ import java.util.Enumeration;
  * has {@link PackageIdentificationService} identify the package/version/ecosystem, queries
  * {@link SecurityService} for the decision, 
  * then either streams the download (ALLOW) or returns a detailed 403 RFC 7807 
- * response (BLOCK). Called at each dependency resolution by package managers 
+ * response (BLOCK) -- a 429 with {@code Retry-After} when the block only means that an upstream
+ * needed for the decision is rate-limiting the proxy. Called at each dependency resolution by package managers 
  * (npm, pip, Maven) ; each call also triggers an asynchronous audit. A request its URL does not
  * identify gets a last chance from the upstream response ({@link ResponseIdentificationService}),
  * before its body is relayed.
@@ -88,6 +91,8 @@ public class ProxyController {
     private final ObjectMapper objectMapper;
     // Who sent the request, recorded in the audit log.
     private final ClientIdentityResolver clientIdentityResolver;
+    // Tells the client when to retry a request blocked because an upstream is rate-limiting the proxy.
+    private final UpstreamThrottle upstreamThrottle;
 
     public ProxyController(
             SecurityService securityService,
@@ -100,7 +105,8 @@ public class ProxyController {
             ProxyControllerMetrics metrics,
             ObjectMapper objectMapper) {
         this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
-                httpsUpgradePolicy, responseIdentification, metrics, objectMapper, ClientIdentityResolver.untrusting());
+                httpsUpgradePolicy, responseIdentification, metrics, objectMapper, ClientIdentityResolver.untrusting(),
+                UpstreamThrottle.standalone());
     }
 
     @Autowired
@@ -114,7 +120,8 @@ public class ProxyController {
             ResponseIdentificationService responseIdentification,
             ProxyControllerMetrics metrics,
             ObjectMapper objectMapper,
-            ClientIdentityResolver clientIdentityResolver) {
+            ClientIdentityResolver clientIdentityResolver,
+            UpstreamThrottle upstreamThrottle) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -125,6 +132,7 @@ public class ProxyController {
         this.metrics = metrics;
         this.objectMapper = objectMapper;
         this.clientIdentityResolver = clientIdentityResolver;
+        this.upstreamThrottle = upstreamThrottle;
     }
 
     @GetMapping("/**")
@@ -199,7 +207,8 @@ public class ProxyController {
     }
 
     /**
-     * Records, audits and, when blocked, answers the 403 for a decision on {@code pkg}.
+     * Records, audits and, when blocked, answers the 403 (or the 429 of an {@code UPSTREAM_THROTTLED}
+     * block) for a decision on {@code pkg}.
      *
      * @return whether the request was blocked (the response is then already written)
      */
@@ -263,6 +272,11 @@ public class ProxyController {
             }
             copyStatusAndHeaders(streamResponse, response);
             ChecksumVerifyingRelay.relay(streamResponse.body(), response.getOutputStream(), found.get().digest());
+        } catch (ThrottledException e) {
+            // deps.dev could not identify the file because it is rate-limiting the proxy (on-throttle
+            // FAIL_CLOSED) : blocked like any decision, the upstream body is dropped unread.
+            applyDecision(DecisionResult.block(DecisionSource.UPSTREAM_THROTTLED, e.getMessage()),
+                    identification.pkg(), fullUrl, client, startTime, response);
         } catch (ChecksumMismatchException e) {
             LOG.error("Upstream body digest does not match the announced one, download aborted for {} : {}",
                     forwardUrl, e.getMessage());
@@ -388,7 +402,16 @@ public class ProxyController {
             String version,
             String ecosystem,
             DecisionResult decision) throws IOException {
-        response.setStatus(HttpStatus.FORBIDDEN.value());
+        // A block that only means "an upstream is rate-limiting the proxy" : 429 rather than 403, so
+        // the artifacts repository retries later instead of remembering the artifact as forbidden
+        // or missing ; never stored by any cache on the way.
+        boolean throttled = decision.sourceType() == DecisionSource.UPSTREAM_THROTTLED;
+        HttpStatus status = throttled ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.FORBIDDEN;
+        response.setStatus(status.value());
+        if (throttled) {
+            response.setHeader(HttpHeaders.RETRY_AFTER, Long.toString(upstreamThrottle.retryAfterSeconds()));
+            response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        }
         response.setContentType("application/problem+json");
         response.setCharacterEncoding("UTF-8");
 
@@ -402,16 +425,19 @@ public class ProxyController {
         // servlet response, regardless of declared Content-Type.
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", "about:blank");
-        body.put("title", HttpStatus.FORBIDDEN.getReasonPhrase());
-        body.put("status", HttpStatus.FORBIDDEN.value());
+        body.put("title", status.getReasonPhrase());
+        body.put("status", status.value());
         body.put("detail", decision.reason());
         body.put("instance", "");
         body.put("step", decision.sourceType().name());
         body.put("package", packageName);
         body.put("version", version);
         body.put("ecosystem", ecosystem);
-        body.put("error", decision.sourceType() == DecisionSource.REGISTRY_QUARANTINE
-                ? "QuarantineBlocked" : "SecurityBlocked");
+        body.put("error", switch (decision.sourceType()) {
+            case REGISTRY_QUARANTINE -> "QuarantineBlocked";
+            case UPSTREAM_THROTTLED -> "UpstreamThrottled";
+            default -> "SecurityBlocked";
+        });
 
         objectMapper.writeValue(response.getOutputStream(), body);
         response.getOutputStream().flush();
