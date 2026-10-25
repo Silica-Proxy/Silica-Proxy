@@ -56,7 +56,7 @@ final class PypiUploadTimes {
         return Optional.empty();
     }
 
-    private static Optional<Instant> latestUploadTime(List<Map<String, Object>> files) {
+    static Optional<Instant> latestUploadTime(List<Map<String, Object>> files) {
         Optional<Instant> latest = Optional.empty();
         for (Map<String, Object> file : files) {
             Optional<Instant> uploadTime = uploadTimeOf(file);

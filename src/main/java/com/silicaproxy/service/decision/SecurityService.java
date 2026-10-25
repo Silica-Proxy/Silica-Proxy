@@ -101,8 +101,11 @@ public class SecurityService {
             return decisionOpt.get();
         }
 
-        // 3. New Package / Missing from local database
-        RegistryLookup resolution = resolvePackageMetadata(packageName, version, ecosystem, fullUrl);
+        // 3. New Package / Missing from local database. One "now" for every quarantine check
+        // below : a cached publish date only stands in for the registry while still quarantined,
+        // which must agree with the quarantine verdict itself.
+        Instant now = Instant.now();
+        RegistryLookup resolution = resolvePackageMetadata(packageName, version, ecosystem, fullUrl, now);
         Optional<PackageMetadataResult> metadataOpt = resolution.metadata();
         if (metadataOpt.isEmpty()) {
             return unresolvedPublishDateVerdict(packageName, version, ecosystem, fullUrl, resolution.status());
@@ -110,10 +113,15 @@ public class SecurityService {
         PackageMetadataResult metadata = metadataOpt.get();
 
         Optional<DecisionResult> gatedVerdict =
-                checkDeprecationAndQuarantine(packageName, version, ecosystem, metadata);
+                checkDeprecationAndQuarantine(packageName, version, ecosystem, metadata, now);
         if (gatedVerdict.isPresent()) {
             return gatedVerdict.get();
         }
+
+        // api_cache holds one verdict per version, but a PyPI release may hold a file younger
+        // than the requested one : while that file is quarantined, no ALLOW is cached, otherwise
+        // it would serve that file without the quarantine check.
+        boolean youngerFileQuarantined = isQuarantined(ecosystem, metadata.latestPublishedAt(), now);
 
         // External validation services (before OSV/deps.dev). Only a BLOCK short-circuits the
         // chain : an ALLOW may be a fail-open timeout, a pending async scan or a non-blocking
@@ -121,7 +129,8 @@ public class SecurityService {
         Optional<ExternalValidationOutcome> extResult =
                 externalValidationService.checkExternalServices(packageName, version, ecosystem, fullUrl);
         if (extResult.isEmpty()) {
-            return runFallbackChain(packageName, version, ecosystem, AllowCaching.FALLBACK_SOURCE);
+            return runFallbackChain(packageName, version, ecosystem,
+                    youngerFileQuarantined ? AllowCaching.NONE : AllowCaching.FALLBACK_SOURCE);
         }
         ExternalValidationOutcome outcome = extResult.get();
         if (outcome.decision().isBlocked()) {
@@ -133,7 +142,7 @@ public class SecurityService {
         // allowed the package (never on a pending scan or a fail-open error), and never outlives
         // the earliest of their ALLOWs. A later async BLOCKED callback deletes it.
         Instant cacheableUntil = outcome.allowCacheableUntil();
-        AllowCaching allowCaching = cacheableUntil != null
+        AllowCaching allowCaching = cacheableUntil != null && !youngerFileQuarantined
                 ? AllowCaching.externalValidationChain(cacheableUntil)
                 : AllowCaching.NONE;
         return runFallbackChain(packageName, version, ecosystem, allowCaching);
@@ -157,15 +166,20 @@ public class SecurityService {
     }
 
     // Deprecation/yanked status is never persisted (unlike published_at): it must stay fresh, so
-    // the registry is consulted here every time regardless of whether the publish date is
-    // already cached. Reaching this code already means the SQL evaluation above found no cached
-    // verdict in api_cache, so in practice this only happens once per api_cache TTL window (24h
-    // for an ALLOW, effectively never again once a BLOCK is cached) -- not on every request for
-    // the package. Carries no metadata only when no source could date the version AND no local
+    // the registry is consulted here even when the publish date is already cached, unless that
+    // status can't change the verdict (see resolveFromCachedPublishDate). Reaching this code
+    // already means the SQL evaluation above found no cached verdict in api_cache, so in
+    // practice this only happens once per api_cache TTL window (24h for an ALLOW, effectively
+    // never again once a BLOCK is cached) -- not on every request for the package. Carries no metadata only when no source could date the version AND no local
     // publish date is cached ; its status then tells "unknown version" (NOT_FOUND) from "registry
     // could not answer" (UNAVAILABLE) for the caller's fail-open/fail-closed decision.
     private RegistryLookup resolvePackageMetadata(
-            String packageName, String version, String ecosystem, String fullUrl) {
+            String packageName, String version, String ecosystem, String fullUrl, Instant now) {
+        Optional<RegistryLookup> cachedLookup = resolveFromCachedPublishDate(packageName, version, ecosystem, now);
+        if (cachedLookup.isPresent()) {
+            metrics.recordPublishDateLookup(ecosystem, Metrics.DATE_SOURCE_LOCAL_CACHE_NO_LOOKUP);
+            return cachedLookup.get();
+        }
         RegistryLookup lookup;
         String dateSource = Metrics.DATE_SOURCE_PUBLIC_REGISTRY;
         if ("npm".equals(ecosystem)) {
@@ -195,13 +209,32 @@ public class SecurityService {
         // Registry temporarily unreachable but this package/version's publish date is already
         // known: keep quarantine working off the cached date rather than failing the whole
         // request over a transient registry hiccup for an already-vetted package. Deprecation
-        // status is unknown this round and left at its default (not deprecated).
-        Optional<PackageMetadataResult> cachedMetaOpt =
-                caches.metadataCacheDao().getPackagePublishedAt(packageName, ecosystem, version)
+        // status is unknown this round and left at its default (not deprecated). Not for PyPI : a
+        // still-quarantined cached date never gets here (blocked by resolveFromCachedPublishDate
+        // without a lookup), and any other one proves nothing for the requested file, so the
+        // fail-open/fail-closed policy decides.
+        Optional<PackageMetadataResult> cachedMetaOpt = hasPerFilePublishDates(ecosystem)
+                ? Optional.empty()
+                : caches.metadataCacheDao().getPackagePublishedAt(packageName, ecosystem, version)
                         .map(publishedAt -> new PackageMetadataResult(publishedAt, false, null));
         metrics.recordPublishDateLookup(ecosystem,
                 cachedMetaOpt.isPresent() ? Metrics.DATE_SOURCE_LOCAL_CACHE : Metrics.DATE_SOURCE_UNRESOLVED);
         return cachedMetaOpt.map(RegistryLookup::found).orElse(lookup);
+    }
+
+    // Once the publish date is cached, the registry is only needed for the deprecation status,
+    // so it is skipped when that status can't change the verdict : deprecation filtering is off
+    // for the ecosystem (Maven), or the version is still quarantined -- blocked either way, the
+    // registry is consulted again once the quarantine is over. PyPI dates the requested file,
+    // and the cached date may be another file's : a quarantined one still means the release
+    // holds a fresh file, so it blocks (an older file of that release may then be blocked until
+    // the fresh one leaves quarantine) ; any other cached date proves nothing for this file.
+    private Optional<RegistryLookup> resolveFromCachedPublishDate(
+            String packageName, String version, String ecosystem, Instant now) {
+        return caches.metadataCacheDao().getPackagePublishedAt(packageName, ecosystem, version)
+                .filter(publishedAt -> isQuarantined(ecosystem, publishedAt, now)
+                        || (!hasPerFilePublishDates(ecosystem) && !isDeprecationFilteringEnabled(ecosystem)))
+                .map(publishedAt -> RegistryLookup.found(new PackageMetadataResult(publishedAt, false, null)));
     }
 
     // The packument the client just resolved from is authoritative for that registry, and for a
@@ -264,7 +297,7 @@ public class SecurityService {
     }
 
     private Optional<DecisionResult> checkDeprecationAndQuarantine(
-            String packageName, String version, String ecosystem, PackageMetadataResult metadata) {
+            String packageName, String version, String ecosystem, PackageMetadataResult metadata, Instant now) {
         if (isDeprecationFilteringEnabled(ecosystem) && metadata.isDeprecated()) {
             String reason = metadata.deprecationReason() != null
                     ? metadata.deprecationReason() : "The package is deprecated or removed (yanked).";
@@ -275,17 +308,14 @@ public class SecurityService {
             return Optional.of(DecisionResult.block(DecisionSource.REGISTRY_DEPRECATION, reason));
         }
 
-        OptionalInt quarantineDays = quarantineMinAgeDays(ecosystem);
-        if (quarantineDays.isPresent()) {
-            int minAgeDays = quarantineDays.getAsInt();
-            long ageInDays = ChronoUnit.DAYS.between(metadata.publishedAt(), Instant.now());
-            if (ageInDays < minAgeDays) {
-                String reason = String.format(
-                        "Package %s version %s was published %d days ago"
-                        + " (required threshold: %d days). Temporarily blocked by anti-typosquatting quarantine.",
-                        packageName, version, ageInDays, minAgeDays);
-                return Optional.of(DecisionResult.block(DecisionSource.REGISTRY_QUARANTINE, reason));
-            }
+        if (isQuarantined(ecosystem, metadata.publishedAt(), now)) {
+            int minAgeDays = quarantineMinAgeDays(ecosystem).orElseThrow();
+            long ageInDays = ChronoUnit.DAYS.between(metadata.publishedAt(), now);
+            String reason = String.format(
+                    "Package %s version %s was published %d days ago"
+                    + " (required threshold: %d days). Temporarily blocked by anti-typosquatting quarantine.",
+                    packageName, version, ageInDays, minAgeDays);
+            return Optional.of(DecisionResult.block(DecisionSource.REGISTRY_QUARANTINE, reason));
         }
 
         return Optional.empty();
@@ -421,6 +451,18 @@ public class SecurityService {
             return OptionalInt.of(quarantine.defaultMinAgeDays());
         }
         return ecoProps.enabled() ? OptionalInt.of(ecoProps.minAgeDays()) : OptionalInt.empty();
+    }
+
+    private boolean isQuarantined(String ecosystem, Instant publishedAt, Instant now) {
+        OptionalInt quarantineDays = quarantineMinAgeDays(ecosystem);
+        return quarantineDays.isPresent()
+                && now.isBefore(publishedAt.plus(quarantineDays.getAsInt(), ChronoUnit.DAYS));
+    }
+
+    // PyPI dates each file of a release : package_metadata's single per-version date is that of
+    // whichever file was resolved first, not necessarily the requested one.
+    private static boolean hasPerFilePublishDates(String ecosystem) {
+        return "pypi".equals(lower(ecosystem));
     }
 
     private static String lower(String ecosystem) {

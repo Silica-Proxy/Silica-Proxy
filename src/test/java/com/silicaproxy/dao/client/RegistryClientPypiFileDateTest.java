@@ -84,6 +84,8 @@ class RegistryClientPypiFileDateTest extends BaseIntegrationTest {
 
         assertThat(result).isPresent();
         assertThat(result.get().publishedAt()).isEqualTo(Instant.parse("2020-03-19T10:00:00Z"));
+        // the release's most recent file, which bounds api_cache for the whole version
+        assertThat(result.get().latestPublishedAt()).isEqualTo(Instant.parse("2020-11-19T17:00:00Z"));
     }
 
     @Test

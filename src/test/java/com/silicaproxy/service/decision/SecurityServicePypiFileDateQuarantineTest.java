@@ -26,11 +26,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.TestPropertySource;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,5 +91,69 @@ class SecurityServicePypiFileDateQuarantineTest extends BaseIntegrationTest {
 
         assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
         assertThat(decision.sourceType()).isNotEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+    }
+
+    @Test
+    void shouldQuarantineAFreshWheelEvenAfterTheOldSdistOfTheSameReleaseWasAllowed() {
+        String sdistUrl = "https://files.pythonhosted.org/packages/ab/cd/late_wheel_pkg-1.0.0.tar.gz";
+        String wheelUrl = "https://files.pythonhosted.org/packages/ab/cd/late_wheel_pkg-1.0.0-py3-none-any.whl";
+
+        DecisionResult sdist = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", sdistUrl);
+        DecisionResult wheel = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", wheelUrl);
+
+        assertThat(sdist.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(wheel.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(wheel.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+    }
+
+    @Test
+    void shouldQuarantineOffAStillQuarantinedCachedPublishDateWithoutCallingPypi() {
+        // The release holds a fresh file : blocked without a lookup, even for its old sdist
+        // (the accepted false positive, until the fresh file leaves quarantine). With no lookup,
+        // a PyPI error ("too many concurrent streams" under load) can't hand it to fail-open.
+        cachePublishedAt("late-wheel-pkg", Instant.now().minus(1, ChronoUnit.DAYS));
+        String sdistUrl = "https://files.pythonhosted.org/packages/ab/cd/late_wheel_pkg-1.0.0.tar.gz";
+
+        DecisionResult decision = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", sdistUrl);
+
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        wireMock.verify(0, getRequestedFor(urlEqualTo("/pypi/late-wheel-pkg/json")));
+    }
+
+    @Test
+    void shouldAskPypiWhenTheCachedPublishDateIsPastQuarantine() {
+        // The cached date was the old sdist's : it says nothing about the fresh wheel requested now.
+        cachePublishedAt("late-wheel-pkg", Instant.now().minus(730, ChronoUnit.DAYS));
+        String wheelUrl = "https://files.pythonhosted.org/packages/ab/cd/late_wheel_pkg-1.0.0-py3-none-any.whl";
+
+        DecisionResult decision = securityService.getDecision("late-wheel-pkg", "1.0.0", "pypi", wheelUrl);
+
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        wireMock.verify(1, getRequestedFor(urlEqualTo("/pypi/late-wheel-pkg/json")));
+    }
+
+    @Test
+    void shouldNotDateAFileOffTheCachedPublishDateWhilePypiIsDown() {
+        // The cached date was the old sdist's : standing in for a fresh wheel during the outage,
+        // it would pass the quarantine check and cache an ALLOW for the whole release.
+        cachePublishedAt("pypi-down-pkg", Instant.now().minus(730, ChronoUnit.DAYS));
+        wireMock.stubFor(get(urlEqualTo("/pypi/pypi-down-pkg/json")).willReturn(aResponse().withStatus(500)));
+        String wheelUrl = "https://files.pythonhosted.org/packages/ab/cd/pypi_down_pkg-1.0.0-py3-none-any.whl";
+
+        DecisionResult decision = securityService.getDecision("pypi-down-pkg", "1.0.0", "pypi", wheelUrl);
+
+        // fail-open in the test profile : allowed, but never cached
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(jdbcClient.sql("SELECT COUNT(*) FROM api_cache WHERE package_name = 'pypi-down-pkg'")
+                .query(Long.class).single()).isZero();
+    }
+
+    private void cachePublishedAt(String packageName, Instant publishedAt) {
+        jdbcClient.sql("""
+                INSERT INTO package_metadata (package_name, ecosystem, package_version, published_at)
+                VALUES (?, 'pypi', '1.0.0', ?)
+                """).params(packageName, Timestamp.from(publishedAt)).update();
     }
 }

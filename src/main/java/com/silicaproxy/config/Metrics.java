@@ -61,6 +61,7 @@ public final class Metrics {
     public static final String DATE_SOURCE_PUBLIC_REGISTRY = "PUBLIC_REGISTRY";
     public static final String DATE_SOURCE_ORIGIN_REGISTRY = "ORIGIN_REGISTRY";
     public static final String DATE_SOURCE_LOCAL_CACHE = "LOCAL_CACHE";
+    public static final String DATE_SOURCE_LOCAL_CACHE_NO_LOOKUP = "LOCAL_CACHE_NO_LOOKUP";
     public static final String DATE_SOURCE_UNRESOLVED = "UNRESOLVED";
 
     // ---- ExternalValidationService ----
