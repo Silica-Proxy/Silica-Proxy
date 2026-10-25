@@ -319,6 +319,9 @@ public class RegistryClient {
             return RegistryLookup.unavailable();
         }
         Instant publishedAt = publishedAtOpt.get();
+        Instant latestPublishedAt = PypiUploadTimes.latestUploadTime(files)
+                .filter(latest -> latest.isAfter(publishedAt))
+                .orElse(publishedAt);
 
         boolean isYanked = false;
         for (Map<String, Object> file : files) {
@@ -331,6 +334,7 @@ public class RegistryClient {
 
         return RegistryLookup.found(new PackageMetadataResult(
             publishedAt,
+            latestPublishedAt,
             isYanked,
             isYanked ? "Yanked from PyPI registry" : null
         ));

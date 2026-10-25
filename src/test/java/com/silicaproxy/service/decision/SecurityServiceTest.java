@@ -92,6 +92,15 @@ class SecurityServiceTest extends BaseIntegrationTest {
         return counter == null ? 0.0 : counter.count();
     }
 
+    private double publishDateLookupCount(String ecosystem, String source) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry
+                .find(Metrics.PUBLISH_DATE_LOOKUPS_METRIC)
+                .tag(Metrics.TAG_ECOSYSTEM, ecosystem)
+                .tag(Metrics.TAG_SOURCE, source)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
     @BeforeEach
     void cleanDbAndWiremock() {
         jdbcClient.sql("TRUNCATE company_policies RESTART IDENTITY CASCADE").update();
@@ -245,6 +254,44 @@ class SecurityServiceTest extends BaseIntegrationTest {
         assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
         assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_DEPRECATION);
         wireMock.verify(1, getRequestedFor(urlEqualTo("/precached-deprecated-pkg")));
+    }
+
+    @Test
+    void shouldQuarantineOffTheCachedPublishedAtWithoutCallingTheRegistry() {
+        // Still quarantined : blocked whatever the deprecation status, so the registry is not
+        // worth a call until the quarantine is over.
+        Instant publishedAt = Instant.now().minus(2, ChronoUnit.DAYS);
+        jdbcClient.sql("""
+                INSERT INTO package_metadata (package_name, ecosystem, package_version, published_at)
+                VALUES ('precached-quarantine-pkg', 'npm', '1.0.0', ?)
+                """).params(Timestamp.from(publishedAt)).update();
+
+        DecisionResult decision = securityService.getDecision("precached-quarantine-pkg", "1.0.0", "npm", "");
+
+        assertThat(decision.result()).isEqualTo(Verdict.BLOCK);
+        assertThat(decision.sourceType()).isEqualTo(DecisionSource.REGISTRY_QUARANTINE);
+        wireMock.verify(0, getRequestedFor(urlEqualTo("/precached-quarantine-pkg")));
+    }
+
+    @Test
+    void shouldNotCallTheRegistryWhenThePublishedAtIsCachedAndDeprecationIsOff() {
+        // Deprecation filtering covers npm and PyPI only : for Maven the cached publish date is
+        // all the registry could tell.
+        Instant publishedAt = Instant.now().minus(30, ChronoUnit.DAYS);
+        jdbcClient.sql("""
+                INSERT INTO package_metadata (package_name, ecosystem, package_version, published_at)
+                VALUES ('com.example:precached-artifact', 'maven', '1.0.0', ?)
+                """).params(Timestamp.from(publishedAt)).update();
+        wireMock.stubFor(post(urlEqualTo("/v1/query"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{}")));
+
+        double before = publishDateLookupCount("maven", Metrics.DATE_SOURCE_LOCAL_CACHE_NO_LOOKUP);
+        DecisionResult decision = securityService.getDecision("com.example:precached-artifact", "1.0.0", "maven", "");
+
+        assertThat(decision.result()).isEqualTo(Verdict.ALLOW);
+        assertThat(publishDateLookupCount("maven", Metrics.DATE_SOURCE_LOCAL_CACHE_NO_LOOKUP)).isEqualTo(before + 1);
     }
 
     @Test

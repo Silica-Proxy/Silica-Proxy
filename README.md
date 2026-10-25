@@ -218,11 +218,14 @@ How the publication date is resolved :
 - **All ecosystems** — every lookup tells a registry that does **not know** the package/version
   (`NOT_FOUND` : HTTP 404, version absent) apart from one that **could not answer**
   (`UNAVAILABLE` : 5xx, timeout, network error, unexpected response). Either way, a date already
-  cached in `package_metadata` is used first ; otherwise the
+  cached in `package_metadata` is used first (for PyPI only while it is still quarantined, see
+  below) ; otherwise the
   [`quarantine.fail-open`](#what-fail-open--fail-closed-means) policy decides, except that a
   `NOT_FOUND` is blocked outright when `quarantine.unknown-version-action` is `BLOCK`.
 
-The publication date is **stored permanently** in the `package_metadata` table — it never changes, so no subsequent network call is needed for a version already seen. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
+The publication date is **stored permanently** in the `package_metadata` table, one row per version. A deprecation verdict is also cached permanently. Only the quarantine verdict is never cached, so it is naturally re-evaluated at each request until the package ages out.
+
+The registry is still queried for a version already seen, because the deprecated / yanked status is never stored and must stay fresh — except when that status can't change the verdict : the cached date says the version is still quarantined (blocked either way), or deprecation filtering is off for the ecosystem (Maven). PyPI dates each **file** of a release, and the cached date is that of whichever file was resolved first : a still-quarantined one means the release holds a fresh file, so the request is blocked without a lookup (an older file of that release may then be blocked until the fresh one ages out) ; any other cached date proves nothing for the requested file, which is looked up. For the same reason, no `ALLOW` is written to `api_cache` while any file of a PyPI release is still quarantined.
 
 #### Package identification
 
@@ -1021,7 +1024,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 
 | Metric | Type | Tags | Description |
 |---|---|---|---|
-| `silicaproxy.quarantine.publish_date.lookups` | Counter | `ecosystem`, `source` (`PUBLIC_REGISTRY`/`ORIGIN_REGISTRY`/`LOCAL_CACHE`/`UNRESOLVED`) | Where the publication date used by the quarantine check came from. `ORIGIN_REGISTRY` (npm only) means the public registry did not know the version and the registry the client resolved against was trusted instead ; `LOCAL_CACHE` means the registry could not answer but the date was already known. |
+| `silicaproxy.quarantine.publish_date.lookups` | Counter | `ecosystem`, `source` (`PUBLIC_REGISTRY`/`ORIGIN_REGISTRY`/`LOCAL_CACHE`/`LOCAL_CACHE_NO_LOOKUP`/`UNRESOLVED`) | Where the publication date used by the quarantine check came from. `ORIGIN_REGISTRY` (npm only) means the public registry did not know the version and the registry the client resolved against was trusted instead ; `LOCAL_CACHE` means the registry could not answer but the date was already known ; `LOCAL_CACHE_NO_LOOKUP` means the registry was not queried at all, the cached date being enough (still quarantined, or no deprecation check for the ecosystem). |
 | `silicaproxy.quarantine.publish_date.unresolved` | Counter | `ecosystem`, `verdict` (`ALLOW`/`BLOCK`) | Packages whose publication date could not be resolved, with the verdict applied by `silicaproxy.quarantine.fail-open`. With the default fail-open, each `ALLOW` is a package that **skipped the quarantine** : alert on it, e.g. `increase(silicaproxy_quarantine_publish_date_unresolved_total{verdict="ALLOW"}[1h]) > 0`. |
 
 **External vulnerability APIs (OSV live fallback, deps.dev)**

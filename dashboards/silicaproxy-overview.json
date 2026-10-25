@@ -399,7 +399,7 @@
     {
       "id": 26,
       "title": "Quarantine Publish Date Source",
-      "description": "Where the publish date used by the quarantine age check came from: PUBLIC_REGISTRY (trusted), ORIGIN_REGISTRY (the registry the client asked, less trusted), LOCAL_CACHE (registry unreachable) or UNRESOLVED (no date at all, see the Quarantine Skipped stat).",
+      "description": "Where the publish date used by the quarantine age check came from: PUBLIC_REGISTRY (trusted), ORIGIN_REGISTRY (the registry the client asked, less trusted), LOCAL_CACHE (registry unreachable), LOCAL_CACHE_NO_LOOKUP (registry not queried, the cached date being enough) or UNRESOLVED (no date at all, see the Quarantine Skipped stat).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 44 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },

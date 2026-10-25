@@ -22,10 +22,18 @@ import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
 // Result of a metadata resolution from a public registry (RegistryClient), used 
-// for age calculation (quarantine) and deprecation/yanked detection.
+// for age calculation (quarantine) and deprecation/yanked detection. publishedAt dates the
+// requested artifact ; latestPublishedAt is the most recent publication among all the files of
+// the version (PyPI releases receive new files over time), equal to publishedAt elsewhere.
 @NullMarked
 public record PackageMetadataResult(
     Instant publishedAt,
+    Instant latestPublishedAt,
     boolean isDeprecated,
     @Nullable String deprecationReason
-) {}
+) {
+
+    public PackageMetadataResult(Instant publishedAt, boolean isDeprecated, @Nullable String deprecationReason) {
+        this(publishedAt, publishedAt, isDeprecated, deprecationReason);
+    }
+}
