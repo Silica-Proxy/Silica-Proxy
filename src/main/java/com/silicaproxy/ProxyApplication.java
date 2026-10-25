@@ -23,6 +23,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import com.silicaproxy.properties.NpmPackumentIndexProperties;
 import com.silicaproxy.properties.ResponseIdentificationProperties;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.properties.UpstreamThrottleProperties;
 
 /**
  * Spring Boot entry point of ArtifactSentry. Executed once at process startup
@@ -31,7 +32,7 @@ import com.silicaproxy.properties.SilicaProxyProperties;
  */
 @SpringBootApplication
 @EnableConfigurationProperties({SilicaProxyProperties.class, NpmPackumentIndexProperties.class,
-        ResponseIdentificationProperties.class})
+        ResponseIdentificationProperties.class, UpstreamThrottleProperties.class})
 public class ProxyApplication {
 
     public static void main(String[] args) {

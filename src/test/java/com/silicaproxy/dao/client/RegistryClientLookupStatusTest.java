@@ -27,11 +27,13 @@ import java.time.Instant;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.head;
+import static com.github.tomakehurst.wiremock.client.WireMock.headRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** FOUND / NOT_FOUND / UNAVAILABLE statuses of the PyPI and Maven registry lookups. */
+/** FOUND / NOT_FOUND / UNAVAILABLE / THROTTLED statuses of the npm, PyPI and Maven registry lookups. */
 class RegistryClientLookupStatusTest extends BaseIntegrationTest {
 
     private static final String CENTRAL_DIR = "/maven2/com/example/lib/1.0.0/";
@@ -162,5 +164,61 @@ class RegistryClientLookupStatusTest extends BaseIntegrationTest {
 
         assertThat(registryClient.lookupMaven("com.example:lib", "1.0.0", wireMock.baseUrl() + INTERCEPTED_PATH).status())
                 .isEqualTo(RegistryLookup.Status.FOUND);
+    }
+
+    private void stubThrottled(String path) {
+        wireMock.stubFor(head(urlEqualTo(path)).willReturn(aResponse().withStatus(429).withHeader("Retry-After", "60")));
+    }
+
+    @Test
+    void npmShouldBeThrottledOn429AndNotAskedAgainWhileSuspended() {
+        wireMock.stubFor(get(urlEqualTo("/lib")).willReturn(aResponse().withStatus(429).withHeader("Retry-After", "60")));
+
+        assertThat(registryClient.lookupNpmPublic("lib", "1.0.0").status()).isEqualTo(RegistryLookup.Status.THROTTLED);
+        assertThat(registryClient.lookupNpmPublic("lib", "1.0.0").status()).isEqualTo(RegistryLookup.Status.THROTTLED);
+
+        wireMock.verify(1, getRequestedFor(urlEqualTo("/lib")));
+    }
+
+    @Test
+    void pypiShouldBeThrottledOn429() {
+        wireMock.stubFor(get(urlEqualTo("/pypi/lib/json")).willReturn(aResponse().withStatus(429)));
+
+        assertThat(registryClient.lookupPypi("lib", "1.0.0", "").status()).isEqualTo(RegistryLookup.Status.THROTTLED);
+    }
+
+    @Test
+    void mavenShouldBeThrottledWithoutTryingTheInterceptedUrlOfTheSuspendedHost() {
+        stubThrottled(CENTRAL_DIR);
+        stubHead(INTERCEPTED_PATH, 200);
+
+        RegistryLookup lookup = registryClient.lookupMaven("com.example:lib", "1.0.0", wireMock.baseUrl() + INTERCEPTED_PATH);
+
+        // Same host as Central here : the fallback HEAD would only extend the rate limit.
+        assertThat(lookup.status()).isEqualTo(RegistryLookup.Status.THROTTLED);
+        wireMock.verify(0, headRequestedFor(urlEqualTo(INTERCEPTED_PATH)));
+    }
+
+    @Test
+    void mavenShouldStillBeDatedByAnotherHostWhenCentralIsThrottled() {
+        stubThrottled(CENTRAL_DIR);
+        stubHead(INTERCEPTED_PATH, 200);
+
+        // Same WireMock server, reached under another host name : a distinct host for the throttle.
+        RegistryLookup lookup = registryClient.lookupMaven("com.example:lib", "1.0.0",
+                "http://127.0.0.1:" + wireMock.port() + INTERCEPTED_PATH);
+
+        assertThat(lookup.status()).isEqualTo(RegistryLookup.Status.FOUND);
+    }
+
+    @Test
+    void mavenShouldBeThrottledWhenCentralAnswers404AndTheInterceptedHostIsThrottled() {
+        stubHead(CENTRAL_DIR, 404);
+        stubThrottled(INTERCEPTED_PATH);
+
+        RegistryLookup lookup = registryClient.lookupMaven("com.example:lib", "1.0.0",
+                "http://127.0.0.1:" + wireMock.port() + INTERCEPTED_PATH);
+
+        assertThat(lookup.status()).isEqualTo(RegistryLookup.Status.THROTTLED);
     }
 }

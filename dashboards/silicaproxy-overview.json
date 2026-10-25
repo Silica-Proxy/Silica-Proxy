@@ -479,15 +479,36 @@
         }
       ]
     },
+    {
+      "id": 34,
+      "title": "Upstream Rate Limiting (429 received / calls not sent while suspended)",
+      "description": "429 answers from registries, OSV and deps.dev (RESPONSE), calls not sent because the host is still suspended (SUSPENDED), and the number of suspended hosts. While a host stays suspended, decisions that need it are blocked (UPSTREAM_THROTTLED, answered 429 + Retry-After) with upstream-throttle.on-throttle FAIL_CLOSED.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 69 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (host, origin, outcome) (rate(silicaproxy_upstream_throttled_total{job=\"silicaproxy\", instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{host}} - {{origin}} - {{outcome}}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(silicaproxy_upstream_suspended_hosts{job=\"silicaproxy\", instance=~\"$instance\"})",
+          "legendFormat": "suspended hosts"
+        }
+      ]
+    },
 
-    { "id": 104, "type": "row", "title": "Synchronization (OSV / GitOps)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 69 }, "panels": [] },
+    { "id": 104, "type": "row", "title": "Synchronization (OSV / GitOps)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 }, "panels": [] },
 
     {
       "id": 40,
       "title": "Incremental OSV Sync (advisories / records, 15m)",
       "description": "Volume of advisories and records processed by the hourly incremental OSV sync, by outcome.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 70 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 78 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "short" } },
       "targets": [
@@ -508,7 +529,7 @@
       "title": "GitOps Sync (policies / runs, 15m)",
       "description": "Volume of synced policies and GitOps runs, by outcome (success/failure).",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 70 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 78 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "short" } },
       "targets": [
@@ -525,14 +546,14 @@
       ]
     },
 
-    { "id": 105, "type": "row", "title": "JVM & HTTP", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 78 }, "panels": [] },
+    { "id": 105, "type": "row", "title": "JVM & HTTP", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 86 }, "panels": [] },
 
     {
       "id": 50,
       "title": "JVM Heap (used / max)",
       "description": "JVM heap memory used vs. maximum allocated.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 79 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 87 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "bytes" } },
       "targets": [
@@ -545,7 +566,7 @@
       "title": "Process CPU",
       "description": "JVM process CPU usage compared to the host/container system.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 79 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 87 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
       "targets": [
@@ -558,7 +579,7 @@
       "title": "HTTP Latency (p50 / p95)",
       "description": "Incoming HTTP request latency percentiles (requires histogram buckets enabled in application.yaml).",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 79 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 87 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [
@@ -579,7 +600,7 @@
       "title": "HTTP Error Rate (5xx)",
       "description": "Rate of HTTP 5xx responses, by status code. Should stay at 0 -- unlike a BLOCK verdict (expected traffic), a 5xx means the proxy itself is failing requests.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 87 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 95 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "reqps" } },
       "targets": [
@@ -596,7 +617,7 @@
       "type": "row",
       "title": "JVM Garbage Collection",
       "collapsed": true,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 95 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 103 },
       "panels": [
         {
           "id": 60,
@@ -643,7 +664,7 @@
       "type": "row",
       "title": "Method Latencies (every @Timed method, avg / p50 / p95)",
       "collapsed": true,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 96 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 104 },
       "panels": [
         {
           "id": 62,
@@ -696,14 +717,14 @@
       ]
     },
 
-    { "id": 108, "type": "row", "title": "Audit Log", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 97 }, "panels": [] },
+    { "id": 108, "type": "row", "title": "Audit Log", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 105 }, "panels": [] },
 
     {
       "id": 65,
       "title": "Audit Log Write Outcome (rate)",
       "description": "Rate of audit log write attempts, by outcome. FAILURE means AuditLogDao.save() threw (disk full, constraint violation...), DROPPED means the audit executor queue was full and the oldest pending write was discarded: either way that decision's audit trail was lost -- both should stay at 0.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 98 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 106 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "reqps" } },
       "targets": [

@@ -360,8 +360,29 @@ class ProxyControllerTest {
                 .andExpect(jsonPath("$.title").value("Forbidden"));
     }
 
+    @Test
+    void shouldAnswer429WithRetryAfterForAnUpstreamThrottledBlock() throws Exception {
+        DecisionResult throttled = DecisionResult.block(DecisionSource.UPSTREAM_THROTTLED, "Registry is rate-limiting the proxy");
+        when(securityService.getDecision(eq("busy-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(throttled);
+        evaluate("busy-pkg", "1.0.0", "npm");
+
+        mockMvc.perform(get("http://registry.npmjs.org/busy-pkg/-/busy-pkg-1.0.0.tgz"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "30"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.error").value("UpstreamThrottled"))
+                .andExpect(jsonPath("$.step").value("UPSTREAM_THROTTLED"))
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.title").value("Too Many Requests"));
+
+        verifyNoInteractions(proxyStreamClient);
+        verify(auditLogService).logAudit(eq("busy-pkg"), eq("1.0.0"), eq("npm"), eq("UPSTREAM_THROTTLED"), eq("BLOCK"),
+                anyString(), anyInt(), anyString(), any(ClientIdentity.class));
+    }
+
     @ParameterizedTest
-    @EnumSource(value = DecisionSource.class, names = "REGISTRY_QUARANTINE", mode = EnumSource.Mode.EXCLUDE)
+    @EnumSource(value = DecisionSource.class, names = {"REGISTRY_QUARANTINE", "UPSTREAM_THROTTLED"},
+            mode = EnumSource.Mode.EXCLUDE)
     void shouldUseSecurityBlockedErrorCodeForEveryNonQuarantineBlockingStep(DecisionSource sourceType) throws Exception {
         DecisionResult blocked = DecisionResult.block(sourceType, "Blocked for test reasons");
         when(securityService.getDecision(eq("some-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(blocked);

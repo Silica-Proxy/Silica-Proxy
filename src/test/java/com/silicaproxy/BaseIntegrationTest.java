@@ -19,8 +19,11 @@ package com.silicaproxy;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import com.silicaproxy.dao.client.UpstreamThrottle;
 import com.silicaproxy.dao.sync.SchedulerLockDao;
 import org.jspecify.annotations.NullMarked;
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -82,6 +85,16 @@ public abstract class BaseIntegrationTest {
         registry.add("silicaproxy.http-client.connect-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.registries-read-timeout-seconds", () -> 2);
         registry.add("silicaproxy.http-client.security-apis-read-timeout-seconds", () -> 2);
+    }
+
+    // Every upstream is the same WireMock host : a 429 stubbed by one test would otherwise suspend
+    // it for the tests that follow in the same Spring context.
+    @Autowired
+    private UpstreamThrottle upstreamThrottle;
+
+    @BeforeEach
+    void clearUpstreamThrottle() {
+        upstreamThrottle.clear();
     }
 
     // A RUNNING sync_status row only counts while the ShedLock lock it runs under is held.

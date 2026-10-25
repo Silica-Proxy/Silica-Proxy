@@ -195,6 +195,24 @@ class ProxyControllerResponseIdentificationTest {
     }
 
     @Test
+    void shouldBlockWithRetryAfterWhenDepsDevIsRateLimiting() throws Exception {
+        byte[] body = body(1000);
+        when(proxyStreamClient.streamContent(eq(FORWARD_URL), any(HttpHeaders.class)))
+                .thenReturn(new ProxyStreamClient.StreamResponse(HttpStatus.OK, new HttpHeaders(),
+                        new ByteArrayInputStream(body)));
+        when(responseIdentification.identify(any(), any()))
+                .thenThrow(new ResponseIdentificationService.ThrottledException("deps.dev is rate-limiting the proxy"));
+
+        mockMvc().perform(get(URL))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.step").value("UPSTREAM_THROTTLED"));
+
+        verify(auditLogService).logAudit(anyString(), anyString(), anyString(), eq("UPSTREAM_THROTTLED"),
+                eq("BLOCK"), anyString(), anyInt(), eq(URL), any(ClientIdentity.class));
+        verify(securityService, never()).getDecision(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void shouldRelayUncheckedWhenResponseDoesNotIdentifyPackage() throws Exception {
         byte[] body = body(1000);
         when(proxyStreamClient.streamContent(eq(FORWARD_URL), any(HttpHeaders.class)))

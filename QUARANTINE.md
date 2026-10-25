@@ -40,6 +40,7 @@ silicaproxy:
     enabled: true                    # Activation globale
     default-min-age-days: 7          # Seuil par défaut si non spécifié
     fail-open: true                  # true: ALLOW si registre indisponible | false: BLOCK
+                                     # (un 429 suit upstream-throttle.on-throttle, pas fail-open)
     ecosystems:
       npm:
         enabled: true
@@ -71,6 +72,9 @@ silicaproxy:
 **3. Cache Local**
 - Si registre public indisponible ET date connue localement → utilise cache
 - Sinon → fail-open/fail-closed selon configuration
+- Registre qui répond 429 (limitation de débit) sans date en cache → BLOCK `UPSTREAM_THROTTLED`
+  (réponse 429 + `Retry-After`, jamais mis en cache) avec `upstream-throttle.on-throttle: FAIL_CLOSED`
+  (défaut) : un 429 peut être provoqué, il ne doit pas faire sauter la quarantaine
 
 ### Exemple
 

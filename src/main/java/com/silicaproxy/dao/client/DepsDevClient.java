@@ -28,6 +28,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
@@ -37,6 +38,7 @@ import java.util.Locale;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
@@ -62,12 +64,16 @@ public class DepsDevClient {
 
     private final RestClient restClient;
     private final SilicaProxyProperties properties;
+    // deps.dev is not called again before the suspension that followed its 429 is over.
+    private final UpstreamThrottle upstreamThrottle;
 
     public DepsDevClient(
             SilicaProxyProperties properties,
             @Qualifier("securityApisRequestFactory") ClientHttpRequestFactory securityApisRequestFactory,
-            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor) {
+            com.silicaproxy.config.SsrfInterceptor ssrfInterceptor,
+            UpstreamThrottle upstreamThrottle) {
         this.properties = properties;
+        this.upstreamThrottle = upstreamThrottle;
         this.restClient = RestClient.builder()
                 .requestFactory(securityApisRequestFactory)
                 .requestInterceptor(ssrfInterceptor)
@@ -101,6 +107,10 @@ public class DepsDevClient {
         URI uri = URI.create(baseUrl + "/systems/" + mapEcosystemToDepsDevSystem(ecosystem)
                 + "/packages/" + encodePathSegment(packageName)
                 + "/versions/" + encodePathSegment(version));
+        Optional<Instant> suspendedUntil = suspendedUntil(uri);
+        if (suspendedUntil.isPresent()) {
+            return ApiCheckResult.suspended("deps.dev", suspendedUntil.get());
+        }
 
         long start = System.nanoTime();
         try {
@@ -110,6 +120,7 @@ public class DepsDevClient {
                     .body(Map.class);
 
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
+            upstreamThrottle.recordSuccess(uri);
             if (response == null) {
                 return new ApiCheckResult(false, 0, 200, responseTimeMs, null);
             }
@@ -127,6 +138,7 @@ public class DepsDevClient {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
             LOG.warn("HTTP failure {} from deps.dev API for {}/{} ({})", e.getStatusCode().value(),
                     ecosystem, packageName, version);
+            recordIfThrottled(uri, e);
             return new ApiCheckResult(false, 0, e.getStatusCode().value(), responseTimeMs, e.getMessage());
         } catch (Exception e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
@@ -162,10 +174,15 @@ public class DepsDevClient {
         // Already percent-encoded ('+', '/', '=') : passed as a URI so RestClient does not encode it twice.
         URI uri = URI.create(baseUrl + "/query?hash.type=" + type.name()
                 + "&hash.value=" + URLEncoder.encode(base64, StandardCharsets.UTF_8));
+        Optional<Instant> suspendedUntil = suspendedUntil(uri);
+        if (suspendedUntil.isPresent()) {
+            return HashLookup.unavailable(ApiCheckResult.suspended("deps.dev", suspendedUntil.get()));
+        }
 
         long start = System.nanoTime();
         try {
             Map<String, Object> response = restClient.get().uri(uri).retrieve().body(Map.class);
+            upstreamThrottle.recordSuccess(uri);
             ApiCheckResult call = new ApiCheckResult(false, 0, 200, (System.nanoTime() - start) / 1_000_000, null);
             Object results = response == null ? null : response.get("results");
             if (!(results instanceof List<?> list)) {
@@ -191,6 +208,7 @@ public class DepsDevClient {
                 return HashLookup.notFound(new ApiCheckResult(false, 0, status, responseTimeMs, null));
             }
             LOG.warn("HTTP failure {} from deps.dev API for {} digest query", status, type);
+            recordIfThrottled(uri, e);
             return HashLookup.unavailable(new ApiCheckResult(false, 0, status, responseTimeMs, e.getMessage()));
         } catch (Exception e) {
             long responseTimeMs = (System.nanoTime() - start) / 1_000_000;
@@ -199,6 +217,22 @@ public class DepsDevClient {
                 LOG.debug("Details of deps.dev API call error", e);
             }
             return HashLookup.unavailable(new ApiCheckResult(false, 0, 0, responseTimeMs, e.getMessage()));
+        }
+    }
+
+    private Optional<Instant> suspendedUntil(URI uri) {
+        Optional<Instant> until = upstreamThrottle.suspendedUntil(uri);
+        if (until.isPresent()) {
+            upstreamThrottle.recordSkipped(uri, UpstreamThrottle.Origin.SECURITY_API);
+        }
+        return until;
+    }
+
+    private void recordIfThrottled(URI uri, HttpStatusCodeException e) {
+        if (e.getStatusCode().value() == ApiCheckResult.THROTTLED_STATUS) {
+            HttpHeaders headers = e.getResponseHeaders();
+            upstreamThrottle.recordThrottled(uri, headers == null ? null : headers.getFirst(HttpHeaders.RETRY_AFTER),
+                    UpstreamThrottle.Origin.SECURITY_API);
         }
     }
 

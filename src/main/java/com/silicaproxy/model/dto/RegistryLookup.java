@@ -23,10 +23,12 @@ import org.jspecify.annotations.NullMarked;
 // Optional, tells "the registry does not know this package/version" (NOT_FOUND : falling back
 // to another source is legitimate) apart from "the registry could not answer" (UNAVAILABLE :
 // no fallback to a less trusted source, the fail-open/fail-closed policy decides instead).
+// THROTTLED : the registry answered 429, or is suspended after one (UpstreamThrottle) -- an
+// outage an attacker can provoke, so upstream-throttle.on-throttle decides, not fail-open.
 @NullMarked
 public record RegistryLookup(Status status, Optional<PackageMetadataResult> metadata) {
 
-    public enum Status { FOUND, NOT_FOUND, UNAVAILABLE }
+    public enum Status { FOUND, NOT_FOUND, UNAVAILABLE, THROTTLED }
 
     public static RegistryLookup found(PackageMetadataResult metadata) {
         return new RegistryLookup(Status.FOUND, Optional.of(metadata));
@@ -38,5 +40,9 @@ public record RegistryLookup(Status status, Optional<PackageMetadataResult> meta
 
     public static RegistryLookup unavailable() {
         return new RegistryLookup(Status.UNAVAILABLE, Optional.empty());
+    }
+
+    public static RegistryLookup throttled() {
+        return new RegistryLookup(Status.THROTTLED, Optional.empty());
     }
 }

@@ -25,6 +25,7 @@ import com.silicaproxy.model.dto.ApiCheckResult;
 import com.silicaproxy.model.dto.HashLookup;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.ResponseIdentificationProperties;
+import com.silicaproxy.properties.UpstreamThrottleProperties;
 import com.silicaproxy.service.interception.ResponseIdentificationService.ResponseIdentification;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -35,6 +36,7 @@ import org.springframework.http.HttpStatus;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -58,8 +60,12 @@ class ResponseIdentificationServiceTest {
     private final ResponseIdentificationService service = service(true);
 
     private ResponseIdentificationService service(boolean enabled) {
+        return service(enabled, UpstreamThrottleProperties.defaults());
+    }
+
+    private ResponseIdentificationService service(boolean enabled, UpstreamThrottleProperties upstreamThrottle) {
         return new ResponseIdentificationService(depsDevClient, apiCallLogDao, fileDigestIndexDao,
-                new ResponseIdentificationProperties(enabled), meterRegistry);
+                new ResponseIdentificationProperties(enabled), upstreamThrottle, meterRegistry);
     }
 
     private static HttpHeaders headers(String... namesAndValues) {
@@ -158,6 +164,29 @@ class ResponseIdentificationServiceTest {
         assertThat(outcomeCount("not_found")).isEqualTo(1.0);
         assertThat(outcomeCount("unavailable")).isEqualTo(1.0);
         verify(apiCallLogDao).logCall(eq("DEPS_DEV_HASH"), anyString(), anyString(), anyString(), eq("ERROR"), any());
+    }
+
+    @Test
+    void shouldAskToBlockWhenDepsDevIsRateLimiting() {
+        String digest = "d".repeat(40);
+        when(depsDevClient.queryByHash(HashType.SHA1, digest))
+                .thenReturn(HashLookup.unavailable(new ApiCheckResult(false, 0, 429, 5, "rate limited")));
+
+        assertThatThrownBy(() -> service.identify(HttpStatus.OK, headers("X-Checksum-Sha1", digest)))
+                .isInstanceOf(ResponseIdentificationService.ThrottledException.class);
+        // Still logged and counted like any unavailable lookup.
+        assertThat(outcomeCount("unavailable")).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldRelayUncheckedWhenDepsDevIsRateLimitingAndOnThrottleFollowsFailOpen() {
+        String digest = "e".repeat(40);
+        when(depsDevClient.queryByHash(HashType.SHA1, digest))
+                .thenReturn(HashLookup.unavailable(new ApiCheckResult(false, 0, 429, 5, "rate limited")));
+        ResponseIdentificationService followFailOpen = service(true, new UpstreamThrottleProperties(true,
+                UpstreamThrottleProperties.OnThrottleAction.FOLLOW_FAIL_OPEN, 30, 5, 900));
+
+        assertThat(followFailOpen.identify(HttpStatus.OK, headers("X-Checksum-Sha1", digest))).isEmpty();
     }
 
     @Test

@@ -24,6 +24,7 @@ import com.silicaproxy.dao.identification.FileDigestIndexDao.DigestEntry;
 import com.silicaproxy.model.dto.HashLookup;
 import com.silicaproxy.model.dto.HashType;
 import com.silicaproxy.properties.ResponseIdentificationProperties;
+import com.silicaproxy.properties.UpstreamThrottleProperties;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.jspecify.annotations.NullMarked;
@@ -55,8 +56,10 @@ import java.util.Optional;
  * <p>Identified digests are stored in {@code file_digest_index} ({@link FileDigestIndexDao}),
  * shared by all instances and looked up before deps.dev. Digests deps.dev does not identify are
  * not stored and are queried again on every download ; an unavailable deps.dev leaves the request
- * unidentified (relayed unchecked, as before). A database failure never fails the download : the
- * lookup goes on without the table.
+ * unidentified (relayed unchecked, as before) -- except when it is rate-limiting the proxy and
+ * {@code upstream-throttle.on-throttle} is FAIL_CLOSED : {@link ThrottledException} then tells the
+ * caller to block, since a 429 can be provoked to skip the check. A database failure never fails
+ * the download : the lookup goes on without the table.
  */
 @Service
 @NullMarked
@@ -71,6 +74,7 @@ public class ResponseIdentificationService {
     private final ApiCallLogDao apiCallLogDao;
     private final FileDigestIndexDao fileDigestIndexDao;
     private final ResponseIdentificationProperties properties;
+    private final UpstreamThrottleProperties upstreamThrottle;
     private final Map<HashLookup.Status, Counter> outcomeCounters = new EnumMap<>(HashLookup.Status.class);
     private final Counter skippedCounter;
     private final Counter identifiedFromDatabaseCounter;
@@ -81,13 +85,24 @@ public class ResponseIdentificationService {
      */
     public record ResponseIdentification(ParsedPackage pkg, ExpectedDigest digest) {}
 
+    /** deps.dev is rate-limiting the proxy and on-throttle is FAIL_CLOSED : the download must be blocked. */
+    public static final class ThrottledException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        public ThrottledException(String message) {
+            super(message);
+        }
+    }
+
     public ResponseIdentificationService(DepsDevClient depsDevClient, ApiCallLogDao apiCallLogDao,
             FileDigestIndexDao fileDigestIndexDao, ResponseIdentificationProperties properties,
-            MeterRegistry meterRegistry) {
+            UpstreamThrottleProperties upstreamThrottle, MeterRegistry meterRegistry) {
         this.depsDevClient = depsDevClient;
         this.apiCallLogDao = apiCallLogDao;
         this.fileDigestIndexDao = fileDigestIndexDao;
         this.properties = properties;
+        this.upstreamThrottle = upstreamThrottle;
         for (HashLookup.Status status : HashLookup.Status.values()) {
             String outcome = status == HashLookup.Status.FOUND ? "identified" : status.name().toLowerCase(Locale.ROOT);
             outcomeCounters.put(status, outcomeCounter(meterRegistry, outcome));
@@ -113,6 +128,7 @@ public class ResponseIdentificationService {
      * @return the package version the body is a file of, and the digest to verify it against ;
      *         empty when the response is not a package file, announces no usable digest, or
      *         deps.dev does not (or cannot) tell which package it belongs to
+     * @throws ThrottledException when deps.dev is rate-limiting the proxy and on-throttle is FAIL_CLOSED
      */
     public Optional<ResponseIdentification> identify(HttpStatus status, HttpHeaders headers) {
         if (!properties.enabled()) {
@@ -134,6 +150,9 @@ public class ResponseIdentificationService {
         HashLookup lookup = depsDevClient.queryByHash(digest.type(), digest.hex());
         logApiCall(lookup);
         outcomeCounters.get(lookup.status()).increment();
+        if (lookup.call().isThrottled() && upstreamThrottle.failClosed()) {
+            throw new ThrottledException("deps.dev is rate-limiting the proxy, the downloaded file cannot be identified yet. Retry later.");
+        }
         if (lookup.status() != HashLookup.Status.FOUND) {
             LOG.debug("{} {} not identified by deps.dev : {}", digest.type(), digest.hex(), lookup.status());
             return Optional.empty();

@@ -28,6 +28,7 @@ import com.silicaproxy.model.dto.RegistryLookup;
 import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.properties.UpstreamThrottleProperties;
 import com.silicaproxy.service.interception.NpmPackumentIndex;
 import com.silicaproxy.service.vulnerability.VulnerabilityApiClients;
 import org.jspecify.annotations.NullMarked;
@@ -65,6 +66,7 @@ public class SecurityService {
     private final ExternalValidationService externalValidationService;
     private final SecurityServiceMetrics metrics;
     private final NpmPackumentIndex npmPackumentIndex;
+    private final UpstreamThrottleProperties upstreamThrottle;
 
     public SecurityService(
             LocalDecisionEvaluator localDecisionEvaluator,
@@ -74,7 +76,8 @@ public class SecurityService {
             SilicaProxyProperties properties,
             ExternalValidationService externalValidationService,
             SecurityServiceMetrics metrics,
-            NpmPackumentIndex npmPackumentIndex) {
+            NpmPackumentIndex npmPackumentIndex,
+            UpstreamThrottleProperties upstreamThrottle) {
         this.localDecisionEvaluator = localDecisionEvaluator;
         this.registryClient = registryClient;
         this.apiClients = apiClients;
@@ -83,6 +86,7 @@ public class SecurityService {
         this.externalValidationService = externalValidationService;
         this.metrics = metrics;
         this.npmPackumentIndex = npmPackumentIndex;
+        this.upstreamThrottle = upstreamThrottle;
     }
 
     @Timed(value = "silicaproxy.service.security.getdecision",
@@ -172,7 +176,8 @@ public class SecurityService {
     // practice this only happens once per api_cache TTL window (24h for an ALLOW, effectively
     // never again once a BLOCK is cached) -- not on every request for the package. Carries no metadata only when no source could date the version AND no local
     // publish date is cached ; its status then tells "unknown version" (NOT_FOUND) from "registry
-    // could not answer" (UNAVAILABLE) for the caller's fail-open/fail-closed decision.
+    // could not answer" (UNAVAILABLE) and "registry is rate-limiting the proxy" (THROTTLED) for the
+    // caller's fail-open/fail-closed decision.
     private RegistryLookup resolvePackageMetadata(
             String packageName, String version, String ecosystem, String fullUrl, Instant now) {
         Optional<RegistryLookup> cachedLookup = resolveFromCachedPublishDate(packageName, version, ecosystem, now);
@@ -258,6 +263,17 @@ public class SecurityService {
     // Never cached : the version may appear on the registry (or the registry recover) any time.
     private DecisionResult unresolvedPublishDateVerdict(
             String packageName, String version, String ecosystem, String fullUrl, RegistryLookup.Status status) {
+        // Unlike an outage, a 429 can be provoked by whoever sends enough requests through the
+        // proxy : following fail-open here would let a freshly published version skip quarantine
+        // -- and the artifacts repository in front keeps it for good. Blocked until the registry
+        // answers again (the client is told when to retry), never cached.
+        if (status == RegistryLookup.Status.THROTTLED && upstreamThrottle.failClosed()) {
+            LOG.warn("{}/{} ({}) : the public registry is rate-limiting the proxy, blocked until it answers again",
+                    ecosystem, packageName, version);
+            metrics.recordPublishDateUnresolved(ecosystem, Verdict.BLOCK.name());
+            return DecisionResult.block(DecisionSource.UPSTREAM_THROTTLED,
+                    "The public registry is rate-limiting the proxy, the publication date cannot be verified yet. Retry later.");
+        }
         if (status == RegistryLookup.Status.NOT_FOUND
                 && properties.quarantine().unknownVersionAction() == SilicaProxyProperties.UnknownVersionAction.BLOCK) {
             LOG.warn("{}/{} ({}) is unknown to every registry consulted : blocked (unknown-version-action=BLOCK)",
@@ -340,12 +356,15 @@ public class SecurityService {
     // source errored, the per-source fail-open/fail-closed policy decides -- and that error
     // verdict is deliberately NEVER written to api_cache : caching it would keep allowing (or
     // blocking) for the whole TTL after the API recovers, turning a transient outage into a
-    // 24h security hole.
+    // 24h security hole. A source that is rate-limiting the proxy (429) blocks whatever its
+    // fail-open setting when upstream-throttle.on-throttle is FAIL_CLOSED : unlike an outage, a
+    // 429 can be provoked to skip the check.
     // AllowCaching.NONE never writes an ALLOW verdict to api_cache (a BLOCK is still cached).
     private DecisionResult runFallbackChain(String packageName, String version, String ecosystem,
             AllowCaching allowCaching) {
         boolean anyAttempted = false;
         boolean anyFailClosed = false;
+        boolean anyThrottled = false;
         // The live APIs report every advisory : the same threshold as the local tables decides
         // which of them block.
         SeverityThreshold threshold = caches.severityPolicy().thresholdFor(ecosystem);
@@ -364,11 +383,16 @@ public class SecurityService {
             }
             anyAttempted = true;
             anyFailClosed |= !sourceProps.failOpen();
+            anyThrottled |= result.isThrottled();
             LOG.warn("Fallback API {} failed for {}/{} ({}) : {} — trying next enabled source",
                     source.providerLabel(), ecosystem, packageName, version, result.errorMessage());
         }
 
         if (anyAttempted) {
+            if (anyThrottled && upstreamThrottle.failClosed()) {
+                return DecisionResult.block(DecisionSource.UPSTREAM_THROTTLED,
+                        "External vulnerability APIs are rate-limiting the proxy, the package cannot be checked yet. Retry later.");
+            }
             // Most restrictive wins across the attempted sources (same aggregation philosophy
             // as ExternalValidationService) : one fail-closed source is enough to block.
             if (anyFailClosed) {

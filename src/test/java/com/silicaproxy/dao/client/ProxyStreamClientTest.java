@@ -34,10 +34,42 @@ import java.net.URI;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ProxyStreamClientTest {
+
+    @Test
+    void shouldAnswer429WithoutCallingAHostThatIsRateLimitingTheProxy() throws Exception {
+        ClientHttpRequestFactory requestFactory = mock(ClientHttpRequestFactory.class);
+        ClientHttpRequest request = mock(ClientHttpRequest.class);
+        ClientHttpResponse response = mock(ClientHttpResponse.class);
+        when(requestFactory.createRequest(any(URI.class), any(HttpMethod.class))).thenReturn(request);
+        when(request.getHeaders()).thenReturn(new HttpHeaders());
+        when(request.execute()).thenReturn(response);
+        when(response.getStatusCode()).thenReturn(HttpStatusCode.valueOf(429));
+        HttpHeaders upstreamHeaders = new HttpHeaders();
+        upstreamHeaders.set(HttpHeaders.RETRY_AFTER, "120");
+        when(response.getHeaders()).thenReturn(upstreamHeaders);
+        when(response.getBody()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        ProxyStreamClient client = new ProxyStreamClient(requestFactory, mock(SsrfValidator.class), UpstreamThrottle.standalone());
+
+        // The 429 itself is relayed as received.
+        try (ProxyStreamClient.StreamResponse first =
+                client.streamContent("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/maven-metadata.xml", new HttpHeaders())) {
+            assertThat(first.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        }
+        // The next request to that host is answered without calling it.
+        try (ProxyStreamClient.StreamResponse second =
+                client.streamContent("https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.13/slf4j-api-2.0.13.pom", new HttpHeaders())) {
+            assertThat(second.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+            assertThat(Long.parseLong(second.headers().getFirst(HttpHeaders.RETRY_AFTER))).isBetween(120L, 145L);
+            assertThat(second.headers().getCacheControl()).isEqualTo("no-store");
+        }
+
+        verify(request, times(1)).execute();
+    }
 
     @Test
     void shouldCloseUnderlyingResponseWhenStreamResponseIsClosed() throws Exception {
@@ -54,7 +86,7 @@ class ProxyStreamClientTest {
         InputStream body = new ByteArrayInputStream("content".getBytes());
         when(response.getBody()).thenReturn(body);
 
-        ProxyStreamClient client = new ProxyStreamClient(requestFactory, ssrfValidator);
+        ProxyStreamClient client = new ProxyStreamClient(requestFactory, ssrfValidator, UpstreamThrottle.standalone());
 
         // Before the fix, nothing ever called response.close() : ProxyController only reads
         // streamResponse.body() via StreamUtils.copy(), which never releases the underlying
@@ -87,7 +119,7 @@ class ProxyStreamClientTest {
         clientHeaders.add("Proxy-Connection", "keep-alive");
         clientHeaders.add("User-Agent", "npm/10.8.2");
 
-        try (ProxyStreamClient.StreamResponse ignored = new ProxyStreamClient(requestFactory, mock(SsrfValidator.class))
+        try (ProxyStreamClient.StreamResponse ignored = new ProxyStreamClient(requestFactory, mock(SsrfValidator.class), UpstreamThrottle.standalone())
                 .streamContent("https://registry.npmjs.org/lodash", clientHeaders)) {
             assertThat(upstreamHeaders.headerNames()).containsExactly("User-Agent");
         }
