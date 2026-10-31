@@ -183,7 +183,7 @@ public class ProxyController {
 
         DecisionResult decision = identification.outcome() == Outcome.BLOCK_UNIDENTIFIED_TARBALL
                 ? UNIDENTIFIED_TARBALL_VERDICT
-                : securityService.getDecision(packageName, version, ecosystem, fullUrl);
+                : securityService.getDecision(packageName, version, ecosystem, forwardUrl);
         if (applyDecision(decision, parsed, fullUrl, client, startTime, response)) {
             return;
         }
@@ -265,7 +265,7 @@ public class ProxyController {
             }
             ParsedPackage pkg = found.get().pkg();
             ecosystem = pkg.ecosystem();
-            DecisionResult decision = securityService.getDecision(pkg.packageName(), pkg.version(), ecosystem, fullUrl);
+            DecisionResult decision = securityService.getDecision(pkg.packageName(), pkg.version(), ecosystem, forwardUrl);
             if (applyDecision(decision, pkg, fullUrl, client, startTime, response)) {
                 // The upstream body is dropped unread : try-with-resources releases the connection.
                 return;

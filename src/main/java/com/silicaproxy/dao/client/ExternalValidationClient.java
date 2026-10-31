@@ -60,6 +60,14 @@ public class ExternalValidationClient {
         this.asyncRestClient = buildRestClient(properties.httpClient().externalValidationReadTimeoutSeconds());
     }
 
+    // The URL is relayed as intercepted: no scheme rewriting, each service's own configuration decides
+    // whether it accepts it.
+    private void putArtifactUrl(Map<String, Object> body, String fullUrl) {
+        if (!fullUrl.isBlank()) {
+            body.put("url", fullUrl);
+        }
+    }
+
     // Sync call: POST and wait for {verdict, reason} response body, at most timeoutSeconds.
     // Returns verdict string ("ALLOWED"/"BLOCKED") or null on error.
     @Nullable
@@ -73,9 +81,7 @@ public class ExternalValidationClient {
         body.put("packageName", packageName);
         body.put("version", version);
         body.put("ecosystem", ecosystem);
-        if (!fullUrl.isBlank()) {
-            body.put("url", fullUrl);
-        }
+        putArtifactUrl(body, fullUrl);
 
         long start = System.nanoTime();
         try {
@@ -127,9 +133,7 @@ public class ExternalValidationClient {
         body.put("version", version);
         body.put("ecosystem", ecosystem);
         body.put("callbackUrl", callbackUrl);
-        if (!fullUrl.isBlank()) {
-            body.put("url", fullUrl);
-        }
+        putArtifactUrl(body, fullUrl);
 
         try {
             buildRequest(asyncRestClient, url, apiKey, body)

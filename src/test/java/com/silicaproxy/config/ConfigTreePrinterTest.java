@@ -144,7 +144,7 @@ class ConfigTreePrinterTest {
     @Test
     void shouldRenderRealExternalValidationServicesWithMaskedApiKeys() {
         ExternalValidationServiceProperties deepScan = new ExternalValidationServiceProperties(
-            true, "https://scanner.example.com/scan", "secret-api-key", ExternalValidationMode.SYNC, 1, true, true, 60, 30);
+            true, "https://scanner.example.com/scan", "secret-api-key", ExternalValidationMode.SYNC, 1, true, true, 60, 30, false, 5, 10);
         ExternalValidationProperties externalValidation = new ExternalValidationProperties(
             "https://proxy.example.com", false, Map.of("deepScan", deepScan));
 
