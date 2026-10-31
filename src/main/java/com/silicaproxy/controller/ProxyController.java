@@ -75,6 +75,8 @@ import java.util.Enumeration;
 public class ProxyController {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProxyController.class);
+    private static final String HTTP_SCHEME = "http://";
+    private static final String HTTPS_SCHEME = "https://";
     private static final DecisionResult UNIDENTIFIED_TARBALL_VERDICT = DecisionResult.block(DecisionSource.UNIDENTIFIED_ARTIFACT,
             "npm tarball could not be identified from its URL or from a relayed packument (unidentified-tarball-action=BLOCK).");
 
@@ -144,6 +146,13 @@ public class ProxyController {
         
         String requestUrl = request.getRequestURL().toString();
         String queryString = request.getQueryString();
+        // A request out of a CONNECT tunnel reaches Tomcat in clear text : Tomcat rebuilds it as
+        // http://, the scheme the client asked for is restored so that the decision, the audit, the
+        // relay and the external validation services all see the https URL actually requested.
+        if (requestUrl.startsWith(HTTP_SCHEME)
+                && clientIdentityResolver.isTunnelled(request.getRemoteAddr(), request.getRemotePort())) {
+            requestUrl = HTTPS_SCHEME + requestUrl.substring(HTTP_SCHEME.length());
+        }
         String fullUrl = queryString != null ? requestUrl + "?" + queryString : requestUrl;
 
         LOG.info("Intercepted request : {} {}", request.getMethod(), fullUrl);

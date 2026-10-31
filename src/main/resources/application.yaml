@@ -327,6 +327,12 @@ silicaproxy:
     # If true, async services are triggered even when a sync service already returned BLOCKED
     trigger-async-on-sync-block: false
     # services: not configured by default — feature is disabled until services are added
+    #   Per-service keys (services.<name>.*):
+    #     head-check: false                  # true = HEAD on the requested URL before calling the service
+    #     head-check-timeout-seconds: 5      # timeout of that HEAD
+    #     head-check-cache-ttl-minutes: 10   # how long the HEAD outcome (found / not found) is cached
+    #   A 404 on the HEAD skips the service for this request (no call, no verdict, no PENDING row).
+    #   The outcome is cached in PostgreSQL (upstream_head_cache), shared across instances.
 
   # 9. Timeouts for outgoing HTTP clients (registries, external security APIs)
   http-client:

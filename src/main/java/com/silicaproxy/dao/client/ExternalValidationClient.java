@@ -19,6 +19,7 @@ package com.silicaproxy.dao.client;
 
 import com.silicaproxy.config.SsrfInterceptor;
 import com.silicaproxy.properties.SilicaProxyProperties;
+import com.silicaproxy.service.interception.HttpsUpgradePolicy;
 import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
@@ -45,6 +46,7 @@ public class ExternalValidationClient {
 
     private final HttpClient httpClient;
     private final SsrfInterceptor ssrfInterceptor;
+    private final HttpsUpgradePolicy httpsUpgradePolicy;
     // ASYNC triggers only wait for the acknowledgment : global external-validation-read-timeout-seconds
     private final RestClient asyncRestClient;
     // SYNC calls wait for the verdict : one client per distinct services.<name>.timeout-seconds,
@@ -54,10 +56,20 @@ public class ExternalValidationClient {
     public ExternalValidationClient(
             @Qualifier("externalValidationHttpClient") HttpClient httpClient,
             SsrfInterceptor ssrfInterceptor,
+            HttpsUpgradePolicy httpsUpgradePolicy,
             SilicaProxyProperties properties) {
         this.httpClient = httpClient;
         this.ssrfInterceptor = ssrfInterceptor;
+        this.httpsUpgradePolicy = httpsUpgradePolicy;
         this.asyncRestClient = buildRestClient(properties.httpClient().externalValidationReadTimeoutSeconds());
+    }
+
+    // The service downloads the artifact itself : it gets the URL the relay fetches, upgraded to https
+    // like the relay (a client such as Nexus asks in plain HTTP, the upstream answers 403 to it).
+    private void putArtifactUrl(Map<String, Object> body, String fullUrl) {
+        if (!fullUrl.isBlank()) {
+            body.put("url", httpsUpgradePolicy.upgrade(fullUrl));
+        }
     }
 
     // Sync call: POST and wait for {verdict, reason} response body, at most timeoutSeconds.
@@ -73,9 +85,7 @@ public class ExternalValidationClient {
         body.put("packageName", packageName);
         body.put("version", version);
         body.put("ecosystem", ecosystem);
-        if (!fullUrl.isBlank()) {
-            body.put("url", fullUrl);
-        }
+        putArtifactUrl(body, fullUrl);
 
         long start = System.nanoTime();
         try {
@@ -127,9 +137,7 @@ public class ExternalValidationClient {
         body.put("version", version);
         body.put("ecosystem", ecosystem);
         body.put("callbackUrl", callbackUrl);
-        if (!fullUrl.isBlank()) {
-            body.put("url", fullUrl);
-        }
+        putArtifactUrl(body, fullUrl);
 
         try {
             buildRequest(asyncRestClient, url, apiKey, body)

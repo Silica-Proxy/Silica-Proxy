@@ -18,10 +18,13 @@
 package com.silicaproxy.service.interception;
 
 import com.silicaproxy.BaseIntegrationTest;
+import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.model.dto.ClientIdentity;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
@@ -30,6 +33,7 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -49,6 +53,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 
 // Reduced from the 30s/60s production defaults so the idle-timeout test below runs in ~1s
@@ -68,6 +74,20 @@ class LoomProxyServerTest extends BaseIntegrationTest {
     @MockitoSpyBean
     private ClientIdentityResolver clientIdentityResolver;
 
+    // Real relay for the plain HTTP requests ; a tunnelled request is fetched in https, which the
+    // plain HTTP WireMock cannot serve, so its upstream answer is stubbed.
+    @MockitoSpyBean
+    private ProxyStreamClient proxyStreamClient;
+
+    private void upstreamServes(String url, String body) throws IOException {
+        doAnswer(invocation -> {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.TEXT_PLAIN);
+            return new ProxyStreamClient.StreamResponse(HttpStatus.OK, headers,
+                    new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
+        }).when(proxyStreamClient).streamContent(eq(url), any(HttpHeaders.class));
+    }
+
     @Autowired
     LoomProxyServerTest(LoomProxyServer loomProxyServer) {
         this.loomProxyServer = loomProxyServer;
@@ -75,14 +95,10 @@ class LoomProxyServerTest extends BaseIntegrationTest {
 
     @Test
     void shouldEstablishConnectTunnelSuccessfully() throws Exception {
-        // 1. Stub a path in WireMock
-        wireMock.stubFor(get(urlEqualTo("/hello-connect"))
-                .willReturn(aResponse()
-                        .withStatus(200)
-                        .withHeader("Content-Type", "text/plain")
-                        .withBody("Hello from WireMock Tunnel!")));
-
+        // 1. Stub the upstream : the client asked for https, the proxy must fetch it in https
         int wiremockPort = wireMock.port();
+        String upstreamUrl = "https://127.0.0.1:" + wiremockPort + "/hello-connect";
+        upstreamServes(upstreamUrl, "Hello from WireMock Tunnel!");
 
         // 2. Open a MITM tunnel through the LoomProxyServer
         try (Socket socket = new Socket("127.0.0.1", loomProxyServer.getProxyPort())) {
@@ -108,11 +124,12 @@ class LoomProxyServerTest extends BaseIntegrationTest {
             assertThat(targetResponse.toString()).contains("200");
             assertThat(targetResponse.toString()).contains("Hello from WireMock Tunnel!");
         }
+        // Tomcat, fed in clear text, rebuilds an http:// URL : the scheme of the tunnel is restored.
+        org.mockito.Mockito.verify(proxyStreamClient).streamContent(eq(upstreamUrl), any(HttpHeaders.class));
     }
 
     @Test
     void shouldResolveTheClientOfTheConnectForEveryRequestOfTheTunnel() throws Exception {
-        wireMock.stubFor(get(urlEqualTo("/hello-identity")).willReturn(aResponse().withStatus(200).withBody("identity-response-end")));
         List<ClientIdentity> resolved = new CopyOnWriteArrayList<>();
         doAnswer(invocation -> {
             ClientIdentity identity = (ClientIdentity) invocation.callRealMethod();
@@ -120,6 +137,8 @@ class LoomProxyServerTest extends BaseIntegrationTest {
             return identity;
         }).when(clientIdentityResolver).resolve(anyString(), anyInt(), any(HttpHeaders.class));
         int wiremockPort = wireMock.port();
+        String upstreamUrl = "https://127.0.0.1:" + wiremockPort + "/hello-identity";
+        upstreamServes(upstreamUrl, "identity-response-end");
         String credentials = Base64.getEncoder().encodeToString("ci-runner:s3cret".getBytes(StandardCharsets.UTF_8));
         String request = "GET http://127.0.0.1:" + wiremockPort + "/hello-identity HTTP/1.1\r\n"
                 + "Host: 127.0.0.1:" + wiremockPort + "\r\n"
@@ -141,7 +160,8 @@ class LoomProxyServerTest extends BaseIntegrationTest {
 
         ClientIdentity expected = new ClientIdentity("127.0.0.1", "pip/24.2", "ci-runner");
         assertThat(resolved).containsExactly(expected, expected);
-        wireMock.verify(2, getRequestedFor(urlEqualTo("/hello-identity")).withoutHeader("Proxy-Authorization"));
+        org.mockito.Mockito.verify(proxyStreamClient, org.mockito.Mockito.times(2)).streamContent(eq(upstreamUrl),
+                argThat((HttpHeaders headers) -> !headers.containsHeader(HttpHeaders.PROXY_AUTHORIZATION)));
         // The relay is forgotten once the tunnel is closed : a later connection reusing the same
         // loopback port never inherits this client.
         long deadline = System.currentTimeMillis() + 5_000;

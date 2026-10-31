@@ -18,6 +18,7 @@
 package com.silicaproxy.service.decision;
 
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
+import com.silicaproxy.dao.policy.UpstreamHeadCacheDao;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,9 +31,11 @@ public class ExternalValidationCleanupService {
     private static final Logger LOG = LoggerFactory.getLogger(ExternalValidationCleanupService.class);
 
     private final ExternalValidationCacheDao cacheDao;
+    private final UpstreamHeadCacheDao headCacheDao;
 
-    public ExternalValidationCleanupService(ExternalValidationCacheDao cacheDao) {
+    public ExternalValidationCleanupService(ExternalValidationCacheDao cacheDao, UpstreamHeadCacheDao headCacheDao) {
         this.cacheDao = cacheDao;
+        this.headCacheDao = headCacheDao;
     }
 
     @Scheduled(cron = "0 * * * * *")
@@ -42,9 +45,10 @@ public class ExternalValidationCleanupService {
         try {
             int timedOut = cacheDao.expireTimedOutPending();
             int deleted  = cacheDao.deleteExpiredEntries();
-            if (timedOut > 0 || deleted > 0) {
-                LOG.info("ExternalValidation cleanup: {} PENDING→TIMEOUT, {} entries deleted",
-                        timedOut, deleted);
+            int headDeleted = headCacheDao.deleteExpired();
+            if (timedOut > 0 || deleted > 0 || headDeleted > 0) {
+                LOG.info("ExternalValidation cleanup: {} PENDING→TIMEOUT, {} entries deleted, {} upstream HEAD entries deleted",
+                        timedOut, deleted, headDeleted);
             }
         } catch (Exception e) {
             LOG.error("ExternalValidation cleanup failed", e);

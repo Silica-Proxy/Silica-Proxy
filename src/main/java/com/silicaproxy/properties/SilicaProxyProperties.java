@@ -304,7 +304,12 @@ public record SilicaProxyProperties(
         @DefaultValue("true") boolean failOpen,
         @DefaultValue("true") boolean blocking,
         @DefaultValue("60") int cacheTtlMinutes,
-        @DefaultValue("30") int pendingTtlMinutes
+        @DefaultValue("30") int pendingTtlMinutes,
+        // HEAD on the requested URL before calling this service. 404 : the service is skipped for
+        // the request (no call, no verdict). Outcome cached in upstream_head_cache.
+        @DefaultValue("false") boolean headCheck,
+        @DefaultValue("5") @Positive int headCheckTimeoutSeconds,
+        @DefaultValue("10") @Positive int headCheckCacheTtlMinutes
     ) {}
 
     // Bound case-insensitively ("sync" or "SYNC") ; any other value fails at startup.

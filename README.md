@@ -318,6 +318,20 @@ When multiple services are configured:
 
 Each service can be configured with `blocking: false` to make it **informational only**: the verdict is still stored in the DB and appears in audit logs, but never blocks a package. Useful for trialling a new scanner in shadow mode before enforcing it.
 
+#### Upstream HEAD check (`head-check`)
+
+Behind a virtual repository (for example a Nexus group that asks Maven Central first, then the Gradle Plugin Portal), the client's request can reach the proxy for an artifact that only one of the upstreams holds. If the scanner is called with that URL, it fetches a file that does not exist there and the package stays PENDING.
+
+With `head-check: true`, the proxy sends a `HEAD` to the requested URL before calling the service:
+
+- **200 / 3xx**: the artifact exists here, the service is called as usual.
+- **404**: the service is skipped for this request — no call, no verdict, no PENDING row. If every service is skipped, the decision goes on with the [fallback chain](#5-live-security-api-fallback--on-demand-configurable-cache-priority-3), and the request is relayed to the upstream, which answers its own 404 so the repository manager moves on to the next member.
+- **Error, timeout or 429**: the service is called as if no check ran. The HEAD is an optimisation and never a reason to skip a scan on its own.
+
+The URL is upgraded to HTTPS by the same policy as the relay (`HttpsUpgradePolicy`), and the outcome is cached in `upstream_head_cache` for `head-check-cache-ttl-minutes`. Only `found` and `not found` are cached; errors are not, so the next request retries. The HEAD goes through the same SSRF protection and upstream rate-limit suspension as the other outbound calls.
+
+The default is `false`, so existing deployments are unchanged.
+
 #### Configuration example
 
 ```yaml
@@ -335,6 +349,9 @@ silicaproxy:
         fail-open: true
         blocking: true
         cache-ttl-minutes: 1440
+        head-check: true                 # skip this service when the upstream answers 404 for the artifact
+        head-check-timeout-seconds: 5
+        head-check-cache-ttl-minutes: 10
 
       deep-scanner:
         enabled: true
@@ -616,6 +633,9 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.external-validation.services.<name>.blocking` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_BLOCKING`                                                                | `true` | `false` = verdict stored for audit but never blocks a package |
 | | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_CACHETTLMINUTES`                                                               | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
 | | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_PENDINGTTLMINUTES`                                                                | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
+| | `silicaproxy.external-validation.services.<name>.head-check` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_HEADCHECK` | `false` | `true` = HEAD on the requested URL before calling this service; a 404 skips the service for that request. See [Upstream HEAD check](#upstream-head-check-head-check) |
+| | `silicaproxy.external-validation.services.<name>.head-check-timeout-seconds` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_HEADCHECKTIMEOUTSECONDS` | `5` | Timeout of the HEAD check. On timeout or error the service is called as usual |
+| | `silicaproxy.external-validation.services.<name>.head-check-cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_HEADCHECKCACHETTLMINUTES` | `10` | How long the HEAD outcome (found / not found) is cached in PostgreSQL (`upstream_head_cache`), shared across instances |
 | | `silicaproxy.http-client.external-validation-read-timeout-seconds` | `SILICAPROXY_HTTP_CLIENT_EXTERNAL_VALIDATION_READ_TIMEOUT_SECONDS` | `1` | HTTP read timeout for the async trigger call (acknowledgment only) — sync calls wait for `services.<name>.timeout-seconds` instead |
 | | `silicaproxy.corporate-proxy.scope.external-validation` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_VALIDATION`           | `false` | Route external validation traffic through the corporate proxy |
 | **API call log** | `silicaproxy.api-call-log.enabled` | `SILICAPROXY_API_CALL_LOG_ENABLED`                                | `false` | Audit every live OSV/deps.dev call in `api_call_log` — **disabled by default, see warning below** |
@@ -912,7 +932,7 @@ The `step` field indicates which pipeline stage made the blocking decision:
 ## Observability
 
 - **Prometheus metrics** at `/actuator/prometheus` (SQL latency, package verdict counters, HikariCP pool stats) — see [Metrics](#metrics) for the full list.
-- **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
+- **External validation startup log** (`INFO`): on boot, every configured external validation service is logged with its effective settings (`enabled`, `mode`, `url`, `blocking`, `failOpen`, `timeoutSeconds`, `cacheTtlMinutes`, `headCheck`) — use this to catch a missing/wrong value (e.g. an unset `cache-ttl-minutes`, see [Configuration Reference](#full-variable-table)) without reading the YAML/env back out of the running container.
 - **External validation callback log** (`INFO`): every async callback received at `POST /external-validation/callback/{token}` logs the originating service, package, and verdict before it's applied.
 - **Sync progress** visible in `/api/vulnerabilities/sync/status` with per-job `progressPercent`.
 

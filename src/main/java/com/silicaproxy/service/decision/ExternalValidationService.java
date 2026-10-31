@@ -19,6 +19,7 @@ package com.silicaproxy.service.decision;
 
 import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ExternalValidationClient;
+import com.silicaproxy.dao.client.UpstreamExistenceChecker;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.dao.policy.MetadataCacheDao;
@@ -44,9 +45,11 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -65,6 +68,7 @@ public class ExternalValidationService {
     private final Executor asyncExecutor;
     private final ExternalValidationMetrics metrics;
     private final MetadataCacheDao metadataCacheDao;
+    private final UpstreamExistenceChecker headChecker;
 
     public ExternalValidationService(
             SilicaProxyProperties properties,
@@ -73,7 +77,8 @@ public class ExternalValidationService {
             ExternalValidationClient client,
             @Qualifier("externalValidationExecutor") Executor asyncExecutor,
             ExternalValidationMetrics metrics,
-            MetadataCacheDao metadataCacheDao) {
+            MetadataCacheDao metadataCacheDao,
+            UpstreamExistenceChecker headChecker) {
         this.properties = properties;
         this.cacheDao = cacheDao;
         this.verdictsDao = verdictsDao;
@@ -81,6 +86,7 @@ public class ExternalValidationService {
         this.asyncExecutor = asyncExecutor;
         this.metrics = metrics;
         this.metadataCacheDao = metadataCacheDao;
+        this.headChecker = headChecker;
     }
 
     @PostConstruct
@@ -107,9 +113,9 @@ public class ExternalValidationService {
 
         services.forEach((name, props) -> LOG.info(
                 "External validation service '{}' loaded: enabled={}, mode={}, url={}, blocking={}, "
-                        + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}",
+                        + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}, headCheck={}",
                 name, props.enabled(), props.mode(), props.url(), props.blocking(),
-                props.failOpen(), props.timeoutSeconds(), props.cacheTtlMinutes()));
+                props.failOpen(), props.timeoutSeconds(), props.cacheTtlMinutes(), props.headCheck()));
     }
 
     @Timed(value = "silicaproxy.service.extvalidation.check",
@@ -148,6 +154,19 @@ public class ExternalValidationService {
                         triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl)));
             }
             return permanentBlock.map(ExternalValidationOutcome::uncacheable);
+        }
+
+        // Upstream HEAD (services.<name>.head-check) : a service whose upstream does not hold the
+        // artifact is skipped for this request. Run after the permanent-block short-circuit so a
+        // known BLOCK costs no HEAD. If every service is skipped, nothing vetted the package :
+        // no outcome, and the caller goes on with its fallback chain.
+        Set<String> skipped = headCheckSkipped(enabled, fullUrl);
+        if (!skipped.isEmpty()) {
+            enabled = enabled.stream().filter(e -> !skipped.contains(e.getKey())).toList();
+            asyncServices = asyncServices.stream().filter(e -> !skipped.contains(e.getKey())).toList();
+            if (enabled.isEmpty()) {
+                return Optional.empty();
+            }
         }
 
         List<Map.Entry<String, ExternalValidationServiceProperties>> syncServices = enabled.stream()
@@ -457,6 +476,30 @@ public class ExternalValidationService {
             return new ServiceResult(ServiceOutcome.BLOCK, null);
         }
         return ServiceResult.allowedUntil(Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES));
+    }
+
+    // Names of the enabled services with head-check whose upstream answered 404 for fullUrl.
+    // UNKNOWN (error, timeout, 429) is not skipped : the service is called as if no check ran.
+    private Set<String> headCheckSkipped(
+            List<Map.Entry<String, ExternalValidationServiceProperties>> enabled, String fullUrl) {
+        if (fullUrl.isBlank()) {
+            return Set.of();
+        }
+        Set<String> skipped = new HashSet<>();
+        for (Map.Entry<String, ExternalValidationServiceProperties> entry : enabled) {
+            ExternalValidationServiceProperties props = entry.getValue();
+            if (!props.headCheck()) {
+                continue;
+            }
+            UpstreamExistenceChecker.Status status = headChecker.check(
+                    fullUrl, props.headCheckTimeoutSeconds(), props.headCheckCacheTtlMinutes());
+            if (status == UpstreamExistenceChecker.Status.NOT_FOUND) {
+                LOG.debug("External validation service {} skipped for {} : upstream answered 404",
+                        entry.getKey(), fullUrl);
+                skipped.add(entry.getKey());
+            }
+        }
+        return skipped;
     }
 
     private String buildCallbackUrl(UUID token) {
