@@ -378,7 +378,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
         assertThat(body).contains("/external-validation/callback/");
     }
 
-    // Verify POST body contains the original intercepted request URL
+    // Verify POST body contains the intercepted request URL, upgraded to https like the relay
     @Test
     void async_postBodyContainsUrlField() throws InterruptedException {
         proxyRestClient.get()
@@ -389,7 +389,7 @@ class ExternalValidationAsyncTest extends BaseIntegrationTest {
 
         wireMock.verify(postRequestedFor(urlEqualTo("/external-validate"))
                 .withRequestBody(matchingJsonPath("$.url",
-                        equalTo("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
+                        equalTo("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
     }
 
     // Test 23b — async_secondPendingRequest_doesNotRetrigger

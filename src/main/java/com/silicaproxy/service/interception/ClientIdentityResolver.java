@@ -114,6 +114,18 @@ public class ClientIdentityResolver {
                 headers.getFirst(HttpHeaders.USER_AGENT), clientId);
     }
 
+    /**
+     * Whether the request comes out of a CONNECT tunnel decrypted by {@link LoomProxyServer} : the
+     * client then asked for https, although Tomcat, fed in clear text, rebuilds an http:// URL.
+     *
+     * @param remoteAddr the address of the connection Tomcat accepted ({@code getRemoteAddr()})
+     * @param remotePort the source port of that connection ({@code getRemotePort()})
+     */
+    public boolean isTunnelled(String remoteAddr, int remotePort) {
+        ProxyConnectionRegistry.Peer relayed = isLoopback(remoteAddr) ? connectionRegistry.lookup(remotePort) : null;
+        return relayed != null && relayed.tunnelled();
+    }
+
     private String clientIp(String peer, @Nullable List<String> forwardedFor) {
         if (forwardedFor == null || !isTrusted(parseIp(peer))) {
             return peer;

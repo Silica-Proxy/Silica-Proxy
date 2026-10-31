@@ -27,9 +27,12 @@ import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
 import com.silicaproxy.model.entity.ExternalValidationVerdictEntry;
 import com.silicaproxy.model.dto.DecisionResult;
+import com.jayway.jsonpath.JsonPath;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
@@ -394,7 +397,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
                 .withRequestBody(matchingJsonPath("$.ecosystem", equalTo("npm"))));
     }
 
-    // Verify POST body contains the original intercepted request URL
+    // Verify POST body contains the intercepted request URL, upgraded to https like the relay
     @Test
     void sync_postBodyContainsUrlField() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
@@ -406,7 +409,53 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
         wireMock.verify(postRequestedFor(urlEqualTo("/external-validate"))
                 .withRequestBody(matchingJsonPath("$.url",
-                        equalTo("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
+                        equalTo("https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"))));
+    }
+
+    // A client may send an absolute https:// URL over a plain HTTP proxy connection (no CONNECT) :
+    // the service must receive that https URL, the one the proxy fetches upstream.
+    @Test
+    void sync_absoluteHttpsRequest_serviceReceivesHttpsUrl() throws Exception {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+        String url = "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz";
+
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
+            socket.getOutputStream().write(("GET " + url + " HTTP/1.1\r\nHost: registry.npmjs.org\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            String statusLine = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)).readLine();
+            assertThat(statusLine).contains(" 200");
+        }
+
+        ArgumentCaptor<String> fetchedUrl = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(proxyStreamClient).streamContent(fetchedUrl.capture(), any());
+        assertThat(fetchedUrl.getValue()).isEqualTo(url);
+        List<com.github.tomakehurst.wiremock.verification.LoggedRequest> requests =
+                wireMock.findAll(postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(requests).hasSize(1);
+        assertThat(JsonPath.<String>read(requests.get(0).getBodyAsString(), "$.url")).isEqualTo(url);
+    }
+
+    // The service downloads the artifact itself : the URL it receives must be the one the proxy
+    // actually fetched upstream, not the plain-HTTP one the client asked for.
+    @Test
+    void sync_postBodyUrlIsTheUrlFetchedUpstream() throws Exception {
+        wireMock.stubFor(post(urlEqualTo("/external-validate"))
+                .willReturn(okJson("{\"verdict\":\"ALLOWED\"}")));
+
+        proxyRestClient.get()
+                .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                .retrieve().toBodilessEntity();
+
+        ArgumentCaptor<String> fetchedUrl = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(proxyStreamClient).streamContent(fetchedUrl.capture(), any());
+        List<com.github.tomakehurst.wiremock.verification.LoggedRequest> requests =
+                wireMock.findAll(postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(requests).hasSize(1);
+        assertThat(JsonPath.<String>read(requests.get(0).getBodyAsString(), "$.url"))
+                .isEqualTo(fetchedUrl.getValue());
     }
 
     // Callers using the legacy 3-arg SecurityService.getDecision overload have no full URL to
