@@ -80,16 +80,21 @@ class ExternalValidationCleanupServiceTest extends BaseIntegrationTest {
         assertThat(cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isEmpty();
     }
 
-    // Test 36 — expiredTimeout_isDeleted
+    // Test 36 — an expired PENDING turned TIMEOUT survives the same sweep (the client's retry must
+    // still see the failure, answered UNAVAILABLE), and is deleted an hour later.
     @Test
-    void expiredTimeout_isDeleted() {
+    void expiredTimeout_isKeptAnHourThenDeleted() {
         cacheDao.upsertPendingSync("svc", "lodash", "npm", "4.17.21",
                 Instant.now().minus(2, ChronoUnit.MINUTES));
-        // expireTimedOutPending sets expires_at to now() — so it's immediately "expired"
         cacheDao.expireTimedOutPending();
 
-        int deleted = cacheDao.deleteExpiredEntries();
-        assertThat(deleted).isEqualTo(1);
+        assertThat(cacheDao.deleteExpiredEntries()).isZero();
+        assertThat(cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21"))
+                .get().extracting(e -> e.status()).isEqualTo("TIMEOUT");
+
+        jdbcClient.sql("UPDATE external_validation_cache SET updated_at = CURRENT_TIMESTAMP - INTERVAL '61 minutes'")
+                .update();
+        assertThat(cacheDao.deleteExpiredEntries()).isEqualTo(1);
         assertThat(cacheDao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isEmpty();
     }
 

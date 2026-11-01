@@ -18,9 +18,12 @@
 package com.silicaproxy.service.decision;
 
 import com.silicaproxy.BaseIntegrationTest;
+import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.client.ProxyStreamClient;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.model.entity.ExternalValidationCacheEntry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,7 +53,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 // External validation — async mode, fail-open=false (fail-closed).
-// PENDING state means BLOCKED — no package passes while the external service is thinking.
+// No verdict yet means a temporary block : 429 + Retry-After + no-store, the source telling a scan
+// in progress (EXTERNAL_VALIDATION_PENDING) from an unreachable service (EXTERNAL_VALIDATION_UNAVAILABLE).
 class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
 
     @LocalServerPort
@@ -64,6 +68,9 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
 
     @MockitoBean
     private ProxyStreamClient proxyStreamClient;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     private RestClient proxyRestClient;
 
@@ -113,15 +120,15 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
 
     // Test 41 — async_firstRequest_failClosed_storesPendingAndBlocks
     @Test
-    void async_firstRequest_failClosed_returns403WhilePending() throws InterruptedException {
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+    void async_firstRequest_failClosed_returns429PendingWhileScanRuns() throws InterruptedException {
+        double before = blockReasonCount(Metrics.REASON_PENDING);
+        HttpClientErrorException e = requestBlocked();
+        assertTemporaryBlock(e);
+        assertThat(blockReasonCount(Metrics.REASON_PENDING) - before).isEqualTo(1.0);
+        assertThat(e.getResponseBodyAsString())
+                .contains("\"step\":\"EXTERNAL_VALIDATION_PENDING\"")
+                .contains("\"error\":\"ExternalValidationPending\"")
+                .contains("test-scanner");
 
         Thread.sleep(500); // Fire-and-forget async task writes DB and calls WireMock after the response
 
@@ -134,9 +141,9 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
     }
 
-    // Test 24 — async_pendingState_failClosed_returns403
+    // Test 24 — async_pendingState_failClosed_returns429Pending
     @Test
-    void async_pendingAlreadyExists_failClosed_returns403() throws InterruptedException {
+    void async_pendingAlreadyExists_failClosed_returns429Pending() throws InterruptedException {
         // Pre-populate PENDING entry (simulates in-progress check)
         jdbcClient.sql("""
                 INSERT INTO external_validation_cache
@@ -146,14 +153,9 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
                 """).params(java.util.UUID.randomUUID(),
                 Timestamp.from(Instant.now().plus(30, ChronoUnit.MINUTES))).update();
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        HttpClientErrorException e = requestBlocked();
+        assertTemporaryBlock(e);
+        assertThat(e.getResponseBodyAsString()).contains("\"step\":\"EXTERNAL_VALIDATION_PENDING\"");
 
         Thread.sleep(500); // Ensure the fire-and-forget task (which exits early on valid PENDING) completes
 
@@ -161,21 +163,17 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         wireMock.verify(exactly(0), postRequestedFor(urlEqualTo("/external-validate")));
     }
 
-    // Test 43 — async_initialPostFails_failClosed_returns403
+    // Test 43 — async_initialPostFails_failClosed_returns429
     @Test
-    void async_initialPostFails_failClosed_returns403() throws InterruptedException {
+    void async_initialPostFails_failClosed_returns429() throws InterruptedException {
         wireMock.resetAll();
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withStatus(500)));
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        // The state is read before the background trigger : the first request sees a scan starting.
+        HttpClientErrorException e = requestBlocked();
+        assertTemporaryBlock(e);
+        assertThat(e.getResponseBodyAsString()).contains("\"step\":\"EXTERNAL_VALIDATION_PENDING\"");
 
         Thread.sleep(500); // Wait for async task to complete and update DB
 
@@ -185,9 +183,35 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         assertThat(entry.get().status()).isEqualTo("TIMEOUT");
     }
 
-    // Test 46 — async_pendingTimeout_failClosed_returns403
+    // No callback within pending-ttl, the cleanup sweep not run yet (row still PENDING, expired) :
+    // same as a swept TIMEOUT row, the service is reported unavailable and a new scan starts.
     @Test
-    void async_pendingTimeout_failClosed_returns403() throws InterruptedException {
+    void async_pendingExpiredNotSwept_failClosed_returns429UnavailableAndRetriggers() throws InterruptedException {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_cache
+                    (callback_token, service_name, package_name, ecosystem, package_version,
+                     mode, status, expires_at)
+                VALUES (?, 'test-scanner', 'lodash', 'npm', '4.17.21', 'ASYNC', 'PENDING', ?)
+                """).params(java.util.UUID.randomUUID(),
+                Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
+
+        double before = blockReasonCount(Metrics.REASON_UNAVAILABLE);
+        HttpClientErrorException e = requestBlocked();
+        assertTemporaryBlock(e);
+        assertThat(e.getResponseBodyAsString())
+                .contains("\"step\":\"EXTERNAL_VALIDATION_UNAVAILABLE\"")
+                .contains("\"error\":\"ExternalValidationUnavailable\"")
+                .contains("test-scanner");
+        assertThat(blockReasonCount(Metrics.REASON_UNAVAILABLE) - before).isEqualTo(1.0);
+
+        Thread.sleep(500); // Fire-and-forget re-trigger
+        wireMock.verify(exactly(1), postRequestedFor(urlEqualTo("/external-validate")));
+        assertThat(requestBlocked().getResponseBodyAsString()).contains("\"step\":\"EXTERNAL_VALIDATION_PENDING\"");
+    }
+
+    // Test 46 — async_pendingTimeout_failClosed_returns429
+    @Test
+    void async_pendingTimeout_failClosed_returns429() throws InterruptedException {
         // Pre-populate TIMEOUT entry (pending expired without callback)
         jdbcClient.sql("""
                 INSERT INTO external_validation_cache
@@ -195,15 +219,11 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
                 VALUES ('test-scanner', 'lodash', 'npm', '4.17.21', 'ASYNC', 'TIMEOUT', ?)
                 """).param(Timestamp.from(Instant.now().minus(1, ChronoUnit.MINUTES))).update();
 
-        // Fail-closed: re-triggers async check but still blocks the current request
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        // Fail-closed: re-triggers async check but still blocks the current request (temporarily),
+        // reporting the previous failure
+        HttpClientErrorException e = requestBlocked();
+        assertTemporaryBlock(e);
+        assertThat(e.getResponseBodyAsString()).contains("\"step\":\"EXTERNAL_VALIDATION_UNAVAILABLE\"");
 
         Thread.sleep(1000); // Fire-and-forget async task calls WireMock and updates DB after the response
 
@@ -213,5 +233,30 @@ class ExternalValidationAsyncFailClosedTest extends BaseIntegrationTest {
         Optional<ExternalValidationCacheEntry> entry = cacheDao.findByServiceAndPackage("test-scanner", "lodash", "npm", "4.17.21");
         assertThat(entry).isPresent();
         assertThat(entry.get().status()).isEqualTo("PENDING");
+    }
+
+    private HttpClientErrorException requestBlocked() {
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+        } catch (HttpClientErrorException e) {
+            return e;
+        }
+        return fail("Expected a blocked request");
+    }
+
+    private double blockReasonCount(String reason) {
+        Counter counter = meterRegistry.find(Metrics.BLOCK_REASON_METRIC).tag(Metrics.TAG_REASON, reason).counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
+    // A block that only waits for a verdict : 429, never 403, never cached by a repository manager.
+    private static void assertTemporaryBlock(HttpClientErrorException e) {
+        assertThat(e.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        HttpHeaders headers = e.getResponseHeaders();
+        assertThat(headers).isNotNull();
+        assertThat(headers.getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("30");
+        assertThat(headers.getFirst(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-store");
     }
 }

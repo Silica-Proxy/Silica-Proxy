@@ -37,6 +37,13 @@ public enum DecisionSource {
     REGISTRY_DEPRECATION,
     REGISTRY_QUARANTINE,
     EXTERNAL_VALIDATION,
+    // A fail-closed blocking service has no verdict yet because its scan is still running (async
+    // callback awaited, or a concurrent sync call for the same package in progress) :
+    // temporary (429 + Retry-After), never cached.
+    EXTERNAL_VALIDATION_PENDING,
+    // A fail-closed blocking service could not give a verdict (sync timeout, network error,
+    // unexpected verdict, failed async trigger) : temporary (429 + Retry-After), never cached.
+    EXTERNAL_VALIDATION_UNAVAILABLE,
     EXTERNAL_VALIDATION_CHAIN,
     OSV_LIVE,
     DEPS_DEV,

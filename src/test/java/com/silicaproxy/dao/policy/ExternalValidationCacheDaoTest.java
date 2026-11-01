@@ -241,6 +241,34 @@ class ExternalValidationCacheDaoTest extends BaseIntegrationTest {
         assertThat(result.get().status()).isEqualTo("TIMEOUT");
     }
 
+    // A recent TIMEOUT is kept so the client's retry still sees the failure (UNAVAILABLE)
+    @Test
+    void deleteExpiredEntries_keepsRecentTimeout() {
+        dao.upsertPendingSync("svc", "lodash", "npm", "4.17.21",
+                Instant.now().minus(1, ChronoUnit.MINUTES));
+        dao.updateToTimeout("svc", "lodash", "npm", "4.17.21");
+
+        int deleted = dao.deleteExpiredEntries();
+
+        assertThat(deleted).isEqualTo(0);
+        assertThat(dao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isPresent();
+    }
+
+    // A TIMEOUT older than an hour is deleted
+    @Test
+    void deleteExpiredEntries_deletesOldTimeout() {
+        dao.upsertPendingSync("svc", "lodash", "npm", "4.17.21",
+                Instant.now().minus(1, ChronoUnit.MINUTES));
+        dao.updateToTimeout("svc", "lodash", "npm", "4.17.21");
+        jdbcClient.sql("UPDATE external_validation_cache SET updated_at = CURRENT_TIMESTAMP - INTERVAL '61 minutes'")
+                .update();
+
+        int deleted = dao.deleteExpiredEntries();
+
+        assertThat(deleted).isEqualTo(1);
+        assertThat(dao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isEmpty();
+    }
+
     // Test 56 — deleteExpiredEntries does NOT delete PENDING (even expired)
     @Test
     void deleteExpiredEntries_doesNotDeletePending() {

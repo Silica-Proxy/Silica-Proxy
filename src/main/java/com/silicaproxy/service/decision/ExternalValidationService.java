@@ -60,6 +60,7 @@ import java.util.stream.Collectors;
 public class ExternalValidationService {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalValidationService.class);
+    private static final String TIMEOUT = "TIMEOUT";
 
     private final SilicaProxyProperties properties;
     private final ExternalValidationCacheDao cacheDao;
@@ -177,44 +178,81 @@ public class ExternalValidationService {
         List<ServiceResult> syncOutcomes = runSyncServicesInParallel(
                 syncServices, packageName, version, ecosystem, fullUrl);
 
-        boolean syncBlocked = syncOutcomes.stream().anyMatch(ServiceResult::isBlocking);
+        // Only a real BLOCK verdict counts here : a sync service without a verdict (fail-closed
+        // timeout/error) only blocks temporarily, so the async scans still start and the client's
+        // retry can be answered sooner.
+        boolean syncBlocked = syncOutcomes.stream().anyMatch(o -> o.outcome() == ServiceOutcome.BLOCK);
 
-        // 2. Trigger ASYNC services — always if all sync ALLOW, conditionally if sync blocked
+        // 2. Trigger ASYNC services — always unless a sync service returned BLOCKED, then only
+        // when trigger-async-on-sync-block is enabled
         boolean triggerAsync = !syncBlocked
                 || properties.externalValidation().triggerAsyncOnSyncBlock();
+
+        // 3. Collect async state from cache (already-pending or already-resolved) BEFORE triggering :
+        // a trigger first upserts PENDING, which would otherwise race with this read and hide the
+        // outcome of the previous trigger (TIMEOUT) from this request.
+        List<ServiceResult> asyncOutcomes = asyncServices.stream()
+                .map(e -> checkAsyncCacheState(e.getKey(), e.getValue(), packageName, version, ecosystem))
+                .toList();
 
         if (triggerAsync) {
             asyncServices.forEach(e -> asyncExecutor.execute(() ->
                     triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl)));
         }
 
-        // 3. Collect async state from cache (already-pending or already-resolved)
-        List<ServiceResult> asyncOutcomes = asyncServices.stream()
-                .map(e -> checkAsyncCacheState(e.getKey(), e.getValue(), packageName, version, ecosystem))
-                .toList();
-
-        // 4. Aggregate outcomes (most restrictive wins across blocking services)
+        // 4. Aggregate outcomes
         List<ServiceResult> allOutcomes = new ArrayList<>(syncOutcomes);
         allOutcomes.addAll(asyncOutcomes);
+        return Optional.of(aggregate(allOutcomes, enabled, packageName, version, ecosystem));
+    }
 
-        boolean anyBlock = allOutcomes.stream().anyMatch(ServiceResult::isBlocking);
-
-        if (anyBlock) {
-            boolean realVerdict = allOutcomes.stream().anyMatch(o -> o.outcome() == ServiceOutcome.BLOCK);
-            metrics.recordBlockReasonMetric(realVerdict ? Metrics.REASON_VERDICT : Metrics.REASON_FAIL_CLOSED);
+    // A real BLOCK verdict wins (permanent, 403) ; otherwise a fail-closed blocking service without
+    // a verdict blocks temporarily (429), UNAVAILABLE (needs an operator) being reported before
+    // PENDING (resolves on its own).
+    private ExternalValidationOutcome aggregate(
+            List<ServiceResult> allOutcomes,
+            List<Map.Entry<String, ExternalValidationServiceProperties>> enabled,
+            String packageName, String version, String ecosystem) {
+        if (allOutcomes.stream().anyMatch(o -> o.outcome() == ServiceOutcome.BLOCK)) {
+            metrics.recordBlockReasonMetric(Metrics.REASON_VERDICT);
             String reason = buildBlockReason(enabled, packageName, version, ecosystem);
-            return Optional.of(ExternalValidationOutcome.uncacheable(
-                    DecisionResult.block(DecisionSource.EXTERNAL_VALIDATION, reason)));
+            return ExternalValidationOutcome.uncacheable(
+                    DecisionResult.block(DecisionSource.EXTERNAL_VALIDATION, reason));
         }
 
-        return Optional.of(new ExternalValidationOutcome(
+        List<String> unavailable = servicesWith(allOutcomes, ServiceOutcome.UNAVAILABLE);
+        if (!unavailable.isEmpty()) {
+            metrics.recordBlockReasonMetric(Metrics.REASON_UNAVAILABLE);
+            return ExternalValidationOutcome.uncacheable(DecisionResult.block(
+                    DecisionSource.EXTERNAL_VALIDATION_UNAVAILABLE,
+                    "External validation service unavailable (" + String.join(", ", unavailable)
+                            + "); retry later."));
+        }
+
+        List<String> pending = servicesWith(allOutcomes, ServiceOutcome.PENDING);
+        if (!pending.isEmpty()) {
+            metrics.recordBlockReasonMetric(Metrics.REASON_PENDING);
+            return ExternalValidationOutcome.uncacheable(DecisionResult.block(
+                    DecisionSource.EXTERNAL_VALIDATION_PENDING,
+                    "External validation in progress (" + String.join(", ", pending) + "); retry later."));
+        }
+
+        return new ExternalValidationOutcome(
                 DecisionResult.allow(DecisionSource.EXTERNAL_VALIDATION,
                         "All external validation services allowed this package."),
-                allowCacheableUntil(allOutcomes)));
+                allowCacheableUntil(allOutcomes));
+    }
+
+    private static List<String> servicesWith(List<ServiceResult> outcomes, ServiceOutcome outcome) {
+        return outcomes.stream()
+                .filter(o -> o.outcome() == outcome)
+                .map(ServiceResult::serviceName)
+                .sorted()
+                .toList();
     }
 
     // The final ALLOW may only be cached while every service's ALLOW still holds : a single
-    // PENDING_OPEN (pending async scan, fail-open error/timeout) vetted nothing, so nothing is
+    // UNVETTED_OPEN (pending async scan, fail-open error/timeout) vetted nothing, so nothing is
     // cached ; otherwise the earliest ALLOW expiry bounds the cache entry.
     private static @Nullable Instant allowCacheableUntil(List<ServiceResult> outcomes) {
         Instant until = null;
@@ -347,7 +385,7 @@ public class ExternalValidationService {
             String packageName, String version, String ecosystem, String fullUrl) {
         // Permanent block check first
         if (verdictsDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version).isPresent()) {
-            return permanentVerdictResult(props);
+            return permanentVerdictResult(serviceName, props);
         }
 
         // Cache check
@@ -356,11 +394,11 @@ public class ExternalValidationService {
         if (cached.isPresent()) {
             ExternalValidationCacheEntry entry = cached.get();
             if (Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
-                return ServiceResult.allowedUntil(entry.expiresAt());
+                return ServiceResult.allowedUntil(serviceName, entry.expiresAt());
             }
             if ("PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
                 // Another concurrent check in progress — apply fail-open/closed without re-scanning
-                return ServiceResult.pending(props);
+                return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.PENDING);
             }
             // TIMEOUT or expired → fall through to re-scan
         }
@@ -385,7 +423,7 @@ public class ExternalValidationService {
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
             LOG.debug("External validation sync call to {} failed for {}/{} ({})",
                     serviceName, ecosystem, packageName, version);
-            return ServiceResult.pending(props);
+            return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.UNAVAILABLE);
         }
 
         if (Metrics.BLOCKED.equalsIgnoreCase(result.verdict())) {
@@ -393,7 +431,7 @@ public class ExternalValidationService {
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
             // Recorded either way — blocking=false only changes whether it's enforced
             verdictsDao.save(serviceName, packageName, ecosystem, version, result.reason());
-            return permanentVerdictResult(props);
+            return permanentVerdictResult(serviceName, props);
         }
 
         if (!Metrics.ALLOWED.equalsIgnoreCase(result.verdict())) {
@@ -405,14 +443,14 @@ public class ExternalValidationService {
             LOG.warn("External validation service {} returned unexpected verdict '{}' for {}/{} ({}) "
                             + "— applying failOpen={} policy",
                     serviceName, result.verdict(), ecosystem, packageName, version, props.failOpen());
-            return ServiceResult.pending(props);
+            return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.UNAVAILABLE);
         }
 
         // ALLOWED
         metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_SYNC, Metrics.ALLOWED);
         Instant cacheExpiry = Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES);
         cacheDao.updateToAllowed(serviceName, packageName, ecosystem, version, result.reason(), cacheExpiry);
-        return ServiceResult.allowedUntil(cacheExpiry);
+        return ServiceResult.allowedUntil(serviceName, cacheExpiry);
     }
 
     private void triggerAsyncService(
@@ -452,30 +490,39 @@ public class ExternalValidationService {
             String serviceName, ExternalValidationServiceProperties props,
             String packageName, String version, String ecosystem) {
         if (verdictsDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version).isPresent()) {
-            return permanentVerdictResult(props);
+            return permanentVerdictResult(serviceName, props);
         }
         Optional<ExternalValidationCacheEntry> cached =
                 cacheDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version);
         if (cached.isPresent()) {
             ExternalValidationCacheEntry entry = cached.get();
             if (Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
-                return ServiceResult.allowedUntil(entry.expiresAt());
+                return ServiceResult.allowedUntil(serviceName, entry.expiresAt());
             }
-            if ("PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now())) {
-                return ServiceResult.pending(props);
+            boolean pending = "PENDING".equals(entry.status());
+            if (pending && entry.expiresAt().isAfter(Instant.now())) {
+                return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.PENDING);
+            }
+            if (pending || TIMEOUT.equals(entry.status())) {
+                // The previous scan failed : trigger not acknowledged (TIMEOUT), or no callback within
+                // pending-ttl-minutes (PENDING expired, turned TIMEOUT by the cleanup sweep). This
+                // request re-triggers it ; the next one sees the new PENDING.
+                return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.UNAVAILABLE);
             }
         }
-        // No entry or expired — new async call was just triggered; apply fail-open/fail-closed
-        return ServiceResult.pending(props);
+        // No entry or expired ALLOW — a new async scan is being triggered; apply fail-open/fail-closed
+        return ServiceResult.noVerdict(serviceName, props, ServiceOutcome.PENDING);
     }
 
     // A recorded BLOCKED verdict is permanent : enforced by a blocking service, informational
     // (ALLOW) otherwise -- that ALLOW never changes, so it is cacheable for cacheTtlMinutes.
-    private static ServiceResult permanentVerdictResult(ExternalValidationServiceProperties props) {
+    private static ServiceResult permanentVerdictResult(
+            String serviceName, ExternalValidationServiceProperties props) {
         if (props.blocking()) {
-            return new ServiceResult(ServiceOutcome.BLOCK, null);
+            return new ServiceResult(serviceName, ServiceOutcome.BLOCK, null);
         }
-        return ServiceResult.allowedUntil(Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES));
+        return ServiceResult.allowedUntil(
+                serviceName, Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES));
     }
 
     // Names of the enabled services with head-check whose upstream answered 404 for fullUrl.
@@ -530,26 +577,32 @@ public class ExternalValidationService {
     }
 
     private enum ServiceOutcome {
+        // Real BLOCKED verdict of a blocking service : permanent.
         BLOCK,
         ALLOW,
-        PENDING_OPEN,
-        PENDING_CLOSED
+        // No verdict, but the service lets the package through (fail-open, or not blocking).
+        UNVETTED_OPEN,
+        // No verdict yet from a blocking fail-closed service : its scan is running (async callback
+        // awaited, or a concurrent sync call for the same package in progress).
+        PENDING,
+        // No verdict from a blocking fail-closed service : timeout, error, unexpected verdict,
+        // failed async trigger.
+        UNAVAILABLE
     }
 
     // allowedUntil : for an ALLOW, the instant this service's verdict stops being valid.
-    private record ServiceResult(ServiceOutcome outcome, @Nullable Instant allowedUntil) {
+    private record ServiceResult(String serviceName, ServiceOutcome outcome, @Nullable Instant allowedUntil) {
 
-        static ServiceResult allowedUntil(Instant expiresAt) {
-            return new ServiceResult(ServiceOutcome.ALLOW, expiresAt);
+        static ServiceResult allowedUntil(String serviceName, Instant expiresAt) {
+            return new ServiceResult(serviceName, ServiceOutcome.ALLOW, expiresAt);
         }
 
-        static ServiceResult pending(ExternalValidationServiceProperties props) {
-            return new ServiceResult(
-                    props.failOpen() ? ServiceOutcome.PENDING_OPEN : ServiceOutcome.PENDING_CLOSED, null);
-        }
-
-        boolean isBlocking() {
-            return outcome == ServiceOutcome.BLOCK || outcome == ServiceOutcome.PENDING_CLOSED;
+        // closedOutcome (PENDING or UNAVAILABLE) only applies to a blocking fail-closed service :
+        // a non-blocking service can never block, whatever its fail-open setting.
+        static ServiceResult noVerdict(
+                String serviceName, ExternalValidationServiceProperties props, ServiceOutcome closedOutcome) {
+            boolean closed = props.blocking() && !props.failOpen();
+            return new ServiceResult(serviceName, closed ? closedOutcome : ServiceOutcome.UNVETTED_OPEN, null);
         }
     }
 }

@@ -44,6 +44,7 @@ import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -380,8 +381,36 @@ class ProxyControllerTest {
                 anyString(), anyInt(), anyString(), any(ClientIdentity.class));
     }
 
+    // A fail-closed external validation service without a verdict yet : temporary, so 429 rather
+    // than a 403 an artifacts repository would remember.
     @ParameterizedTest
-    @EnumSource(value = DecisionSource.class, names = {"REGISTRY_QUARANTINE", "UPSTREAM_THROTTLED"},
+    @CsvSource({
+            "EXTERNAL_VALIDATION_PENDING, ExternalValidationPending",
+            "EXTERNAL_VALIDATION_UNAVAILABLE, ExternalValidationUnavailable"
+    })
+    void shouldAnswer429WithRetryAfterWhileAnExternalValidationVerdictIsMissing(
+            DecisionSource sourceType, String errorCode) throws Exception {
+        DecisionResult temporary = DecisionResult.block(sourceType, "External validation in progress (scanner); retry later.");
+        when(securityService.getDecision(eq("new-pkg"), eq("1.0.0"), eq("npm"), anyString())).thenReturn(temporary);
+        evaluate("new-pkg", "1.0.0", "npm");
+
+        mockMvc.perform(get("http://registry.npmjs.org/new-pkg/-/new-pkg-1.0.0.tgz"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "30"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.error").value(errorCode))
+                .andExpect(jsonPath("$.step").value(sourceType.name()))
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.detail").value("External validation in progress (scanner); retry later."));
+
+        verifyNoInteractions(proxyStreamClient);
+        verify(auditLogService).logAudit(eq("new-pkg"), eq("1.0.0"), eq("npm"), eq(sourceType.name()), eq("BLOCK"),
+                anyString(), anyInt(), anyString(), any(ClientIdentity.class));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = DecisionSource.class, names = {"REGISTRY_QUARANTINE", "UPSTREAM_THROTTLED",
+            "EXTERNAL_VALIDATION_PENDING", "EXTERNAL_VALIDATION_UNAVAILABLE"},
             mode = EnumSource.Mode.EXCLUDE)
     void shouldUseSecurityBlockedErrorCodeForEveryNonQuarantineBlockingStep(DecisionSource sourceType) throws Exception {
         DecisionResult blocked = DecisionResult.block(sourceType, "Blocked for test reasons");

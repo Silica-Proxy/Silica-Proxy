@@ -76,7 +76,8 @@ public final class Metrics {
     public static final String VALIDATION_CALLS_METRIC = "silicaproxy.external.validation.calls";
     public static final String BLOCK_REASON_METRIC = "silicaproxy.external.validation.block_reason";
     public static final String REASON_VERDICT = "VERDICT";
-    public static final String REASON_FAIL_CLOSED = "FAIL_CLOSED";
+    public static final String REASON_PENDING = "PENDING";
+    public static final String REASON_UNAVAILABLE = "UNAVAILABLE";
     public static final String CALLBACK_METRIC = "silicaproxy.external.validation.callback";
     public static final String SERVICE_UNKNOWN = "unknown";
 
