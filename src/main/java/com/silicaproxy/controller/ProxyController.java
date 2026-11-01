@@ -22,6 +22,7 @@ import com.silicaproxy.dao.client.UpstreamThrottle;
 import com.silicaproxy.model.dto.ClientIdentity;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
+import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.audit.AuditLogService;
 import com.silicaproxy.service.decision.SecurityService;
 import com.silicaproxy.service.interception.HttpsUpgradePolicy;
@@ -64,8 +65,9 @@ import java.util.Enumeration;
  * has {@link PackageIdentificationService} identify the package/version/ecosystem, queries
  * {@link SecurityService} for the decision, 
  * then either streams the download (ALLOW) or returns a detailed 403 RFC 7807 
- * response (BLOCK) -- a 429 with {@code Retry-After} when the block only means that an upstream
- * needed for the decision is rate-limiting the proxy. Called at each dependency resolution by package managers 
+ * response (BLOCK) -- a 429 with {@code Retry-After} when the block is only temporary : an upstream
+ * needed for the decision is rate-limiting the proxy, or a fail-closed external validation service
+ * has no verdict yet. Called at each dependency resolution by package managers 
  * (npm, pip, Maven) ; each call also triggers an asynchronous audit. A request its URL does not
  * identify gets a last chance from the upstream response ({@link ResponseIdentificationService}),
  * before its body is relayed.
@@ -95,6 +97,8 @@ public class ProxyController {
     private final ClientIdentityResolver clientIdentityResolver;
     // Tells the client when to retry a request blocked because an upstream is rate-limiting the proxy.
     private final UpstreamThrottle upstreamThrottle;
+    // Retry-After of the 429 answered while an external validation service has no verdict yet.
+    private final int externalValidationRetryAfterSeconds;
 
     public ProxyController(
             SecurityService securityService,
@@ -108,7 +112,8 @@ public class ProxyController {
             ObjectMapper objectMapper) {
         this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
                 httpsUpgradePolicy, responseIdentification, metrics, objectMapper, ClientIdentityResolver.untrusting(),
-                UpstreamThrottle.standalone());
+                UpstreamThrottle.standalone(),
+                SilicaProxyProperties.ExternalValidationProperties.DEFAULT_RETRY_AFTER_SECONDS);
     }
 
     @Autowired
@@ -123,7 +128,26 @@ public class ProxyController {
             ProxyControllerMetrics metrics,
             ObjectMapper objectMapper,
             ClientIdentityResolver clientIdentityResolver,
-            UpstreamThrottle upstreamThrottle) {
+            UpstreamThrottle upstreamThrottle,
+            SilicaProxyProperties properties) {
+        this(securityService, auditLogService, proxyStreamClient, packageIdentification, npmPackumentIndex,
+                httpsUpgradePolicy, responseIdentification, metrics, objectMapper, clientIdentityResolver,
+                upstreamThrottle, properties.externalValidation().retryAfterSeconds());
+    }
+
+    ProxyController(
+            SecurityService securityService,
+            AuditLogService auditLogService,
+            ProxyStreamClient proxyStreamClient,
+            PackageIdentificationService packageIdentification,
+            NpmPackumentIndex npmPackumentIndex,
+            HttpsUpgradePolicy httpsUpgradePolicy,
+            ResponseIdentificationService responseIdentification,
+            ProxyControllerMetrics metrics,
+            ObjectMapper objectMapper,
+            ClientIdentityResolver clientIdentityResolver,
+            UpstreamThrottle upstreamThrottle,
+            int externalValidationRetryAfterSeconds) {
         this.securityService = securityService;
         this.auditLogService = auditLogService;
         this.proxyStreamClient = proxyStreamClient;
@@ -135,6 +159,7 @@ public class ProxyController {
         this.objectMapper = objectMapper;
         this.clientIdentityResolver = clientIdentityResolver;
         this.upstreamThrottle = upstreamThrottle;
+        this.externalValidationRetryAfterSeconds = externalValidationRetryAfterSeconds;
     }
 
     @GetMapping("/**")
@@ -216,8 +241,8 @@ public class ProxyController {
     }
 
     /**
-     * Records, audits and, when blocked, answers the 403 (or the 429 of an {@code UPSTREAM_THROTTLED}
-     * block) for a decision on {@code pkg}.
+     * Records, audits and, when blocked, answers the 403 (or the 429 of a temporary block :
+     * {@code UPSTREAM_THROTTLED}, {@code EXTERNAL_VALIDATION_PENDING/UNAVAILABLE}) for a decision on {@code pkg}.
      *
      * @return whether the request was blocked (the response is then already written)
      */
@@ -411,14 +436,21 @@ public class ProxyController {
             String version,
             String ecosystem,
             DecisionResult decision) throws IOException {
-        // A block that only means "an upstream is rate-limiting the proxy" : 429 rather than 403, so
-        // the artifacts repository retries later instead of remembering the artifact as forbidden
-        // or missing ; never stored by any cache on the way.
-        boolean throttled = decision.sourceType() == DecisionSource.UPSTREAM_THROTTLED;
-        HttpStatus status = throttled ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.FORBIDDEN;
+        // A temporary block (an upstream is rate-limiting the proxy, or an external validation
+        // service has no verdict yet) : 429 rather than 403, so the artifacts repository retries
+        // later instead of remembering the artifact as forbidden or missing ; never stored by any
+        // cache on the way. 429 rather than 503 : a 5xx can make Artifactory/Nexus take the whole
+        // remote repository offline, not just this artifact.
+        boolean externalValidationTemporary = decision.sourceType() == DecisionSource.EXTERNAL_VALIDATION_PENDING
+                || decision.sourceType() == DecisionSource.EXTERNAL_VALIDATION_UNAVAILABLE;
+        boolean temporary = externalValidationTemporary || decision.sourceType() == DecisionSource.UPSTREAM_THROTTLED;
+        HttpStatus status = temporary ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.FORBIDDEN;
         response.setStatus(status.value());
-        if (throttled) {
-            response.setHeader(HttpHeaders.RETRY_AFTER, Long.toString(upstreamThrottle.retryAfterSeconds()));
+        if (temporary) {
+            long retryAfterSeconds = externalValidationTemporary
+                    ? externalValidationRetryAfterSeconds
+                    : upstreamThrottle.retryAfterSeconds();
+            response.setHeader(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
             response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
         }
         response.setContentType("application/problem+json");
@@ -445,6 +477,8 @@ public class ProxyController {
         body.put("error", switch (decision.sourceType()) {
             case REGISTRY_QUARANTINE -> "QuarantineBlocked";
             case UPSTREAM_THROTTLED -> "UpstreamThrottled";
+            case EXTERNAL_VALIDATION_PENDING -> "ExternalValidationPending";
+            case EXTERNAL_VALIDATION_UNAVAILABLE -> "ExternalValidationUnavailable";
             default -> "SecurityBlocked";
         });
 

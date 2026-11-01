@@ -227,7 +227,7 @@ class ExternalValidationSyncTest extends BaseIntegrationTest {
 
     // A malformed/unexpected verdict must still honor fail-open (request forwarded here,
     // since this test class is configured fail-open=true) instead of being silently ALLOWED
-    // as if the verdict had been "ALLOWED" — see sync_malformedVerdict_failClosed_returns403
+    // as if the verdict had been "ALLOWED" — see sync_malformedVerdict_failClosed_returns429Unavailable
     // in ExternalValidationSyncFailClosedTest for the fail-closed counterpart.
     @Test
     void sync_malformedVerdict_failOpen_requestIsForwarded() {

@@ -48,7 +48,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 // External validation — sync mode, fail-open=false (fail-closed).
-// When the external service is unreachable or times out, the package is blocked.
+// When the external service is unreachable, times out or answers no usable verdict, the package
+// is blocked temporarily : 429 + Retry-After + no-store, source EXTERNAL_VALIDATION_UNAVAILABLE.
 class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
 
     @LocalServerPort
@@ -65,10 +66,10 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
 
     private RestClient proxyRestClient;
 
-    private double failClosedBlockCount() {
+    private double unavailableBlockCount() {
         io.micrometer.core.instrument.Counter counter = meterRegistry
                 .find(Metrics.BLOCK_REASON_METRIC)
-                .tag(Metrics.TAG_REASON, Metrics.REASON_FAIL_CLOSED)
+                .tag(Metrics.TAG_REASON, Metrics.REASON_UNAVAILABLE)
                 .counter();
         return counter == null ? 0.0 : counter.count();
     }
@@ -114,90 +115,74 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
                         new ByteArrayInputStream("fake-content".getBytes())));
     }
 
-    // Test 19 — sync_timeout_failClosed_returns403
+    // Test 19 — sync_timeout_failClosed_returns429Unavailable
     @Test
-    void sync_timeout_failClosed_returns403() {
+    void sync_timeout_failClosed_returns429Unavailable() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
-        double before = failClosedBlockCount();
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        double before = unavailableBlockCount();
+        assertUnavailable(requestBlocked());
         // Blocked only because the service timed out (fail-closed), not a real malicious verdict.
-        assertThat(failClosedBlockCount() - before).isEqualTo(1.0);
+        assertThat(unavailableBlockCount() - before).isEqualTo(1.0);
     }
 
-    // Test 38 — sync_networkFault_failClosed_returns403
+    // Test 38 — sync_networkFault_failClosed_returns429Unavailable
     @Test
-    void sync_networkFault_failClosed_returns403() {
+    void sync_networkFault_failClosed_returns429Unavailable() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse()
                         .withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        assertUnavailable(requestBlocked());
     }
 
-    // Test 40 — sync_http500_failClosed_returns403
+    // Test 40 — sync_http500_failClosed_returns429Unavailable
     @Test
-    void sync_http500_failClosed_returns403() {
+    void sync_http500_failClosed_returns429Unavailable() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(aResponse().withStatus(500)));
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        assertUnavailable(requestBlocked());
     }
 
     // A response that parses as JSON but doesn't carry a recognized verdict (missing field,
     // typo, unexpected value) must be treated like a transport error — NOT silently allowed —
     // so fail-open/fail-closed is honored instead of bypassed by a non-conformant body.
     @Test
-    void sync_malformedVerdict_failClosed_returns403() {
+    void sync_malformedVerdict_failClosed_returns429Unavailable() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"verdict\":\"UNKNOWN\"}")));
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        assertUnavailable(requestBlocked());
     }
 
     // Same as above but with the verdict field missing entirely from the response body.
     @Test
-    void sync_missingVerdictField_failClosed_returns403() {
+    void sync_missingVerdictField_failClosed_returns429Unavailable() {
         wireMock.stubFor(post(urlEqualTo("/external-validate"))
                 .willReturn(okJson("{\"reason\":\"no verdict field at all\"}")));
 
-        try {
-            proxyRestClient.get()
-                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
-                    .retrieve().toBodilessEntity();
-            fail("Expected 403");
-        } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        }
+        assertUnavailable(requestBlocked());
+    }
+
+    // Another request is already calling the service for this package (valid SYNC PENDING row) :
+    // no second call, the scan is reported in progress.
+    @Test
+    void sync_concurrentCallInProgress_failClosed_returns429Pending() {
+        jdbcClient.sql("""
+                INSERT INTO external_validation_cache
+                    (service_name, package_name, ecosystem, package_version, mode, status, expires_at)
+                VALUES ('test-scanner', 'lodash', 'npm', '4.17.21', 'SYNC', 'PENDING', ?)
+                """).param(java.sql.Timestamp.from(java.time.Instant.now().plusSeconds(30))).update();
+
+        HttpClientErrorException e = requestBlocked();
+
+        assertThat(e.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(e.getResponseBodyAsString())
+                .contains("\"step\":\"EXTERNAL_VALIDATION_PENDING\"")
+                .contains("\"error\":\"ExternalValidationPending\"");
+        wireMock.verify(0, postRequestedFor(urlEqualTo("/external-validate")));
     }
 
     // Test 40b — service unreachable still records TIMEOUT in cache
@@ -219,5 +204,28 @@ class ExternalValidationSyncFailClosedTest extends BaseIntegrationTest {
                 """).query(String.class).optional();
         assertThat(entry).isPresent();
         assertThat(entry.get()).isEqualTo("TIMEOUT");
+    }
+
+    private HttpClientErrorException requestBlocked() {
+        try {
+            proxyRestClient.get()
+                    .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
+                    .retrieve().toBodilessEntity();
+        } catch (HttpClientErrorException e) {
+            return e;
+        }
+        return fail("Expected a blocked request");
+    }
+
+    private static void assertUnavailable(HttpClientErrorException e) {
+        assertThat(e.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        HttpHeaders headers = e.getResponseHeaders();
+        assertThat(headers).isNotNull();
+        assertThat(headers.getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("30");
+        assertThat(headers.getFirst(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-store");
+        assertThat(e.getResponseBodyAsString())
+                .contains("\"step\":\"EXTERNAL_VALIDATION_UNAVAILABLE\"")
+                .contains("\"error\":\"ExternalValidationUnavailable\"")
+                .contains("test-scanner");
     }
 }

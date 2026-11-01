@@ -56,7 +56,8 @@ public class ExternalValidationMetrics {
     public void recordBlockReasonMetric(String reason) {
         Counter.builder(Metrics.BLOCK_REASON_METRIC)
                 .description("Total number of packages blocked by external validation, split between a real "
-                        + "malicious verdict and a fail-closed block caused by service unavailability")
+                        + "malicious verdict (VERDICT) and a temporary fail-closed block : scan still "
+                        + "running (PENDING) or service unavailable (UNAVAILABLE)")
                 .tag(Metrics.TAG_REASON, reason)
                 .register(meterRegistry)
                 .increment();

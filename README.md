@@ -262,7 +262,7 @@ SilicaProxy can call any number of external HTTP services to validate a package 
 
 #### Sync mode
 
-The proxy makes a POST call to the service and waits up to `timeout-seconds` (1 second by default) for a response. If the service replies in time, the verdict is applied immediately. On timeout or network error, the configurable `fail-open` / `fail-closed` policy applies.
+The proxy makes a POST call to the service and waits up to `timeout-seconds` (1 second by default) for a response. If the service replies in time, the verdict is applied immediately. On timeout, network error or unexpected verdict, the configurable `fail-open` / `fail-closed` policy applies (see [Missing verdict](#missing-verdict-fail-closed--429)).
 
 ```
 POST {url}
@@ -274,7 +274,7 @@ Response: { "verdict": "BLOCKED", "reason": "Malicious dependency detected." }
 
 #### Async mode
 
-The proxy fires a POST and returns immediately (applying `fail-open` / `fail-closed`). The service processes the package in the background and calls back the proxy when it has a verdict.
+The proxy fires a POST and returns immediately (applying `fail-open` / `fail-closed`, see [Missing verdict](#missing-verdict-fail-closed--429)). The service processes the package in the background and calls back the proxy when it has a verdict.
 
 ```
 POST {url}
@@ -288,6 +288,30 @@ Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
 ```
 
 The callback token is a UUID generated per request. The endpoint returns `404` if the token is unknown or has already been resolved.
+
+#### Missing verdict (fail-closed → 429)
+
+A real `BLOCKED` verdict from a `blocking: true` service is permanent : the proxy answers **403**
+(step `EXTERNAL_VALIDATION`). When a `blocking: true`, `fail-open: false` service has **no verdict
+yet**, the block is only temporary : the proxy answers **429** with `Retry-After`
+(`silicaproxy.external-validation.retry-after-seconds`, 30 by default) and `Cache-Control: no-store`,
+with one of two steps :
+
+| Step (`error`) | Cause |
+|---|---|
+| `EXTERNAL_VALIDATION_PENDING` (`ExternalValidationPending`) | A scan is running : async callback not arrived yet (within `pending-ttl-minutes`), or a concurrent sync call for the same package still in progress. |
+| `EXTERNAL_VALIDATION_UNAVAILABLE` (`ExternalValidationUnavailable`) | The service could not give a verdict : sync timeout, network error, unexpected verdict, an async trigger it did not acknowledge, or no callback within `pending-ttl-minutes` (the request triggers a new scan). |
+
+A real `BLOCKED` verdict wins over a missing one, and `UNAVAILABLE` is reported before `PENDING`.
+The `detail` names the services concerned. A `blocking: false` service never blocks, whatever its
+`fail-open`.
+
+Why 429 and not 403 : behind Artifactory or Nexus, a 403 from the upstream may be kept in the
+repository's negative cache, so the artifact would stay unavailable long after the scan allowed it.
+Why not 503 : a 5xx can make the repository manager take the **whole** remote repository offline.
+
+With an async service in fail-closed, the **first** download of a new version is therefore always
+refused (Gradle or npm fail on it) : retry once the scan has called back.
 
 If `api-key` is configured for the service (see [Configuration Reference](#full-variable-table)), the callback must present it back as `Authorization: Bearer {api-key}`, or the endpoint returns `401`. This is optional: a service with no `api-key` configured accepts callbacks with no `Authorization` header at all, exactly as before. The unguessable per-request UUID token is itself some protection, but it's not authentication — anyone who learns a pending token (logs, a leaked URL, a network observer) can otherwise forge a verdict for that request without it.
 
@@ -372,15 +396,28 @@ silicaproxy:
         fail-open: true
         blocking: true
         cache-ttl-minutes: 10080
+
+      package-behavior-guardian:
+        enabled: true
+        url: "http://package-behavior-guardian.yourcompany.com/v1/check"
+        api-key: "${PACKAGE_BEHAVIOR_GUARDIAN_API_KEY}"
+        mode: async
+        fail-open: false
+        blocking: true
+        head-check: true                 # skip the scan when the upstream answers 404 for the artifact
+        cache-ttl-minutes: 10080
 ```
 
 **Package-Name-Guardian example:** This configuration integrates [Package-Name-Guardian](https://github.com/Silica-Proxy/Package-Name-Guardian), a package name analysis service that validates whether package names match internal naming conventions, detects typosquatting patterns, and flags suspicious naming anomalies across ecosystems. Run it in sync mode (blocking until resolved) with a 1-second timeout.
 
+**Package-Behavior-Guardian example:** This configuration integrates [Package-Behavior-Guardian](https://github.com/Silica-Proxy/Package-Behavior-Guardian), a behavioral analysis service that scans the whole published version of a package (npm, PyPI, Maven) to catch a compromised release minutes after it is first requested, before any advisory lists it. It runs in async mode: the first request for a new version is answered with a temporary `429` (see [Missing verdict](#missing-verdict-fail-closed--429)) and the verdict is applied when the service calls back. `fail-open: false` keeps a version without verdict out of reach, and `head-check: true` skips the scan for artifacts the upstream does not have. It is deployed on the same Docker network as SilicaProxy, which is why the URL uses the container name rather than a public hostname. Because the service is async, `callback-base-url` must be set.
+`
 #### Available External Services
 
 | Service | Purpose | Repository |
 |---|---|---|
 | **Package-Name-Guardian** | Validates package names against internal conventions; detects typosquatting and naming anomalies | [Silica-Proxy/Package-Name-Guardian](https://github.com/Silica-Proxy/Package-Name-Guardian) |
+| **Package-Behavior-Guardian** | Behavioral analysis of npm, PyPI and Maven packages (static pass) to catch compromised releases before public advisories; async | [Silica-Proxy/Package-Behavior-Guardian](https://github.com/Silica-Proxy/Package-Behavior-Guardian) |
 
 ---
 
@@ -623,13 +660,14 @@ Every YAML property can be overridden by an environment variable. Spring Boot's 
 | | `silicaproxy.corporate-proxy.scope.external-git-repositories` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_EXTERNAL_GIT_REPOSITORIES`     | `true` | Route vulnerability DB git clones through proxy |
 | | `silicaproxy.corporate-proxy.scope.internal-git-repository` | `SILICAPROXY_CORPORATE_PROXY_SCOPE_INTERNAL_GIT_REPOSITORY`       | `false` | Route GitOps repo through proxy |
 | **External validation** | `silicaproxy.external-validation.callback-base-url` | `SILICAPROXY_EXTERNAL_VALIDATION_CALLBACK_BASE_URL`               | _(empty)_ | Base URL of this proxy instance — **required if any service uses `mode: async`**, and checked at startup: the proxy refuses to start rather than send a broken relative callback URL |
-| | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK`     | `false` | If true, async services are triggered even when a sync service already blocks |
+| | `silicaproxy.external-validation.trigger-async-on-sync-block` | `SILICAPROXY_EXTERNAL_VALIDATION_TRIGGER_ASYNC_ON_SYNC_BLOCK`     | `false` | If true, async services are triggered even when a sync service already returned `BLOCKED` (a sync service without a verdict never prevents the trigger) |
+| | `silicaproxy.external-validation.retry-after-seconds` | `SILICAPROXY_EXTERNAL_VALIDATION_RETRY_AFTER_SECONDS` | `30` | `Retry-After` of the 429 answered while a fail-closed service has no verdict yet. See [Missing verdict](#missing-verdict-fail-closed--429) |
 | | `silicaproxy.external-validation.services.<name>.enabled` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_ENABLED`          | `false` | Enable this external validation service |
 | | `silicaproxy.external-validation.services.<name>.url` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_URL`              | — | HTTP endpoint to POST validation requests to |
 | | `silicaproxy.external-validation.services.<name>.api-key` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_APIKEY`           | _(empty)_ | Sent as `Authorization` header on outbound calls; for async services, also required back as `Authorization: Bearer {api-key}` on the callback if set (optional otherwise) |
 | | `silicaproxy.external-validation.services.<name>.mode` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_MODE`             | — | `sync` (wait for response) or `async` (fire-and-forget + callback) |
 | | `silicaproxy.external-validation.services.<name>.timeout-seconds` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_TIMEOUTSECONDS`                                                               | `1` | Max wait time in sync mode — on timeout, `fail-open` policy applies |
-| | `silicaproxy.external-validation.services.<name>.fail-open` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_FAILOPEN`                                                                | `true` | `true` = allow on error/timeout/pending; `false` = block |
+| | `silicaproxy.external-validation.services.<name>.fail-open` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_FAILOPEN`                                                                | `true` | `true` = allow on error/timeout/pending; `false` = block temporarily (429 + `Retry-After`, see [Missing verdict](#missing-verdict-fail-closed--429)) — ignored when `blocking: false` |
 | | `silicaproxy.external-validation.services.<name>.blocking` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_BLOCKING`                                                                | `true` | `false` = verdict stored for audit but never blocks a package |
 | | `silicaproxy.external-validation.services.<name>.cache-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_CACHETTLMINUTES`                                                               | `0` ⚠️ | How long to cache an ALLOW verdict — **no implicit default, must be set explicitly** |
 | | `silicaproxy.external-validation.services.<name>.pending-ttl-minutes` | `SILICAPROXY_EXTERNALVALIDATION_SERVICES_<NAME>_PENDINGTTLMINUTES`                                                                | `30` | Async only — how long to keep a PENDING entry before marking it TIMEOUT (falls back to 30 if unset or `0`) |
@@ -921,7 +959,9 @@ The `step` field indicates which pipeline stage made the blocking decision:
 | `REGISTRY_QUARANTINE` | Package too recently published (anti-typosquatting) |
 | `REGISTRY_NOT_FOUND` | Version unknown to every registry consulted, with `quarantine.unknown-version-action: BLOCK` — never cached |
 | `UNIDENTIFIED_ARTIFACT` | npm tarball identified neither by its URL nor by a relayed packument, with `npm-packument-index.unidentified-tarball-action: BLOCK` ([details](PACKAGE_IDENTIFICATION.md#npm-tarball-identification)) |
-| `EXTERNAL_VALIDATION` | External validation service (sync or async) |
+| `EXTERNAL_VALIDATION` | External validation service (sync or async) — a real `BLOCKED` verdict, answered **403** |
+| `EXTERNAL_VALIDATION_PENDING` | A blocking `fail-open: false` service is still scanning (async callback awaited, or concurrent sync call) — answered **429** with `Retry-After`, never cached ([details](#missing-verdict-fail-closed--429)) |
+| `EXTERNAL_VALIDATION_UNAVAILABLE` | A blocking `fail-open: false` service could not give a verdict (timeout, error, unexpected verdict, unacknowledged async trigger, no callback within `pending-ttl-minutes`) — answered **429** with `Retry-After`, never cached ([details](#missing-verdict-fail-closed--429)) |
 | `OSV_LIVE` | Google OSV live API — first fallback |
 | `DEPS_DEV` | Google deps.dev live API — tried if OSV is disabled, or after OSV errors |
 | `API_FALLBACK_ERROR` | Every enabled live API fallback source failed — verdict decided by [`fail-open`](#what-fail-open--fail-closed-means), never cached |
@@ -1092,7 +1132,7 @@ Metric names, tag keys, and tag values are all defined once in `com.silicaproxy.
 | Metric | Type | Tags | Description |
 |---|---|---|---|
 | `silicaproxy.external.validation.calls` | Counter | `service`, `type` (`sync`/`async`), `result` (`ALLOWED`/`BLOCKED`/`ERROR`/`UNKNOWN_VERDICT`/`TRIGGERED`/`TRIGGER_ERROR`) | Every sync call result and every async trigger/callback verdict, per configured service. |
-| `silicaproxy.external.validation.block_reason` | Counter | `reason` (`VERDICT`/`FAIL_CLOSED`) | Distinguishes a genuine malicious verdict from a package merely blocked because a blocking service was unavailable/slow (fail-closed) — an infra incident, not a real threat. |
+| `silicaproxy.external.validation.block_reason` | Counter | `reason` (`VERDICT`/`PENDING`/`UNAVAILABLE`) | Distinguishes a genuine malicious verdict from a package only blocked temporarily by a fail-closed service : scan still running (`PENDING`), or service unavailable/slow (`UNAVAILABLE`) — an infra incident, not a real threat. |
 | `silicaproxy.external.validation.callback` | Counter | `service`, `result` (`PROCESSED`/`NOT_FOUND`/`UNAUTHORIZED`) | Every request to `POST /external-validation/callback/{token}`. `NOT_FOUND`/`UNAUTHORIZED` surface replay attempts, stale/duplicate deliveries, or a misconfigured API key. |
 
 **Vulnerability sync (OSV incremental)**

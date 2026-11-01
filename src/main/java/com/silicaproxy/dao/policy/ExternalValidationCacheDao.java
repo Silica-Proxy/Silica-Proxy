@@ -235,11 +235,16 @@ public class ExternalValidationCacheDao {
     @Timed(value = "silicaproxy.dao.extvalidation.cache.delete.expired",
             description = "Duration of external validation expired-entries deletion sweep",
             percentiles = {0.5, 0.9, 0.95, 0.99})
+    // A TIMEOUT row (unacknowledged async trigger, no callback within pending-ttl, failed sync call)
+    // is kept an hour after it was written : the client's retry must still see the failure to be
+    // answered EXTERNAL_VALIDATION_UNAVAILABLE rather than PENDING. It never short-circuits a check
+    // (a TIMEOUT always re-scans), so keeping it longer only affects that classification.
     public int deleteExpiredEntries() {
         return jdbcClient.sql("""
                 DELETE FROM external_validation_cache
                 WHERE status != 'PENDING'
                   AND expires_at <= CURRENT_TIMESTAMP
+                  AND (status != 'TIMEOUT' OR updated_at <= CURRENT_TIMESTAMP - INTERVAL '1 hour')
                 """)
                 .update();
     }

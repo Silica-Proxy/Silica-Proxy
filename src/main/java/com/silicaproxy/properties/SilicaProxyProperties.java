@@ -51,7 +51,7 @@ public record SilicaProxyProperties(
     @NotNull @Valid OsvIncrementalProperties osvIncremental,
     @NotNull ApiCallLogProperties apiCallLog,
     @NotNull @DefaultValue HealthProperties health,
-    @NotNull ExternalValidationProperties externalValidation
+    @NotNull @Valid ExternalValidationProperties externalValidation
 ) {
     public SilicaProxyProperties {
         apiFallback = Collections.unmodifiableMap(new HashMap<>(apiFallback));
@@ -275,14 +275,26 @@ public record SilicaProxyProperties(
     public record ExternalValidationProperties(
         @Nullable String callbackBaseUrl,
         boolean triggerAsyncOnSyncBlock,
-        @Nullable Map<String, ExternalValidationServiceProperties> services
+        @Nullable Map<String, ExternalValidationServiceProperties> services,
+        // Retry-After (seconds) of the 429 answered while a fail-closed service has no verdict yet
+        // (EXTERNAL_VALIDATION_PENDING / EXTERNAL_VALIDATION_UNAVAILABLE).
+        @DefaultValue("30") @Positive int retryAfterSeconds
     ) {
+        // Mirrors the @DefaultValue of retryAfterSeconds, for the code paths built without binding.
+        public static final int DEFAULT_RETRY_AFTER_SECONDS = 30;
+
+        @ConstructorBinding
         public ExternalValidationProperties {
             if (services == null) {
                 services = Map.of();
             } else {
                 services = Collections.unmodifiableMap(new HashMap<>(services));
             }
+        }
+
+        public ExternalValidationProperties(@Nullable String callbackBaseUrl, boolean triggerAsyncOnSyncBlock,
+                @Nullable Map<String, ExternalValidationServiceProperties> services) {
+            this(callbackBaseUrl, triggerAsyncOnSyncBlock, services, DEFAULT_RETRY_AFTER_SECONDS);
         }
 
         // Explicit, never-null accessor: the compact constructor above always

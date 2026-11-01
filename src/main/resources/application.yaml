@@ -326,6 +326,11 @@ silicaproxy:
     callback-base-url: "${SILICAPROXY_CALLBACK_BASE_URL:}"
     # If true, async services are triggered even when a sync service already returned BLOCKED
     trigger-async-on-sync-block: false
+    # Retry-After (seconds) of the 429 answered while a blocking fail-closed service has no verdict
+    # yet : EXTERNAL_VALIDATION_PENDING (scan running) or EXTERNAL_VALIDATION_UNAVAILABLE
+    # (timeout, error, unexpected verdict, failed async trigger, no callback within pending-ttl). A 429 + no-store rather than a
+    # 403, so an artifacts repository (Artifactory, Nexus) does not remember the artifact as forbidden.
+    retry-after-seconds: 30
     # services: not configured by default — feature is disabled until services are added
     #   Per-service keys (services.<name>.*):
     #     head-check: false                  # true = HEAD on the requested URL before calling the service

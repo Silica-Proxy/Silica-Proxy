@@ -348,7 +348,7 @@
     {
       "id": 23,
       "title": "Block Evolution by Type",
-      "description": "Rate of BLOCK decisions over time, broken down by source: COMPANY_POLICY, PUBLIC_VULN / PUBLIC_VULN_MALWARE / PUBLIC_VULN_ANOMALY (locally-synced OSV data), API_CACHE, REGISTRY_QUARANTINE / REGISTRY_DEPRECATION / REGISTRY_NOT_FOUND / REGISTRY_ERROR, EXTERNAL_VALIDATION, OSV_LIVE / DEPS_DEV / API_FALLBACK_ERROR (live fallback), or UNIDENTIFIED_ARTIFACT (package tarball whose name/version could not be identified).",
+      "description": "Rate of BLOCK decisions over time, broken down by source: COMPANY_POLICY, PUBLIC_VULN / PUBLIC_VULN_MALWARE / PUBLIC_VULN_ANOMALY (locally-synced OSV data), API_CACHE, REGISTRY_QUARANTINE / REGISTRY_DEPRECATION / REGISTRY_NOT_FOUND / REGISTRY_ERROR, EXTERNAL_VALIDATION / EXTERNAL_VALIDATION_PENDING / EXTERNAL_VALIDATION_UNAVAILABLE (external services ; the last two are temporary 429s while a fail-closed service has no verdict), UPSTREAM_THROTTLED, OSV_LIVE / DEPS_DEV / API_FALLBACK_ERROR (live fallback), or UNIDENTIFIED_ARTIFACT (package tarball whose name/version could not be identified).",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -466,7 +466,7 @@
     {
       "id": 33,
       "title": "Block Reasons (external validation, 1h)",
-      "description": "Volume of blocks decided by external validation over the last hour, by reason (scanner verdict or fail-closed).",
+      "description": "Volume of blocks decided by external validation over the last hour, by reason : VERDICT (real scanner verdict, 403), PENDING (fail-closed, scan still running, 429) or UNAVAILABLE (fail-closed, service unavailable, 429).",
       "type": "barchart",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 61 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },

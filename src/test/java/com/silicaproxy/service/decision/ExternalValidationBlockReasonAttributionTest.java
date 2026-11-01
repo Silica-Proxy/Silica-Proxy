@@ -43,7 +43,7 @@ import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-// buildBlockReason() must only attribute the 403 reason to a service configured blocking=true —
+// The block reason must only be attributed to a service configured blocking=true —
 // a non-blocking (informational) service's stored verdict must never be reported as "the" reason
 // the package was blocked, even if it's the only verdict present in the table.
 class ExternalValidationBlockReasonAttributionTest extends BaseIntegrationTest {
@@ -123,8 +123,8 @@ class ExternalValidationBlockReasonAttributionTest extends BaseIntegrationTest {
                 VALUES ('scanner-info', 'lodash', 'npm', '4.17.21', 'Informational note from scanner-info')
                 """).update();
 
-        // scanner-strict (blocking=true, fail-open=false) times out — fail-closed BLOCK,
-        // but writes no verdict of its own.
+        // scanner-strict (blocking=true, fail-open=false) times out — temporary fail-closed block
+        // (EXTERNAL_VALIDATION_UNAVAILABLE), and writes no verdict of its own.
         wireMock.stubFor(post(urlEqualTo("/ext-strict"))
                 .willReturn(aResponse().withFixedDelay(3000).withStatus(200)));
 
@@ -132,12 +132,13 @@ class ExternalValidationBlockReasonAttributionTest extends BaseIntegrationTest {
             proxyRestClient.get()
                     .uri("http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz")
                     .retrieve().toBodilessEntity();
-            fail("Expected 403");
+            fail("Expected 429");
         } catch (HttpClientErrorException e) {
-            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(e.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
             // Must NOT show scanner-info's informational reason — that service never blocks.
             assertThat(e.getResponseBodyAsString()).doesNotContain("Informational note from scanner-info");
-            assertThat(e.getResponseBodyAsString()).contains("Package blocked by external validation service.");
+            assertThat(e.getResponseBodyAsString())
+                    .contains("External validation service unavailable (scanner-strict); retry later.");
         }
     }
 }
