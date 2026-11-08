@@ -195,7 +195,14 @@ public class ExternalValidationService {
                 .map(e -> checkAsyncCacheState(e.getKey(), e.getValue(), packageName, version, ecosystem))
                 .toList();
 
-        if (triggerAsync) {
+        if (!syncBlocked) {
+            // The triggers are awaited (each bounded by the acknowledgment read timeout) : a service
+            // that already knows the package answers its verdict in the acknowledgment, which then
+            // replaces the cache state read above for this very request.
+            asyncOutcomes = triggerAsyncServicesAndWait(
+                    asyncServices, asyncOutcomes, packageName, version, ecosystem, fullUrl);
+        } else if (triggerAsync) {
+            // The package is already blocked : these scans only feed the audit trail, nobody waits.
             asyncServices.forEach(e -> asyncExecutor.execute(() ->
                     triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl)));
         }
@@ -302,31 +309,39 @@ public class ExternalValidationService {
         LOG.info("External validation callback received from {} for {}/{}@{}: verdict={}, reason={}",
                 e.serviceName(), e.ecosystem(), e.packageName(), e.packageVersion(), verdict, reason);
 
+        return resolvePending(callbackToken, e.serviceName(), props, e.packageName(), e.ecosystem(),
+                e.packageVersion(), verdict, reason) ? CallbackResult.PROCESSED : CallbackResult.NOT_FOUND;
+    }
+
+    // Resolves the PENDING async entry of token with an ALLOWED/BLOCKED verdict -- from its callback,
+    // or from the trigger's acknowledgment. Every write is guarded by status='PENDING' : false when
+    // the token was already resolved (duplicate or racing delivery), nothing written then.
+    private boolean resolvePending(UUID token, String serviceName,
+            @Nullable ExternalValidationServiceProperties props,
+            String packageName, String ecosystem, String version, String verdict, @Nullable String reason) {
         if (Metrics.BLOCKED.equalsIgnoreCase(verdict)) {
-            // Permanent verdict — remove from cache (atomically, guarded by status='PENDING'
-            // so a duplicate/racing callback delivery for the same token can't double-process
-            // it), then write to verdicts table.
-            if (!cacheDao.deleteByToken(callbackToken)) {
-                return CallbackResult.NOT_FOUND;
+            // Permanent verdict — remove from cache, then write to verdicts table.
+            if (!cacheDao.deleteByToken(token)) {
+                return false;
             }
-            verdictsDao.save(e.serviceName(), e.packageName(), e.ecosystem(), e.packageVersion(), reason);
+            verdictsDao.save(serviceName, packageName, ecosystem, version, reason);
             // A cached ALLOW (EXTERNAL_VALIDATION_CHAIN) is read by the local evaluation before
             // the external services are consulted : drop it, otherwise this BLOCK would only be
             // enforced once that entry expires.
-            metadataCacheDao.deleteApiCacheAllow(e.packageName(), e.ecosystem(), e.packageVersion());
-            metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.BLOCKED);
-            return CallbackResult.PROCESSED;
+            metadataCacheDao.deleteApiCacheAllow(packageName, ecosystem, version);
+            metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, Metrics.BLOCKED);
+            return true;
         }
         if (Metrics.ALLOWED.equalsIgnoreCase(verdict)) {
             int cacheTtlMinutes = props != null ? props.cacheTtlMinutes() : 60;
             Instant cacheExpiry = Instant.now().plus(cacheTtlMinutes, ChronoUnit.MINUTES);
-            if (!cacheDao.updateToAllowedByToken(callbackToken, reason, cacheExpiry)) {
-                return CallbackResult.NOT_FOUND;
+            if (!cacheDao.updateToAllowedByToken(token, reason, cacheExpiry)) {
+                return false;
             }
-            metrics.recordExternalValidationCallMetric(e.serviceName(), Metrics.TYPE_ASYNC, Metrics.ALLOWED);
-            return CallbackResult.PROCESSED;
+            metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, Metrics.ALLOWED);
+            return true;
         }
-        return CallbackResult.NOT_FOUND;
+        return false;
     }
 
     private static boolean constantTimeEquals(String expected, @Nullable String actual) {
@@ -453,12 +468,32 @@ public class ExternalValidationService {
         return ServiceResult.allowedUntil(serviceName, cacheExpiry);
     }
 
-    private void triggerAsyncService(
+    // Triggers every async service in parallel and waits for the acknowledgments. Each service keeps
+    // its pre-trigger cache state, unless its acknowledgment carried an immediate verdict.
+    private List<ServiceResult> triggerAsyncServicesAndWait(
+            List<Map.Entry<String, ExternalValidationServiceProperties>> services,
+            List<ServiceResult> cacheStates,
+            String packageName, String version, String ecosystem, String fullUrl) {
+        List<CompletableFuture<Optional<ServiceResult>>> futures = services.stream()
+                .map(e -> CompletableFuture.supplyAsync(
+                        () -> triggerAsyncService(e.getKey(), e.getValue(), packageName, version, ecosystem, fullUrl),
+                        asyncExecutor))
+                .toList();
+        List<ServiceResult> outcomes = new ArrayList<>(cacheStates.size());
+        for (int i = 0; i < futures.size(); i++) {
+            outcomes.add(futures.get(i).join().orElse(cacheStates.get(i)));
+        }
+        return outcomes;
+    }
+
+    // Returns the service's outcome when its acknowledgment carried a verdict, empty otherwise
+    // (not re-triggered, plain acknowledgment, failed trigger) : the verdict is then to come by callback.
+    private Optional<ServiceResult> triggerAsyncService(
             String serviceName, ExternalValidationServiceProperties props,
             String packageName, String version, String ecosystem, String fullUrl) {
         // Already in process (valid PENDING or ALLOWED) — no need to re-trigger
         if (verdictsDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version).isPresent()) {
-            return;
+            return Optional.empty();
         }
         Optional<ExternalValidationCacheEntry> cached =
                 cacheDao.findByServiceAndPackage(serviceName, packageName, ecosystem, version);
@@ -467,7 +502,7 @@ public class ExternalValidationService {
             boolean validPending = "PENDING".equals(entry.status()) && entry.expiresAt().isAfter(Instant.now());
             boolean validAllowed = Metrics.ALLOWED.equals(entry.status()) && entry.expiresAt().isAfter(Instant.now());
             if (validPending || validAllowed) {
-                return;
+                return Optional.empty();
             }
         }
 
@@ -476,12 +511,30 @@ public class ExternalValidationService {
         cacheDao.upsertPendingAsync(token, serviceName, packageName, ecosystem, version, pendingExpiry);
 
         String callbackUrl = buildCallbackUrl(token);
-        boolean sent = client.callAsync(
+        ExternalValidationClient.AsyncTriggerResult trigger = client.callAsync(
                 props.url(), props.apiKey(), packageName, version, ecosystem, callbackUrl, fullUrl);
-        metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, sent ? Metrics.RESULT_TRIGGERED : Metrics.RESULT_TRIGGER_ERROR);
-        if (!sent) {
+        metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC,
+                trigger.sent() ? Metrics.RESULT_TRIGGERED : Metrics.RESULT_TRIGGER_ERROR);
+        if (!trigger.sent()) {
             cacheDao.updateToTimeout(serviceName, packageName, ecosystem, version);
+            return Optional.empty();
         }
+        ExternalValidationClient.ExternalValidationResult immediate = trigger.immediateVerdict();
+        if (immediate == null || immediate.verdict() == null) {
+            return Optional.empty();
+        }
+        LOG.info("External validation service {} answered {}/{}@{} in its acknowledgment: verdict={}, reason={}",
+                serviceName, ecosystem, packageName, version, immediate.verdict(), immediate.reason());
+        if (!resolvePending(token, serviceName, props, packageName, ecosystem, version,
+                immediate.verdict(), immediate.reason())) {
+            // The callback for this token won the race and already resolved it : read what it wrote.
+            return Optional.of(checkAsyncCacheState(serviceName, props, packageName, version, ecosystem));
+        }
+        if (Metrics.BLOCKED.equalsIgnoreCase(immediate.verdict())) {
+            return Optional.of(permanentVerdictResult(serviceName, props));
+        }
+        return Optional.of(ServiceResult.allowedUntil(serviceName,
+                Instant.now().plus(props.cacheTtlMinutes(), ChronoUnit.MINUTES)));
     }
 
     // Check cache/verdicts state for an async service without triggering a new call.
