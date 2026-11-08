@@ -31,6 +31,8 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -47,6 +49,7 @@ public class ExternalValidationClient {
     private final HttpClient httpClient;
     private final SsrfInterceptor ssrfInterceptor;
     private final HttpsUpgradePolicy httpsUpgradePolicy;
+    private final ObjectMapper objectMapper;
     // ASYNC triggers only wait for the acknowledgment : global external-validation-read-timeout-seconds
     private final RestClient asyncRestClient;
     // SYNC calls wait for the verdict : one client per distinct services.<name>.timeout-seconds,
@@ -57,8 +60,10 @@ public class ExternalValidationClient {
             @Qualifier("externalValidationHttpClient") HttpClient httpClient,
             SsrfInterceptor ssrfInterceptor,
             HttpsUpgradePolicy httpsUpgradePolicy,
-            SilicaProxyProperties properties) {
+            SilicaProxyProperties properties,
+            ObjectMapper objectMapper) {
         this.httpClient = httpClient;
+        this.objectMapper = objectMapper;
         this.ssrfInterceptor = ssrfInterceptor;
         this.httpsUpgradePolicy = httpsUpgradePolicy;
         this.asyncRestClient = buildRestClient(properties.httpClient().externalValidationReadTimeoutSeconds());
@@ -123,12 +128,15 @@ public class ExternalValidationClient {
         }
     }
 
-    // Async call: POST with callbackUrl. Returns true if the service acknowledged (2xx).
-    // The service will call back later with the verdict.
+    // Async call: POST with callbackUrl. Not acknowledged (non-2xx, error, timeout) : sent=false.
+    // Acknowledged : the service calls back later with the verdict -- unless it already knows the
+    // package and puts the verdict in the response body ({"verdict":"ALLOWED|BLOCKED","reason":...}),
+    // returned as immediateVerdict. A body without a usable verdict (empty, not JSON, PENDING) is a
+    // plain acknowledgment.
     @Timed(value = "silicaproxy.dao.extvalidation.client.callasync",
             description = "Duration of triggering an asynchronous external validation",
             percentiles = {0.5, 0.9, 0.95, 0.99})
-    public boolean callAsync(
+    public AsyncTriggerResult callAsync(
             String url, @Nullable String apiKey,
             String packageName, String version, String ecosystem, String callbackUrl,
             String fullUrl) {
@@ -139,22 +147,47 @@ public class ExternalValidationClient {
         body.put("callbackUrl", callbackUrl);
         putArtifactUrl(body, fullUrl);
 
+        String responseBody;
         try {
-            buildRequest(asyncRestClient, url, apiKey, body)
+            responseBody = buildRequest(asyncRestClient, url, apiKey, body)
                     .retrieve()
-                    .toBodilessEntity();
-            return true;
+                    .body(String.class);
         } catch (HttpStatusCodeException e) {
             LOG.warn("HTTP failure {} from external validation async service at {}: {}",
                     e.getStatusCode().value(), url, e.getMessage());
-            return false;
+            return AsyncTriggerResult.NOT_SENT;
         } catch (Exception e) {
             LOG.warn("External validation async call failed for {}/{} ({}): {}",
                     ecosystem, packageName, version, e.getMessage());
             if (LOG.isDebugEnabled()) {
                 LOG.debug("External validation async call error details", e);
             }
-            return false;
+            return AsyncTriggerResult.NOT_SENT;
+        }
+        return new AsyncTriggerResult(true, immediateVerdict(url, responseBody));
+    }
+
+    private @Nullable ExternalValidationResult immediateVerdict(String url, @Nullable String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode json = objectMapper.readTree(responseBody);
+            JsonNode verdict = json.get("verdict");
+            if (verdict == null || !verdict.isString()) {
+                return null;
+            }
+            String value = verdict.asString();
+            if (!"ALLOWED".equalsIgnoreCase(value) && !"BLOCKED".equalsIgnoreCase(value)) {
+                return null;
+            }
+            JsonNode reason = json.get("reason");
+            return new ExternalValidationResult(value,
+                    reason != null && reason.isString() ? reason.asString() : null);
+        } catch (Exception e) {
+            LOG.debug("External validation async service at {} acknowledged with a body that is not a "
+                    + "verdict: {}", url, e.getMessage());
+            return null;
         }
     }
 
@@ -181,4 +214,10 @@ public class ExternalValidationClient {
     public record ExternalValidationResult(
             @Nullable String verdict,
             @Nullable String reason) {}
+
+    // sent : the service acknowledged the trigger (2xx). immediateVerdict : ALLOWED/BLOCKED verdict
+    // already in that acknowledgment, null when it is to come by callback.
+    public record AsyncTriggerResult(boolean sent, @Nullable ExternalValidationResult immediateVerdict) {
+        public static final AsyncTriggerResult NOT_SENT = new AsyncTriggerResult(false, null);
+    }
 }

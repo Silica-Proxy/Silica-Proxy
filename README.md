@@ -274,7 +274,7 @@ Response: { "verdict": "BLOCKED", "reason": "Malicious dependency detected." }
 
 #### Async mode
 
-The proxy fires a POST and returns immediately (applying `fail-open` / `fail-closed`, see [Missing verdict](#missing-verdict-fail-closed--429)). The service processes the package in the background and calls back the proxy when it has a verdict.
+The proxy POSTs a trigger and waits only for the acknowledgment (`http-client.external-validation-read-timeout-seconds`, 1 s by default). The service scans in the background and calls back the proxy with the verdict. A service that **already knows** the package may put the verdict in the acknowledgment itself : it is applied to the current request, with no 429 and no wait for the callback.
 
 ```
 POST {url}
@@ -282,12 +282,35 @@ Body: { "packageName": "lodash", "version": "4.17.21", "ecosystem": "npm",
         "url": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
         "callbackUrl": "https://proxy.yourcompany.com/external-validation/callback/{token}" }
 
+Acknowledgment (2xx), either:
+  { "verdict": "ALLOWED", "reason": "Clean." }    # known package : applied now
+  anything else (empty, 202, {"status":"PENDING"}) # verdict to come by callback
+
 → Callback (later): POST /external-validation/callback/{token}
   Header: Authorization: Bearer {api-key}   # only required if api-key is configured for this service
   Body: { "verdict": "ALLOWED", "reason": "Clean." }
 ```
 
-The callback token is a UUID generated per request. The endpoint returns `404` if the token is unknown or has already been resolved.
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant P as SilicaProxy
+    participant S as Async service
+    C->>P: GET artifact
+    P->>S: POST {url} (callbackUrl)
+    alt package already scanned
+        S-->>P: 200 {"verdict":"ALLOWED|BLOCKED"}
+        P-->>C: 200 artifact / 403
+    else new package
+        S-->>P: 202
+        P-->>C: 429 Retry-After (fail-closed) / 200 (fail-open)
+        S->>P: POST /external-validation/callback/{token} {"verdict":...}
+        C->>P: GET artifact (retry)
+        P-->>C: 200 artifact / 403
+    end
+```
+
+The callback token is a UUID generated per request. The endpoint returns `404` if the token is unknown or has already been resolved — e.g. a callback still sent after a verdict given in the acknowledgment.
 
 #### Missing verdict (fail-closed → 429)
 
@@ -310,8 +333,8 @@ Why 429 and not 403 : behind Artifactory or Nexus, a 403 from the upstream may b
 repository's negative cache, so the artifact would stay unavailable long after the scan allowed it.
 Why not 503 : a 5xx can make the repository manager take the **whole** remote repository offline.
 
-With an async service in fail-closed, the **first** download of a new version is therefore always
-refused (Gradle or npm fail on it) : retry once the scan has called back.
+With an async service in fail-closed, the **first** download of a version the service has not
+scanned yet is therefore refused (Gradle or npm fail on it) : retry once the scan has called back.
 
 If `api-key` is configured for the service (see [Configuration Reference](#full-variable-table)), the callback must present it back as `Authorization: Bearer {api-key}`, or the endpoint returns `401`. This is optional: a service with no `api-key` configured accepts callbacks with no `Authorization` header at all, exactly as before. The unguessable per-request UUID token is itself some protection, but it's not authentication — anyone who learns a pending token (logs, a leaked URL, a network observer) can otherwise forge a verdict for that request without it.
 
@@ -334,8 +357,8 @@ When multiple services are configured:
 
 0. **Short-circuit**: if *any* service with `blocking: true` already has a permanent verdict for this exact package/version (from a previous sync call or async callback), the proxy returns `BLOCK` immediately and skips every network call — to its own service and to every other configured service. This is what makes the permanent block in step 4 actually permanent in practice: once one blocking scanner has spoken, the others are never asked again for that package/version.
 1. Otherwise, all **SYNC** services run in parallel — the proxy waits for every sync response.
-2. If any sync service produces an effective BLOCK → the package is blocked. ASYNC services are **not triggered**, unless `trigger-async-on-sync-block: true` (in which case they run fire-and-forget to populate the DB for future requests).
-3. If all sync services ALLOW → all **ASYNC** services are triggered in parallel (fire-and-forget).
+2. If any sync service produces an effective BLOCK → the package is blocked. ASYNC services are **not triggered**, unless `trigger-async-on-sync-block: true` (in which case they run fire-and-forget, for the audit trail only).
+3. If all sync services ALLOW → all **ASYNC** services are triggered in parallel ; the proxy waits for their acknowledgments, to use a verdict given there.
 4. Final verdict: **the most restrictive wins** — one BLOCK from any service is enough.
 
 #### `blocking` flag
