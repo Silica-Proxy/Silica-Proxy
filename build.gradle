@@ -37,7 +37,7 @@ dependencies {
 	implementation 'org.postgresql:postgresql'
 	
 	// ShedLock
-	implementation 'net.javacrumbs.shedlock:shedlock-spring:7.10.1'
+	implementation 'net.javacrumbs.shedlock:shedlock-spring:7.11.0'
 	implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:7.10.1'
 	
 	// JSpecify
