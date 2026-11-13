@@ -37,7 +37,7 @@ dependencies {
 	implementation 'org.postgresql:postgresql'
 	
 	// ShedLock
-	implementation 'net.javacrumbs.shedlock:shedlock-spring:7.10.1'
+	implementation 'net.javacrumbs.shedlock:shedlock-spring:7.11.0'
 	implementation 'net.javacrumbs.shedlock:shedlock-provider-jdbc-template:7.11.0'
 	
 	// JSpecify
@@ -54,7 +54,7 @@ dependencies {
 	implementation 'org.apache.maven:maven-artifact:3.10.0'
 	
 	// Git & YAML parsing for external advisories
-	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r'
+	implementation 'org.eclipse.jgit:org.eclipse.jgit:7.8.1.202611041320-r'
 	implementation 'tools.jackson.dataformat:jackson-dataformat-yaml'
 
 	// Observabilité
