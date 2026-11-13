@@ -23,10 +23,12 @@ import com.silicaproxy.BaseIntegrationTest;
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.dao.policy.DecisionDao;
 import com.silicaproxy.dao.policy.GitOpsDao;
+import com.silicaproxy.dao.policy.PackageSearchDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.SeverityThreshold;
 import com.silicaproxy.model.dto.Verdict;
+import com.silicaproxy.model.entity.CompanyPolicy;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.ParsedPackage;
 import com.silicaproxy.service.vulnerability.VulnerabilitySyncStatusService;
@@ -42,6 +44,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -67,6 +71,8 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
     @MockitoBean
     private VulnerabilityGitClient gitClient;
 
+    private final PackageSearchDao packageSearchDao;
+
     @Autowired
     GitOpsSyncServiceTest(
             GitOpsSyncService gitOpsSyncService,
@@ -75,7 +81,9 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
             MeterRegistry meterRegistry,
             SilicaProxyProperties properties,
             GitOpsDao gitOpsDao,
-            DecisionDao decisionDao) {
+            DecisionDao decisionDao,
+            PackageSearchDao packageSearchDao) {
+        this.packageSearchDao = packageSearchDao;
         this.gitOpsSyncService = gitOpsSyncService;
         this.jdbcClient = jdbcClient;
         this.syncStatusService = syncStatusService;
@@ -250,6 +258,55 @@ class GitOpsSyncServiceTest extends BaseIntegrationTest {
         assertNoDecision(new ParsedPackage("com.moncorpevil:auth", "1.0.0", "maven"));
         // A rule is scoped to its own ecosystem.
         assertNoDecision(new ParsedPackage("@moncorp/utils", "1.0.0", "pypi"));
+    }
+
+    @Test
+    void shouldStoreExpiryAndSurviveDuplicateRulesAgainstTheUniqueIndex() throws Exception {
+        // Two rules on the same key used to violate idx_company_policies_lookup and fail the
+        // whole sync : the most restrictive one is now kept, with its end date.
+        Path npmYaml = Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "lodash"
+                    version: "*"
+                    action: "allow"
+                    reason: "Temporary exception"
+                    expires: "2999-12-31"
+                  - package: "lodash"
+                    version: "*"
+                    action: "block"
+                    reason: "Incident until fixed"
+                    expires: "2999-06-30"
+                """);
+        Path pypiYaml = Files.writeString(tempDir.resolve("pypi.yaml"), """
+                rules:
+                  - package: "requests"
+                    version: "*"
+                    action: "block"
+                    reason: "Synchronized after npm"
+                """);
+        doAnswer(invocation -> null).when(gitClient).syncRepository(any(), any(), any());
+
+        try {
+            new GitOpsSyncService(properties, gitClient, gitOpsDao, syncStatusService, meterRegistry)
+                    .syncCompanyPolicies();
+        } finally {
+            Files.delete(npmYaml);
+            Files.delete(pypiYaml);
+        }
+
+        assertThat(jdbcClient.sql("""
+                SELECT expires_at FROM company_policies WHERE ecosystem = 'npm' AND package_name = 'lodash'
+                """).query(Timestamp.class).list())
+                .extracting(Timestamp::toInstant)
+                .containsExactly(Instant.parse("2999-07-01T00:00:00Z"));
+        assertBlocked(new ParsedPackage("lodash", "4.17.21", "npm"), "Incident until fixed");
+        // The ecosystems after the duplicate are still synchronized.
+        assertBlocked(new ParsedPackage("requests", "2.0.0", "pypi"), "Synchronized after npm");
+
+        // Read back as an Instant by the search endpoint's DAO.
+        assertThat(packageSearchDao.searchCompanyPolicies("lodash", "npm", null, null))
+                .extracting(CompanyPolicy::expiresAt)
+                .containsExactly(Instant.parse("2999-07-01T00:00:00Z"));
     }
 
     private void assertBlocked(ParsedPackage pkg, String reason) {

@@ -130,6 +130,34 @@ class DecisionDaoTest extends BaseIntegrationTest {
     }
 
     @Test
+    void shouldIgnoreExpiredCompanyPolicyAndFallBackToPublicVulnerability() {
+        jdbcClient.sql("""
+            INSERT INTO public_vulnerabilities (id, source, package_name, ecosystem, summary, details, affected_versions, cvss_score)
+            VALUES ('GHSA-test-exp', 'GITHUB', 'expiring-package', 'npm', 'Critical CVE', 'Details', '["1.0.0", "2.0.0"]'::jsonb, 9.5)
+            """).update();
+        // Same package, two versions : one temporary exception already over, one still running.
+        jdbcClient.sql("""
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, expires_at)
+            VALUES ('expiring-package', 'npm', '1.0.0', 'ALLOW', 'Exception over', 'security-team',
+                    CURRENT_TIMESTAMP - INTERVAL '1 second'),
+                   ('expiring-package', 'npm', '2.0.0', 'ALLOW', 'Exception running', 'security-team',
+                    CURRENT_TIMESTAMP + INTERVAL '1 day')
+            """).update();
+
+        // The expired ALLOW no longer overrides the critical vulnerability.
+        Optional<DecisionResult> expired = decisionDao.evaluateDecision("expiring-package", "1.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
+        assertThat(expired).isPresent();
+        assertThat(expired.get().sourceType()).isEqualTo(DecisionSource.PUBLIC_VULN);
+        assertThat(expired.get().result()).isEqualTo(Verdict.BLOCK);
+
+        Optional<DecisionResult> running = decisionDao.evaluateDecision("expiring-package", "2.0.0", "npm", SeverityThreshold.blockingFrom(7.0));
+        assertThat(running).isPresent();
+        assertThat(running.get().sourceType()).isEqualTo(DecisionSource.COMPANY_POLICY);
+        assertThat(running.get().result()).isEqualTo(Verdict.ALLOW);
+        assertThat(running.get().reason()).isEqualTo("Exception running");
+    }
+
+    @Test
     void shouldBlockPublicVulnerabilityIfCvssAboveThreshold() {
         // Register a vulnerable package without associated governance rule
         jdbcClient.sql("""

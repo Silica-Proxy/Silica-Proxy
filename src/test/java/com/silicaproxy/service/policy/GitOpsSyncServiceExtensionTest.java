@@ -32,9 +32,11 @@ import org.mockito.ArgumentCaptor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
@@ -320,10 +322,166 @@ class GitOpsSyncServiceExtensionTest {
     }
 
     @Test
+    void shouldStoreExpiryOfDateAndDateTimeRules() throws Exception {
+        Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "date-only"
+                    version: "*"
+                    action: "allow"
+                    reason: "date alone, unquoted"
+                    expires: 2999-12-31
+                  - package: "date-time"
+                    version: "*"
+                    action: "allow"
+                    reason: "date-time with offset"
+                    expires: "2999-12-31T18:00:00+02:00"
+                  - package: "local-date-time"
+                    version: "*"
+                    action: "allow"
+                    reason: "date-time without offset, read as UTC"
+                    expires: "2999-12-31T18:00:00"
+                  - package: "permanent"
+                    version: "*"
+                    action: "block"
+                    reason: "no expires"
+                """);
+
+        service.syncCompanyPolicies();
+
+        List<CompanyPolicy> policies = captureNpmPolicies();
+        assertThat(policies).extracting(CompanyPolicy::packageName, CompanyPolicy::expiresAt).containsExactly(
+                tuple("date-only", Instant.parse("3000-01-01T00:00:00Z")),
+                tuple("date-time", Instant.parse("2999-12-31T16:00:00Z")),
+                tuple("local-date-time", Instant.parse("2999-12-31T18:00:00Z")),
+                tuple("permanent", null));
+    }
+
+    @Test
+    void shouldSkipAlreadyExpiredRules() throws Exception {
+        Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "expired"
+                    version: "*"
+                    action: "allow"
+                    reason: "over"
+                    expires: "2000-01-01"
+                  - package: "running"
+                    version: "*"
+                    action: "allow"
+                    reason: "still valid"
+                    expires: "2999-01-01"
+                """);
+
+        service.syncCompanyPolicies();
+
+        assertThat(captureNpmPolicies()).extracting(CompanyPolicy::packageName).containsExactly("running");
+    }
+
+    @Test
+    void shouldFailClosedOnUnreadableExpiry() throws Exception {
+        Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "typo-allow"
+                    version: "*"
+                    action: "allow"
+                    reason: "a typo must not make the exception permanent"
+                    expires: "31/12/2026"
+                  - package: "typo-block"
+                    version: "*"
+                    action: "block"
+                    reason: "a typo must not drop the block"
+                    expires: "31/12/2026"
+                """);
+
+        service.syncCompanyPolicies();
+
+        List<CompanyPolicy> policies = captureNpmPolicies();
+        assertThat(policies).extracting(CompanyPolicy::packageName, CompanyPolicy::expiresAt)
+                .containsExactly(tuple("typo-block", null));
+    }
+
+    @Test
+    void shouldKeepMostRestrictiveRuleOnDuplicateKeyWithoutFailingTheSync() throws Exception {
+        Files.writeString(tempDir.resolve("npm.yaml"), """
+                rules:
+                  - package: "lodash"
+                    version: "*"
+                    action: "allow"
+                    reason: "temporary exception"
+                    expires: "2999-01-01"
+                  - package: "lodash"
+                    version: "*"
+                    action: "block"
+                    reason: "permanent block"
+                  - package: "two-blocks"
+                    version: "1.x"
+                    action: "block"
+                    reason: "short block"
+                    expires: "2998-01-01"
+                  - package: "two-blocks"
+                    version: "1.*"
+                    action: "block"
+                    reason: "long block"
+                    expires: "2999-01-01"
+                  - package: "two-allows"
+                    version: "*"
+                    action: "allow"
+                    reason: "long allow"
+                    expires: "2999-01-01"
+                  - package: "two-allows"
+                    version: "*"
+                    action: "allow"
+                    reason: "short allow"
+                    expires: "2998-01-01"
+                  - package: "twin"
+                    version: "1.0.0"
+                    action: "block"
+                    reason: "first"
+                  - package: "twin"
+                    version: "1.0.0"
+                    action: "block"
+                    reason: "second"
+                """);
+        Files.writeString(tempDir.resolve("pypi.yaml"), """
+                rules:
+                  - package: "PyYAML"
+                    version: "*"
+                    action: "allow"
+                    reason: "approved"
+                  - package: "pyyaml"
+                    version: "*"
+                    action: "block"
+                    reason: "same project once PEP 503-normalized"
+                """);
+
+        service.syncCompanyPolicies();
+
+        // "1.x" and "1.*" are the same stored pattern ("1.%"), hence a duplicate.
+        assertThat(captureNpmPolicies()).extracting(CompanyPolicy::packageName, CompanyPolicy::reason).containsExactly(
+                tuple("lodash", "permanent block"),
+                tuple("two-blocks", "long block"),
+                tuple("two-allows", "short allow"),
+                tuple("twin", "first"));
+
+        ArgumentCaptor<List<CompanyPolicy>> pypiCaptor = policyCaptor();
+        verify(gitOpsDao).replaceCompanyPolicies(eq("pypi"), pypiCaptor.capture());
+        assertThat(pypiCaptor.getValue()).extracting(CompanyPolicy::packageName, CompanyPolicy::policyAction)
+                .containsExactly(tuple("pyyaml", "BLOCK"));
+        assertThat(meterRegistry.get(Metrics.GITOPS_RUNS_METRIC)
+                .tag(Metrics.TAG_OUTCOME, Metrics.OUTCOME_SUCCESS).counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
     void shouldSyncNothingWhenNoFilePresent() {
         service.syncCompanyPolicies();
 
         verify(gitOpsDao, never()).replaceCompanyPolicies(any(), any());
+    }
+
+    private List<CompanyPolicy> captureNpmPolicies() {
+        ArgumentCaptor<List<CompanyPolicy>> captor = policyCaptor();
+        verify(gitOpsDao).replaceCompanyPolicies(eq("npm"), captor.capture());
+        return captor.getValue();
     }
 
     @SuppressWarnings("unchecked")

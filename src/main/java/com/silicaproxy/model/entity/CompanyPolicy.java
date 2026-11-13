@@ -18,10 +18,14 @@
 package com.silicaproxy.model.entity;
 
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
-// A company governance rule (table company_policies). Produced by 
-// GitOpsSyncService from the YAML files of the internal Git repository, at each 
+import java.time.Instant;
+
+// A company governance rule (table company_policies). Produced by
+// GitOpsSyncService from the YAML files of the internal Git repository, at each
 // synchronization cycle ; priority 1 in the DecisionDao decision query.
+// expiresAt : end of validity (exclusive), null for a permanent rule.
 @NullMarked
 public record CompanyPolicy(
     String packageName,
@@ -29,5 +33,6 @@ public record CompanyPolicy(
     String versionPattern,
     String policyAction,
     String reason,
-    String updatedBy
+    String updatedBy,
+    @Nullable Instant expiresAt
 ) {}

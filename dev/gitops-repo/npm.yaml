@@ -40,3 +40,11 @@ rules:
     version: "*"
     action: "allow"
     reason: "Client HTTP approuvé"
+
+  # ===== Exception temporaire (expires) =====
+  # Ignorée à partir du 1er janvier 2027 00:00 UTC, sans nouveau commit.
+  - package: "minimist"
+    version: "1.2.5"
+    action: "allow"
+    reason: "Exception temporaire le temps de migrer vers 1.2.8"
+    expires: "2026-12-31"
