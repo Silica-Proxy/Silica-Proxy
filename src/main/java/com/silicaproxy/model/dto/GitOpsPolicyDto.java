@@ -37,6 +37,9 @@ public record GitOpsPolicyDto(
             @JsonProperty("package") @Nullable String packageName,
             @Nullable String version,
             @Nullable String action,
-            @Nullable String reason
+            @Nullable String reason,
+            // Optional end date : "2026-12-31" (valid through the end of that day, UTC) or an
+            // ISO-8601 date-time ("2026-12-31T18:00:00Z", UTC when no offset is given).
+            @Nullable String expires
     ) {}
 }

@@ -753,7 +753,45 @@ rules:
     version: "*"
     action: "block"
     reason: "Entire npm scope compromised in a supply-chain attack"
+
+  - package: "minimist"
+    version: "1.2.5"
+    action: "allow"
+    reason: "Temporary exception while migrating to 1.2.8 — ticket SEC-123"
+    expires: "2026-12-31"
 ```
+
+#### Rule end date (`expires`)
+
+`expires` is optional. Without it, a rule never expires.
+
+```yaml
+  - package: "minimist"
+    version: "1.2.5"
+    action: "allow"
+    reason: "Temporary exception while migrating to 1.2.8"
+    expires: "2026-12-31"        # valid through the end of 31 Dec, UTC
+```
+
+| `expires` | Rule applies until (exclusive) |
+|---|---|
+| `"2026-12-31"` | `2027-01-01T00:00:00Z` (whole day, UTC) |
+| `"2026-12-31T18:00:00+02:00"` | `2026-12-31T16:00:00Z` |
+| `"2026-12-31T18:00:00"` | `2026-12-31T18:00:00Z` (no offset = UTC) |
+
+- Checked on every request: a rule stops at its exact end date, without waiting for the next sync. Adding or changing a date takes effect at the next sync.
+- An expired rule is ignored; the decision falls through to the other sources.
+- Expired rules are not stored. A warning is logged for rules ending within 7 days.
+- **An unreadable date fails closed:** an `allow` with a bad `expires` is rejected, so a typo never makes an exception permanent. A `block` with a bad `expires` is kept without end date. Both cases are logged as errors.
+
+#### Duplicate rules
+
+Two rules with the same `package` and the same version pattern cannot both be stored (`1.x` and `1.*` count as the same pattern). The sync keeps the **most restrictive** one and logs an error for the other; the sync itself does not fail:
+
+- `block` beats `allow`.
+- Between two `block` rules, the one ending later wins (no end date = forever). Between two `allow` rules, the one ending sooner wins.
+
+To make a temporary exception to a permanent `block`, use a **more specific** pattern, e.g. `allow` on `lodash` `4.17.20` with an end date next to `block` on `lodash` `*` (see [Conflict resolution](#conflict-resolution-when-multiple-rules-match)).
 
 #### Version patterns
 

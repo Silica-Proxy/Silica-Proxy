@@ -21,10 +21,15 @@ import com.silicaproxy.model.dto.MatchedPolicyDto;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import io.micrometer.core.annotation.Timed;
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.Types;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,11 +94,12 @@ public class GitOpsDao {
                     .append(", :policyAction").append(i)
                     .append(", :reason").append(i)
                     .append(", :updatedBy").append(i)
+                    .append(", :expiresAt").append(i)
                     .append(")");
         }
 
         String sql = """
-            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by)
+            INSERT INTO company_policies (package_name, ecosystem, version_pattern, policy_action, reason, updated_by, expires_at)
             VALUES
             """
             + valuesClause;
@@ -101,13 +107,21 @@ public class GitOpsDao {
         JdbcClient.StatementSpec statement = jdbcClient.sql(sql);
         for (int i = 0; i < chunk.size(); i++) {
             CompanyPolicy policy = chunk.get(i);
+            @Nullable Instant expiresAt = policy.expiresAt();
             statement = statement
                     .param("packageName" + i, policy.packageName())
                     .param("ecosystem" + i, ecosystem)
                     .param("versionPattern" + i, policy.versionPattern())
                     .param("policyAction" + i, policy.policyAction())
                     .param("reason" + i, policy.reason())
-                    .param("updatedBy" + i, policy.updatedBy());
+                    .param("updatedBy" + i, policy.updatedBy())
+                    // Typed explicitly : most rules have no end date, and an untyped null
+                    // parameter would leave the driver guessing the column type. The PostgreSQL
+                    // driver only binds an OffsetDateTime (not a java.sql.Timestamp) to
+                    // TIMESTAMP_WITH_TIMEZONE.
+                    .param("expiresAt" + i,
+                            expiresAt == null ? null : OffsetDateTime.ofInstant(expiresAt, ZoneOffset.UTC),
+                            Types.TIMESTAMP_WITH_TIMEZONE);
         }
         statement.update();
     }
@@ -137,6 +151,8 @@ public class GitOpsDao {
                   -- are literal version characters, escaped here so that a rule for
                   -- "1.0.0_rc1" does not also match "1.0.0-rc1".
                   AND :version LIKE REPLACE(REPLACE(version_pattern, '\\', '\\\\'), '_', '\\_') ESCAPE '\\'
+                  -- Same filter as DecisionDao : a rule past its end date no longer applies.
+                  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
                 -- Tie-break at equal specificity : the most restrictive action wins, rather than
                 -- an arbitrary row order, when two rules match with identical specificity.
                 ORDER BY specificity ASC,

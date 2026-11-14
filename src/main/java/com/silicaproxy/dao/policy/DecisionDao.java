@@ -119,6 +119,9 @@ public class DecisionDao {
                   -- are literal version characters, escaped here so that a rule for
                   -- "1.0.0_rc1" does not also match "1.0.0-rc1".
                   AND p_version LIKE REPLACE(REPLACE(version_pattern, '\\', '\\\\'), '_', '\\_') ESCAPE '\\'
+                  -- A rule past its end date (GitOps `expires`) no longer applies. Checked at
+                  -- request time, so it stops at its exact end date, not at the next sync.
+                  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 
                 UNION ALL
 

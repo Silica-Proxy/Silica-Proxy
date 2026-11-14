@@ -23,6 +23,7 @@ import com.silicaproxy.config.Metrics;
 import com.silicaproxy.dao.policy.GitOpsDao;
 import com.silicaproxy.dao.client.VulnerabilityGitClient;
 import com.silicaproxy.model.dto.GitOpsPolicyDto;
+import com.silicaproxy.model.dto.Verdict;
 import com.silicaproxy.model.entity.CompanyPolicy;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import com.silicaproxy.service.interception.ParsedPackage;
@@ -45,9 +46,17 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -68,6 +77,10 @@ public class GitOpsSyncService {
     // (e.g. "1.2.x", "4.X"), never as a literal character occurring elsewhere (e.g. "1.0.0-xyz"
     // must stay literal). '*' remains an unambiguous wildcard token anywhere in the string.
     private static final Pattern TRAILING_X_SEGMENT = Pattern.compile("(?i)\\.x$");
+
+    // A rule ending within this window is logged as a warning at each sync, so that an
+    // expiring exception is noticed before it stops applying.
+    private static final Duration EXPIRY_WARNING_WINDOW = Duration.ofDays(7);
 
     private final SilicaProxyProperties properties;
     private final VulnerabilityGitClient gitClient;
@@ -254,35 +267,37 @@ public class GitOpsSyncService {
             return 0;
         }
 
-        List<CompanyPolicy> policies = new ArrayList<>();
+        // Keyed like the unique index idx_company_policies_lookup (the ecosystem being fixed
+        // here) : two rules sharing a key would make the whole INSERT fail, so they are merged
+        // first, keeping the most restrictive one. Insertion order is preserved.
+        Map<String, CompanyPolicy> policiesByKey = new LinkedHashMap<>();
         List<GitOpsPolicyDto.Rule> rules = dto.rules();
+        Instant now = Instant.now();
 
         if (rules != null) {
             for (GitOpsPolicyDto.Rule rule : rules) {
-                String rulePackage = rule.packageName();
-                String ruleVersion = rule.version();
-                String ruleAction = rule.action();
-                String ruleReason = rule.reason();
-                if (rulePackage != null && ruleVersion != null && ruleAction != null && ruleReason != null) {
-                    String sqlPattern = toSqlWildcardPattern(ruleVersion);
-
-                    // PEP 503 : the proxy normalizes every PyPI name it identifies, so a rule
-                    // written "typing_extensions" or "PyYAML" must be stored normalized as well.
-                    // '*' wildcards are left untouched by the normalization.
-                    policies.add(new CompanyPolicy(
-                            ParsedPackage.PYPI.equals(ecosystem) ? PypiNames.normalize(rulePackage) : rulePackage,
-                            ecosystem,
-                            sqlPattern,
-                            ruleAction.toUpperCase(Locale.ROOT),
-                            ruleReason,
-                            "gitops_sync"
-                    ));
+                @Nullable CompanyPolicy policy = toCompanyPolicy(ecosystem, filename, rule, now);
+                if (policy == null) {
+                    continue;
+                }
+                String key = policy.packageName() + '\u0000' + policy.versionPattern();
+                @Nullable CompanyPolicy previous = policiesByKey.get(key);
+                if (previous == null) {
+                    policiesByKey.put(key, policy);
                 } else {
-                    LOGGER.warn("Skipping invalid rule in {}: {}", filename, rule);
+                    CompanyPolicy kept = mostRestrictive(previous, policy);
+                    policiesByKey.put(key, kept);
+                    LOGGER.error("Duplicate rule in {} for package '{}' version '{}' : kept {} (expires {}), "
+                                    + "discarded {} (expires {})",
+                            filename, policy.packageName(), policy.versionPattern(),
+                            kept.policyAction(), describeExpiry(kept),
+                            (kept == previous ? policy : previous).policyAction(),
+                            describeExpiry(kept == previous ? policy : previous));
                 }
             }
         }
 
+        List<CompanyPolicy> policies = new ArrayList<>(policiesByKey.values());
         gitOpsDao.replaceCompanyPolicies(ecosystem, policies);
         LOGGER.info("Synchronized {} policies for ecosystem {}", policies.size(), ecosystem);
         syncStatusService.incrementItemsProcessed(GITOPS_JOB_ID, policies.size());
@@ -294,6 +309,106 @@ public class GitOpsSyncService {
             LOGGER.info("GitOps sync progress: {}% ({}/{})", percent, processedNow, totalRules);
         }
         return policies.size();
+    }
+
+    // Builds the row of one YAML rule, or returns null when the rule must not be stored :
+    // a missing field, an already expired rule, or an ALLOW rule whose `expires` cannot be read.
+    private @Nullable CompanyPolicy toCompanyPolicy(
+            String ecosystem, String filename, GitOpsPolicyDto.Rule rule, Instant now) {
+        String rulePackage = rule.packageName();
+        String ruleVersion = rule.version();
+        String ruleAction = rule.action();
+        String ruleReason = rule.reason();
+        if (rulePackage == null || ruleVersion == null || ruleAction == null || ruleReason == null) {
+            LOGGER.warn("Skipping invalid rule in {}: {}", filename, rule);
+            return null;
+        }
+        String action = ruleAction.toUpperCase(Locale.ROOT);
+
+        @Nullable Instant expiresAt = null;
+        String rawExpires = rule.expires();
+        if (rawExpires != null && !rawExpires.isBlank()) {
+            expiresAt = parseExpiry(rawExpires);
+            if (expiresAt == null) {
+                // Fail closed : an unreadable end date must not turn a temporary exception into
+                // a permanent one, while dropping a block would let the package through.
+                if (isAllow(action)) {
+                    LOGGER.error("Skipping ALLOW rule in {} : unreadable expires '{}' (expected 2026-12-31 "
+                            + "or 2026-12-31T18:00:00Z) : {}", filename, rawExpires, rule);
+                    return null;
+                }
+                LOGGER.error("Unreadable expires '{}' in {} : blocking rule kept without end date : {}",
+                        rawExpires, filename, rule);
+            } else if (!expiresAt.isAfter(now)) {
+                LOGGER.info("Skipping expired rule in {} (expired {}) : {}", filename, expiresAt, rule);
+                return null;
+            } else if (expiresAt.isBefore(now.plus(EXPIRY_WARNING_WINDOW))) {
+                LOGGER.warn("Rule in {} expires soon ({}) : {}", filename, expiresAt, rule);
+            }
+        }
+
+        // PEP 503 : the proxy normalizes every PyPI name it identifies, so a rule
+        // written "typing_extensions" or "PyYAML" must be stored normalized as well.
+        // '*' wildcards are left untouched by the normalization.
+        return new CompanyPolicy(
+                ParsedPackage.PYPI.equals(ecosystem) ? PypiNames.normalize(rulePackage) : rulePackage,
+                ecosystem,
+                toSqlWildcardPattern(ruleVersion),
+                action,
+                ruleReason,
+                "gitops_sync",
+                expiresAt
+        );
+    }
+
+    // Parses a rule's `expires` : a date alone is valid through the end of that day (UTC), so
+    // the returned instant is the next day at 00:00Z ; a date-time without an offset is read as
+    // UTC. Returns null when the value matches none of these formats.
+    static @Nullable Instant parseExpiry(String raw) {
+        String value = raw.trim();
+        try {
+            return LocalDate.parse(value).plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        } catch (DateTimeParseException notADate) {
+            // Not a date alone : try a date-time below.
+        }
+        try {
+            return OffsetDateTime.parse(value).toInstant();
+        } catch (DateTimeParseException notAnOffsetDateTime) {
+            // No offset : try a local date-time below.
+        }
+        try {
+            return LocalDateTime.parse(value).toInstant(ZoneOffset.UTC);
+        } catch (DateTimeParseException unreadable) {
+            return null;
+        }
+    }
+
+    // Of two rules sharing the same package and version pattern, keeps the most restrictive :
+    // a blocking rule beats an ALLOW (DecisionDao maps any non-ALLOW action to BLOCK) ; for the
+    // same verdict, a block lasting longer and an allow ending sooner win. On a full tie the
+    // first rule of the file is kept.
+    static CompanyPolicy mostRestrictive(CompanyPolicy first, CompanyPolicy second) {
+        boolean firstAllows = isAllow(first.policyAction());
+        if (firstAllows != isAllow(second.policyAction())) {
+            return firstAllows ? second : first;
+        }
+        int byExpiry = Comparator.nullsLast(Comparator.<Instant>naturalOrder())
+                .compare(first.expiresAt(), second.expiresAt());
+        if (byExpiry == 0) {
+            return first;
+        }
+        boolean firstEndsLater = byExpiry > 0;
+        // ALLOW : the one ending sooner ; block : the one ending later.
+        return firstAllows != firstEndsLater ? first : second;
+    }
+
+    private static boolean isAllow(String action) {
+        return Verdict.ALLOW.name().equals(action);
+    }
+
+    private static String describeExpiry(CompanyPolicy policy) {
+        Instant expiresAt = policy.expiresAt();
+        return expiresAt == null ? "never" : expiresAt.toString();
     }
 
     // Only translates a trailing '.x'/'.X' *segment* into the SQL wildcard '%' ; a literal

@@ -49,9 +49,11 @@ public class PackageSearchDao {
         StringBuilder sql = new StringBuilder("""
                 SELECT package_name AS "packageName", ecosystem,
                        version_pattern AS "versionPattern", policy_action AS "policyAction",
-                       reason, updated_by AS "updatedBy"
+                       reason, updated_by AS "updatedBy", expires_at AS "expiresAt"
                 FROM company_policies
                 WHERE package_name = :packageName
+                  -- Same filter as DecisionDao : a rule past its end date no longer applies.
+                  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
                 """);
         if (ecosystem != null) {
             sql.append(" AND ecosystem = :ecosystem");
