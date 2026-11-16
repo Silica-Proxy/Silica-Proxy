@@ -45,7 +45,7 @@ dependencies {
 
 	// SSL MITM
 	implementation 'org.bouncycastle:bcprov-jdk18on:1.86'
-	implementation 'org.bouncycastle:bcpkix-jdk18on:1.86'
+	implementation 'org.bouncycastle:bcpkix-jdk18on:1.87'
 
 	// CVSS Calculator
 	implementation 'us.springett:cvss-calculator:1.5.1'
