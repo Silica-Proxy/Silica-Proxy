@@ -45,8 +45,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 // External validation — `blocking` and `fail-open` deliberately left unset on the
-// test-scanner service, to lock in the README-documented defaults (both `true`):
-// https://github.com/.../proxy/README.md "blocking" / "fail-open" rows.
+// test-scanner service, to lock in the documented defaults (both `true`):
+// docs/configuration.md "blocking" / "fail-open" rows.
 // Regression coverage for the SilicaProxyProperties @DefaultValue annotations —
 // without them, omitted properties silently bind to `false` instead.
 class ExternalValidationDefaultsTest extends BaseIntegrationTest {

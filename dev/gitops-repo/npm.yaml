@@ -1,50 +1,50 @@
 rules:
-  # ===== Listes noires (BLOCK) =====
+  # ===== Block list =====
   - package: "event-stream"
     version: "3.3.6"
     action: "block"
-    reason: "Compromis par un attaquant (incident flatmap-stream, nov 2018)"
+    reason: "Compromised by an attacker (flatmap-stream incident, Nov 2018)"
 
   - package: "ua-parser-js"
     version: "0.7.29"
     action: "block"
-    reason: "Version compromise contenant un cryptominer et un trojan"
+    reason: "Compromised version shipping a cryptominer and a trojan"
 
   - package: "colors"
     version: "1.4.1"
     action: "block"
-    reason: "Sabotage volontaire par le mainteneur (boucle infinie)"
+    reason: "Deliberately sabotaged by its maintainer (infinite loop)"
 
   - package: "faker"
     version: "6.6.6"
     action: "block"
-    reason: "Sabotage volontaire par le mainteneur (code malveillant)"
+    reason: "Deliberately sabotaged by its maintainer (malicious code)"
 
   - package: "node-ipc"
     version: "10.1.*"
     action: "block"
-    reason: "Protestation du mainteneur - code destructeur ciblé (peacenotwar)"
+    reason: "Maintainer protestware - targeted destructive code (peacenotwar)"
 
-  # ===== Listes blanches (ALLOW) =====
+  # ===== Allow list =====
   - package: "lodash"
     version: "*"
     action: "allow"
-    reason: "Bibliothèque utilitaire approuvée par l'équipe architecture"
+    reason: "Utility library approved by the architecture team"
 
   - package: "express"
     version: "4.*"
     action: "allow"
-    reason: "Framework web standard de l'entreprise"
+    reason: "Company standard web framework"
 
   - package: "axios"
     version: "*"
     action: "allow"
-    reason: "Client HTTP approuvé"
+    reason: "Approved HTTP client"
 
-  # ===== Exception temporaire (expires) =====
-  # Ignorée à partir du 1er janvier 2027 00:00 UTC, sans nouveau commit.
+  # ===== Temporary exception (expires) =====
+  # Ignored from 1 January 2027 00:00 UTC, with no new commit.
   - package: "minimist"
     version: "1.2.5"
     action: "allow"
-    reason: "Exception temporaire le temps de migrer vers 1.2.8"
+    reason: "Temporary exception while migrating to 1.2.8"
     expires: "2026-12-31"

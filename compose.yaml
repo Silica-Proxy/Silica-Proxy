@@ -8,8 +8,8 @@ services:
     ports:
       - '5432:5432'
 
-  # Serveur Git local pour tester la synchronisation GitOps (artifactsentry.gitops.*) en dev.
-  # Provisionné automatiquement par le service "gitea-init" ci-dessous (utilisateur, dépôt, token).
+  # Local Git server to test the GitOps synchronization (silicaproxy.gitops.*) in development.
+  # Provisioned automatically by the "gitea-init" service below (user, repository, token).
   gitea:
     image: 'gitea/gitea:1.26.4'
     environment:
@@ -27,8 +27,8 @@ services:
       timeout: 3s
       retries: 20
 
-  # Crée automatiquement l'utilisateur, le dépôt "policies" et le token Gitea de dev
-  # (voir dev/gitea-init.sh) dès que "docker compose up" démarre, sans étape manuelle.
+  # Creates the development Gitea user, "policies" repository and token automatically
+  # (see dev/gitea-init.sh) as soon as "docker compose up" starts, with no manual step.
   gitea-init:
     image: 'alpine:3.20'
     depends_on:

@@ -1,0 +1,44 @@
+# Adds PackageNameGuardian (typosquatting detection), called by SilicaProxy as a SYNC external
+# validation service: every unknown package name is checked before the download is allowed.
+#
+#   docker compose -f compose.yaml -f compose.packagenameguardian.yaml up -d
+#
+# Requires PACKAGENAMEGUARDIAN_API_KEY in .env. See docs/advanced-setup.md.
+
+services:
+  silicaproxy:
+    environment:
+      # The scanner is reached on the private Docker network, which the SSRF protection blocks
+      - SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=false
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_ENABLED=true
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_URL=http://packagenameguardian:8100/v1/check
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_APIKEY=${PACKAGENAMEGUARDIAN_API_KEY:?PACKAGENAMEGUARDIAN_API_KEY must be set in .env}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGENAMEGUARDIAN_MODE=sync
+    depends_on:
+      packagenameguardian:
+        condition: service_healthy
+
+  packagenameguardian:
+    image: silicaproxy/packagenameguardian:latest
+    restart: unless-stopped
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgresdb:5432/db_packagenameguardian
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Same key on both sides: SilicaProxy sends it as "Authorization: Bearer <key>"
+      - PACKAGENAMEGUARDIAN_API_KEY=${PACKAGENAMEGUARDIAN_API_KEY:?PACKAGENAMEGUARDIAN_API_KEY must be set in .env}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - silicaproxy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://localhost:8100/actuator/health/readiness']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgresdb:
+        condition: service_healthy

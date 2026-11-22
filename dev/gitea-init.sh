@@ -1,86 +1,92 @@
 #!/usr/bin/env bash
-# Initialise le Gitea de dev démarré par `docker compose up` :
-# crée un utilisateur admin et un dépôt PUBLIC "policies" pré-rempli avec dev/gitops-repo/*.yaml
-# (uniquement à la création, jamais écrasé ensuite). artifactsentry.gitops.repository-url pointe
-# déjà par défaut sur ce dépôt (application.yaml), qui se clone sans authentification : `bootRun`
-# fonctionne donc directement après `docker compose up`, sans étape manuelle.
-# Un token d'accès est tout de même généré (dans dev/.gitea-dev-env) pour les cas où l'on veut
-# pousser des modifications en ligne de commande (le push, contrairement au clone, exige une auth).
+# Provisions the development Gitea started by `docker compose up`:
+# creates an admin user and a PUBLIC "policies" repository seeded with dev/gitops-repo/*.yaml
+# (on creation only, never overwritten afterwards). silicaproxy.gitops.repository-url already
+# points at this repository by default (application.yaml), and it can be cloned without
+# authentication: `./gradlew bootRun` works right after `docker compose up`, with no manual step.
+# An access token is still generated (in dev/.gitea-dev-env) to push changes from the command
+# line (unlike a clone, a push requires authentication).
 #
-# Lancé automatiquement par le service "gitea-init" de compose.yaml (aucune action manuelle requise).
-# Peut aussi être relancé manuellement depuis l'hôte : ./dev/gitea-init.sh
+# Run automatically by the "gitea-init" service of compose.yaml (no manual action needed).
+# Can also be run again from the host: ./dev/gitea-init.sh
 set -euo pipefail
 
 GITEA_URL="${GITEA_URL:-http://localhost:3000}"
 PUBLIC_GITEA_URL="${PUBLIC_GITEA_URL:-${GITEA_URL}}"
 GITEA_USER="devops"
 GITEA_PASSWORD="devops12345"
-GITEA_EMAIL="devops@artifactsentry.local"
+GITEA_EMAIL="devops@silicaproxy.local"
 REPO_NAME="policies"
-ENV_FILE="$(dirname "$0")/.gitea-dev-env"
+TOKEN_NAME="silicaproxy-dev"
+# Absolute: the script changes directory below, and may be run from anywhere
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.gitea-dev-env"
 
-cd "$(dirname "$0")"
+cd "${SCRIPT_DIR}"
 
-echo "Attente de la disponibilité de Gitea sur ${GITEA_URL}..."
+echo "Waiting for Gitea at ${GITEA_URL}..."
 until curl -sf "${GITEA_URL}/api/v1/version" > /dev/null; do
   sleep 1
 done
 
-echo "Recherche du conteneur gitea..."
+echo "Looking for the gitea container..."
 until GITEA_CID=$(docker ps -q --filter "label=com.docker.compose.service=gitea" | head -1) && [ -n "${GITEA_CID}" ]; do
   sleep 1
 done
 
 if ! docker exec -u git "${GITEA_CID}" gitea admin user list | grep -q "${GITEA_USER}"; then
-  echo "Création de l'utilisateur admin ${GITEA_USER}..."
+  echo "Creating admin user ${GITEA_USER}..."
   docker exec -u git "${GITEA_CID}" gitea admin user create \
     --username "${GITEA_USER}" --password "${GITEA_PASSWORD}" \
     --email "${GITEA_EMAIL}" --admin --must-change-password=false
 else
-  echo "Utilisateur ${GITEA_USER} déjà présent, on continue."
+  echo "User ${GITEA_USER} already exists, continuing."
 fi
 
 if ! curl -sf -u "${GITEA_USER}:${GITEA_PASSWORD}" "${GITEA_URL}/api/v1/repos/${GITEA_USER}/${REPO_NAME}" > /dev/null; then
-  echo "Création du dépôt ${REPO_NAME}..."
+  echo "Creating repository ${REPO_NAME}..."
   curl -sf -u "${GITEA_USER}:${GITEA_PASSWORD}" -X POST "${GITEA_URL}/api/v1/user/repos" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"${REPO_NAME}\",\"private\":false,\"auto_init\":false}" > /dev/null
 
-  # Premier provisionnement uniquement : on pousse le contenu de dev/gitops-repo comme point
-  # de départ. Les exécutions suivantes ne touchent plus au contenu du dépôt, pour ne jamais
-  # écraser des modifications faites depuis (UI Gitea ou push manuel).
-  echo "Poussée des fichiers de policies initiaux (dev/gitops-repo)..."
+  # First provisioning only: push the content of dev/gitops-repo as a starting point. Later runs
+  # never touch the repository content, so changes made since (Gitea UI or manual push) are kept.
+  echo "Pushing the initial policy files (dev/gitops-repo)..."
   WORKDIR="$(mktemp -d)"
   cp gitops-repo/*.yaml "${WORKDIR}/"
   git -C "${WORKDIR}" init -q -b main
   git -C "${WORKDIR}" add .
-  git -C "${WORKDIR}" -c user.email="${GITEA_EMAIL}" -c user.name="${GITEA_USER}" commit -q -m "Politiques GitOps de dev"
+  git -C "${WORKDIR}" -c user.email="${GITEA_EMAIL}" -c user.name="${GITEA_USER}" commit -q -m "Development GitOps policies"
   REPO_PUSH_URL=$(echo "${GITEA_URL}" | sed -E "s#^(https?)://#\1://${GITEA_USER}:${GITEA_PASSWORD}@#")
   git -C "${WORKDIR}" push -q "${REPO_PUSH_URL}/${GITEA_USER}/${REPO_NAME}.git" main
   rm -rf "${WORKDIR}"
 else
-  echo "Dépôt ${REPO_NAME} déjà présent, on ne touche pas à son contenu."
+  echo "Repository ${REPO_NAME} already exists, leaving its content untouched."
 fi
 
-if [ -f "${ENV_FILE}" ] && grep -q ARTIFACTSENTRY_GITOPS_CLONE_TOKEN "${ENV_FILE}"; then
-  echo "Token déjà généré précédemment, réutilisation de ${ENV_FILE}."
+if [ -f "${ENV_FILE}" ] && grep -q SILICAPROXY_GITOPS_CLONE_TOKEN "${ENV_FILE}"; then
+  echo "Token already generated, reusing ${ENV_FILE}."
 else
-  echo "Génération d'un token d'accès..."
+  echo "Generating an access token..."
+  # Gitea rejects a second token with the same name: drop a previous one (e.g. after
+  # ${ENV_FILE} was deleted) before creating it again.
+  curl -s -o /dev/null -u "${GITEA_USER}:${GITEA_PASSWORD}" -X DELETE \
+    "${GITEA_URL}/api/v1/users/${GITEA_USER}/tokens/${TOKEN_NAME}" || true
   TOKEN_JSON=$(curl -sf -u "${GITEA_USER}:${GITEA_PASSWORD}" -X POST "${GITEA_URL}/api/v1/users/${GITEA_USER}/tokens" \
     -H "Content-Type: application/json" \
-    -d '{"name":"artifactsentry-dev","scopes":["write:repository","read:repository"]}')
+    -d "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"write:repository\",\"read:repository\"]}")
   TOKEN=$(echo "${TOKEN_JSON}" | sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p')
 
   cat > "${ENV_FILE}" <<EOF
-export ARTIFACTSENTRY_GITOPS_REPOSITORY_URL=${PUBLIC_GITEA_URL}/${GITEA_USER}/${REPO_NAME}.git
-export ARTIFACTSENTRY_GITOPS_CLONE_TOKEN=${TOKEN}
+export SILICAPROXY_GITOPS_REPOSITORY_URL=${PUBLIC_GITEA_URL}/${GITEA_USER}/${REPO_NAME}.git
+export SILICAPROXY_GITOPS_CLONE_TOKEN=${TOKEN}
 EOF
 fi
 
 echo ""
-echo "Gitea de dev prêt : ${PUBLIC_GITEA_URL}/${GITEA_USER}/${REPO_NAME} (login: ${GITEA_USER} / ${GITEA_PASSWORD})"
-echo "application.yaml pointe déjà sur ce dépôt par défaut : ./gradlew bootRun fonctionne directement."
-echo "Pour pousser des modifications en ligne de commande (le push exige une authentification) :"
+echo "Development Gitea ready: ${PUBLIC_GITEA_URL}/${GITEA_USER}/${REPO_NAME} (login: ${GITEA_USER} / ${GITEA_PASSWORD})"
+echo "application.yaml already points at this repository: ./gradlew bootRun works as is."
+echo "To push changes from the command line (a push requires authentication):"
 echo ""
 echo "  source dev/.gitea-dev-env"
-echo "  git clone http://\${ARTIFACTSENTRY_GITOPS_CLONE_TOKEN}:@localhost:3000/${GITEA_USER}/${REPO_NAME}.git"
+echo "  git clone http://\${SILICAPROXY_GITOPS_CLONE_TOKEN}:@localhost:3000/${GITEA_USER}/${REPO_NAME}.git"
