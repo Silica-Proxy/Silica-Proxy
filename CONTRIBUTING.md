@@ -486,12 +486,12 @@ public Decision evaluate(String packageName, String version) {
 
 ### README and Configuration
 
-- **README.md** — user-facing, deployment, and API documentation
+- **README.md** — overview and quickstart; user-facing, deployment, and API documentation lives in **docs/**
 - **HELP.md** — getting started guide (reference only)
 - **CLAUDE.md** — project-level development rules
 - **CONTRIBUTING.md** — this file
 
-If you add a new configuration property, update the [Configuration Reference](README.md#configuration-reference) table.
+If you add a new configuration property, update the [Configuration Reference](docs/configuration.md) table.
 
 ### Changelog
 

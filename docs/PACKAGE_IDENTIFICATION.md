@@ -10,7 +10,7 @@ tries, in order :
 3. for npm, the packuments relayed earlier ([npm tarball identification](#npm-tarball-identification)) ;
 4. the upstream response itself ([Identification from the upstream response](#identification-from-the-upstream-response)).
 
-See the [README](README.md) for the rest of the proxy's behaviour and configuration.
+See the [README](../README.md) for the rest of the proxy's behaviour and configuration.
 
 ## How it works
 
@@ -184,7 +184,7 @@ identified behind a known PyPI prefix :
 or when the request comes from a PyPI client (see below). Wheels and sdists served by a private
 repository are therefore **checked** : an internal package unknown to pypi.org gets `NOT_FOUND`
 from the quarantine lookup, so it is blocked when `quarantine.unknown-version-action` is `BLOCK`
-(otherwise [`quarantine.fail-open`](README.md#what-fail-open--fail-closed-means) decides) — as for npm and
+(otherwise [`quarantine.fail-open`](data-sources.md#what-fail-open--fail-closed-means) decides) — as for npm and
 Maven on private repositories.
 
 ## Client header hints
@@ -199,7 +199,7 @@ When the URL alone names no ecosystem, the client headers are read :
 
 Headers can only add an identification the URL did not give, never remove one : a forged
 `User-Agent` cannot bypass the check. **Limit** : behind an artifact repository (the deployment
-described in [Deployment](README.md#deployment)), the proxy sees the repository's own
+described in [Deployment](deployment.md#deployment)), the proxy sees the repository's own
 `User-Agent` (`Artifactory/…`, `Nexus/…`), so these hints only help clients that use the proxy
 directly.
 
