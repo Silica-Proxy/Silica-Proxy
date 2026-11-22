@@ -16,7 +16,7 @@ It sits between your artifact repository and the public registries (npm, PyPI, M
 | Typosquatting / supply-chain attacks    | Quarantines packages published less than N days ago |
 | Deprecated / yanked packages            | Blocks packages flagged as deprecated (npm) or yanked (PyPI) |
 | Custom internal rules                   | Company-level allow/block list synchronized from a Git repository (GitOps) |
-| Dependency confusion                    | Blocks public packages named after your internal namespaces (see [Dependency confusion](docs/configuration.md#dependency-confusion-internal-namespaces)) |
+| Dependency confusion                    | Blocks public packages named after your internal namespaces (see [Dependency confusion](docs/policies.md#dependency-confusion-internal-namespaces)) |
 | Custom deep scanning                    | Integrates any external validation service (sync or async) — SBOM scanners, licence checkers, proprietary scanners |
 
 ---
@@ -61,34 +61,6 @@ Artifact Repository
               BLOCK → HTTP 403 (RFC 7807 JSON)
 ```
 
-### Package structure
-
-The codebase is organized around the detection phases a request goes through:
-
-```
-com.silicaproxy
-├── controller/           REST endpoints (proxy, GitOps, policies, monitoring, search)
-├── service/
-│   ├── interception/     TCP entry point, SSL MITM, URL/ecosystem parsing
-│   ├── policy/           Company policy evaluation, GitOps sync
-│   ├── vulnerability/    CVE ingestion, OSV incremental sync, scheduler
-│   ├── decision/         SecurityService orchestrator, api_cache cleanup, external validation
-│   ├── audit/            Async audit log
-│   ├── monitoring/       Health checks, data inventory
-│   └── search/           Package search
-├── dao/
-│   ├── policy/           SQL — company_policies, decision cache, metadata cache, external validation
-│   ├── vulnerability/    SQL — public_vulnerabilities
-│   ├── sync/             SQL — sync_status, sync_run_history, shedlock, health
-│   ├── audit/            SQL — proxy_audit_logs, api_call_log
-│   └── client/           HTTP — OSV, deps.dev, registry, Git, proxy stream, external validation
-├── config/               Spring configuration (async, HTTP client, SSRF, scheduler)
-├── model/
-│   ├── dto/              Data transfer objects
-│   └── entity/           JPA entities
-└── properties/           SilicaProxyProperties (typed config)
-```
-
 **Key design choices:**
 - **Virtual threads (Project Loom / Java 25)** — thousands of concurrent downloads with near-zero overhead per connection.
 - **Local-first decision** — one `UNION ALL` query covers company policies, enumerated public vulnerabilities and the API cache; a second indexed lookup evaluates OSV version ranges (npm SemVer, Maven) at the same priority as public vulnerabilities, so company policies always win and a cached ALLOW never masks a known vulnerability.
@@ -99,29 +71,56 @@ com.silicaproxy
 
 ## Quickstart
 
-**Prerequisites:** Java 25+, Docker
+**Prerequisites:** Docker with the Compose plugin. Pre-built images are on [Docker Hub](https://hub.docker.com/r/silicaproxy/silicaproxy).
+
+### 1. Start SilicaProxy and its database
 
 ```bash
-# Start PostgreSQL + a local Gitea instance (auto-provisioned with sample policies)
+git clone https://github.com/Silica-Proxy/Silica-Proxy.git
+cd Silica-Proxy/docker
+cp .env.example .env   # set POSTGRES_PASSWORD, SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD, SILICAPROXY_API_KEY_ACTION
 docker compose up -d
-
-# Run the proxy (connects to localhost:5432 by default)
-./gradlew bootRun
+docker compose ps      # wait until silicaproxy is "healthy"
 ```
 
-The proxy listens on **port 8080**. Configure your artifact repository to route outbound traffic through `<host>:8080` (HTTP proxy type), then assign it to your npm, PyPI, and Maven remote repositories.
-
-SilicaProxy decrypts HTTPS traffic (SSL MITM) with a CA generated at startup. Import it into your artifact repository's trust store:
+SilicaProxy listens on **port 8080**: it is both the proxy and the REST API. Check its health with the action key you put in `.env`:
 
 ```bash
-curl http://localhost:8089/api/monitoring/ca-cert > silicaproxy-ca.crt
+export KEY=<SILICAPROXY_API_KEY_ACTION>
+curl -H "Authorization: Bearer $KEY" http://localhost:8080/api/monitoring/health
 ```
 
-For production (Docker image, Docker Compose, multiple instances, JAR), see [Deployment](docs/deployment.md).
+### 2. Try it
 
-### Company policies in a nutshell
+SilicaProxy inspects HTTPS downloads with its own certificate authority (SSL MITM). Download the CA, then fetch a clean package and a vulnerable one through the proxy:
 
-Allow/block rules live in a Git repository, one YAML file per ecosystem (`npm.yaml`, `pypi.yaml`, `maven.yaml`), synchronized every 10 minutes:
+```bash
+curl -H "Authorization: Bearer $KEY" http://localhost:8080/api/monitoring/ca-cert > silicaproxy-ca.crt
+
+# allowed: 200
+curl -x http://localhost:8080 --cacert silicaproxy-ca.crt -o /dev/null -w '%{http_code}\n' \
+  https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz
+
+# blocked: 403, CVE-2021-44906 (CVSS 9.8)
+curl -x http://localhost:8080 --cacert silicaproxy-ca.crt \
+  https://registry.npmjs.org/minimist/-/minimist-1.2.5.tgz
+```
+
+```json
+{"type":"about:blank","title":"Forbidden","status":403,
+ "detail":"The package contains a vulnerability reported by external API OSV (GHSA-xvch-5gv4-984h).",
+ "instance":"","step":"OSV_LIVE","package":"minimist","version":"1.2.5","ecosystem":"npm","error":"SecurityBlocked"}
+```
+
+The `step` field names the check that blocked the package (see [API](docs/api.md)). The local vulnerability database is filled by a nightly synchronization (2:00); until then, unknown packages are checked against the OSV and deps.dev live APIs.
+
+### 3. Connect your artifact repository
+
+Declare `<silicaproxy-host>:8080` as the outbound HTTP proxy of your npm, PyPI and Maven remote repositories, and import `silicaproxy-ca.crt` into the repository manager's trust store. Step by step: [Integration](docs/integration.md).
+
+### 4. Add your company policies
+
+Allow/block rules live in a Git repository, one file per ecosystem at its root (`npm.yaml`, `pypi.yaml`, `maven.yaml`), synchronized every 10 minutes:
 
 ```yaml
 rules:
@@ -137,9 +136,18 @@ rules:
     expires: "2026-12-31"
 ```
 
-Full syntax (version and name patterns, conflict resolution, severity thresholds, internal namespaces): [GitOps policy files](docs/configuration.md#gitops-policy-files).
+Point SilicaProxy at it in `.env` (add `SILICAPROXY_GITOPS_CLONE_TOKEN` for a private repository), then apply with `docker compose up -d`:
 
-A blocked download is answered with an HTTP `403` (RFC 7807 JSON) whose `step` field names the pipeline stage that blocked it. See [API Endpoints](docs/api.md).
+```bash
+SILICAPROXY_GITOPS_ENABLED=true
+SILICAPROXY_GITOPS_REPOSITORY_URL=https://git.example.com/devops/policies.git
+```
+
+Full syntax (version and name patterns, conflict resolution, severity thresholds, internal namespaces): [Company policies](docs/policies.md).
+
+To add the Package-Name-Guardian (typosquatting) and Package-Behavior-Guardian (malicious behavior) scanners, see [Advanced setup](docs/advanced-setup.md).
+
+Production setup (`docker run`, several instances, JAR, memory): [Deployment](docs/deployment.md). To build and run from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -147,18 +155,24 @@ A blocked download is answered with an HTTP `403` (RFC 7807 JSON) whose `step` f
 
 | Topic | Document |
 |---|---|
-| How each decision source works: company policies, public vulnerabilities, registry metadata, external validation services, live API fallback, fail-open / fail-closed, upstream rate limiting | [docs/data-sources.md](docs/data-sources.md) |
-| Development setup, Docker, Docker Compose, multiple instances, JAR | [docs/deployment.md](docs/deployment.md) |
-| Every configuration property and environment variable, GitOps policy file format | [docs/configuration.md](docs/configuration.md) |
-| REST endpoints, authentication, blocked-response format and `step` values | [docs/api.md](docs/api.md) |
-| Observability, health probes, audit log, JVM and PostgreSQL tuning, Prometheus metrics | [docs/operations.md](docs/operations.md) |
-| How npm, PyPI and Maven downloads are identified | [docs/PACKAGE_IDENTIFICATION.md](docs/PACKAGE_IDENTIFICATION.md) |
+| Connecting Nexus, Artifactory or another artifact repository: outbound proxy, CA trust, what a 403 / 429 means | [Integration](docs/integration.md) |
+| Running in production: `docker run`, several instances, JAR, memory | [Deployment](docs/deployment.md) |
+| Why a package was blocked, diagnostic endpoints, making an exception, common problems | [Troubleshooting](docs/troubleshooting.md) |
+| Writing allow/block rules: version and name patterns, conflicts, severity thresholds, internal namespaces | [Company policies](docs/policies.md) |
+| The decision pipeline, fail-open / fail-closed, upstream rate limiting, vulnerability sources, live API fallback | [How it works](docs/how-it-works.md) |
+| Age-based quarantine and deprecation checks, publication date resolution | [Quarantine](docs/quarantine.md) |
+| Plugging in an SBOM scanner, licence checker or proprietary scanner (sync or async) | [External validation](docs/external-validation.md) |
+| How npm, PyPI and Maven downloads are identified | [Package identification](docs/package-identification.md) |
+| Every configuration property and environment variable | [Configuration](docs/configuration.md) |
+| REST endpoints, authentication, blocked-response format and `step` values | [API](docs/api.md) |
+| Observability, health probes, audit log, JVM and PostgreSQL tuning, Prometheus metrics | [Operations](docs/operations.md) |
+| Adding the Package-Name-Guardian and Package-Behavior-Guardian scanners with Docker Compose | [Advanced setup](docs/advanced-setup.md) |
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), which also describes the package structure. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ---
 
-## Attribution Requirement
+## Attribution requirement
 If you use SilicaProxy in your project, product, or service, you **must** include the following attribution in a visible location (e.g., UI footer, documentation, or "About" page):
 
 > "Secured by SilicaProxy (https://github.com/Silica-Proxy/Silica-Proxy)"

@@ -1,12 +1,12 @@
 rules:
-  # ===== Listes noires (BLOCK) =====
+  # ===== Block list =====
   - package: "commons-collections:commons-collections"
     version: "3.2.1"
     action: "block"
-    reason: "Interdit par la securite de demo"
+    reason: "Forbidden by the demo security policy"
 
-  # ===== Listes blanches (ALLOW) =====
+  # ===== Allow list =====
   - package: "org.slf4j:slf4j-api"
     version: "*"
     action: "allow"
-    reason: "Approuve pour la demo"
+    reason: "Approved for the demo"

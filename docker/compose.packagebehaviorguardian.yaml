@@ -1,0 +1,57 @@
+# Adds PackageBehaviorGuardian (static analysis of what a package does), called by SilicaProxy as
+# an ASYNC external validation service: the scan runs in the background and the verdict comes back
+# through a callback to SilicaProxy.
+#
+#   docker compose -f compose.yaml -f compose.packagebehaviorguardian.yaml up -d
+#
+# Requires PACKAGEBEHAVIORGUARDIAN_API_KEY in .env. See docs/advanced-setup.md.
+
+services:
+  silicaproxy:
+    environment:
+      # The scanner is reached on the private Docker network, which the SSRF protection blocks
+      - SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=false
+      # Address the scanner uses to call SilicaProxy back with its verdict
+      - SILICAPROXY_EXTERNALVALIDATION_CALLBACKBASEURL=http://silicaproxy:8080
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_ENABLED=true
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_URL=http://packagebehaviorguardian:8101/v1/check
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_APIKEY=${PACKAGEBEHAVIORGUARDIAN_API_KEY:?PACKAGEBEHAVIORGUARDIAN_API_KEY must be set in .env}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_MODE=async
+      # Observation first (recommended until false positives are measured): verdicts are stored
+      # and logged but never block. Set both to enforce: blocking=true, fail-open=false.
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_BLOCKING=${PACKAGEBEHAVIORGUARDIAN_BLOCKING:-false}
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_FAILOPEN=${PACKAGEBEHAVIORGUARDIAN_FAIL_OPEN:-true}
+      # Skip the scan when the upstream does not hold the requested artifact (404)
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_HEADCHECK=true
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_CACHETTLMINUTES=20160
+      - SILICAPROXY_EXTERNALVALIDATION_SERVICES_PACKAGEBEHAVIORGUARDIAN_PENDINGTTLMINUTES=120
+    depends_on:
+      packagebehaviorguardian:
+        condition: service_healthy
+
+  packagebehaviorguardian:
+    image: silicaproxy/packagebehaviorguardian:latest
+    restart: unless-stopped
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgresdb:5432/db_packagebehaviorguardian
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Same key on both sides: SilicaProxy sends it, the scanner sends it back on the callback
+      - PACKAGEBEHAVIORGUARDIAN_API_KEY=${PACKAGEBEHAVIORGUARDIAN_API_KEY:?PACKAGEBEHAVIORGUARDIAN_API_KEY must be set in .env}
+      # Only callbacks to this host:port are accepted (anti-SSRF); empty = every check refused
+      - PACKAGEBEHAVIORGUARDIAN_CALLBACK_HOSTS=silicaproxy:8080
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks:
+      - silicaproxy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO', '/dev/null', 'http://localhost:8101/actuator/health']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgresdb:
+        condition: service_healthy

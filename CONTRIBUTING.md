@@ -27,8 +27,8 @@ Thank you for contributing to SilicaProxy! This guide covers the development pra
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/silicaproxy.git
-cd silicaproxy
+git clone https://github.com/Silica-Proxy/Silica-Proxy.git
+cd Silica-Proxy
 
 # Start PostgreSQL 18+ and test infrastructure
 docker compose up -d
@@ -48,6 +48,25 @@ To stop the infrastructure:
 ```bash
 docker compose down
 ```
+
+### What `docker compose up` starts
+
+The root [`compose.yaml`](compose.yaml) is for development only (production: [`docker/compose.yaml`](docker/compose.yaml), see [Deployment](docs/deployment.md)):
+
+- **PostgreSQL 18** on `localhost:5432` (`security_db`, `postgres` / `postgres`).
+- **Gitea** on `http://localhost:3000`, provisioned by [`dev/gitea-init.sh`](dev/gitea-init.sh) (run by the `gitea-init` service): user `devops` / `devops12345` and a public `devops/policies` repository seeded from [`dev/gitops-repo/`](dev/gitops-repo) (`npm.yaml`, `pypi.yaml`, `maven.yaml`) on first creation only. The default `silicaproxy.gitops.repository-url` already points at it, so `./gradlew bootRun` syncs these policies with no extra step.
+- An access token for pushing policy changes from the command line is written to `dev/.gitea-dev-env` (git-ignored): `source dev/.gitea-dev-env`.
+
+### Load tests
+
+[`load-test/`](load-test) benchmarks the proxy under several CPU / memory limits:
+
+```bash
+cd load-test
+python3 run-benchmarks.py
+```
+
+For each topology (2 to 8 vCPU, 512 MB to 4 GB), the script starts the proxy with PostgreSQL (the `silicaproxy:latest` image is built from the `Dockerfile` if it does not exist yet; remove it to test new code) ([`docker-compose.load-test.yaml`](load-test/docker-compose.load-test.yaml)), loads [`seed.sql`](load-test/seed.sql) (tens of thousands of company policies), runs the k6 scenario `src/test/resources/k6-script.js`, and reads the proxy's Prometheus metrics. Results go to `load_test_results.md` and the log to `benchmark.log`. It needs Docker and outbound internet access: the proxy queries the real public registries.
 
 ---
 
@@ -260,26 +279,26 @@ if (result != null) {  // ❌ Unnecessary
 
 ### Package Structure
 
-The codebase mirrors the security decision pipeline:
+The codebase is organized around the detection phases a request goes through:
 
 ```
-fr.silicaproxy
-├── controller/           REST endpoints (proxy, policies, monitoring)
+com.silicaproxy
+├── controller/           REST endpoints (proxy, GitOps, policies, monitoring, search)
 ├── service/
-│   ├── interception/     TCP entry point, SSL MITM, URL parsing
+│   ├── interception/     TCP entry point, SSL MITM, URL/ecosystem parsing
 │   ├── policy/           Company policy evaluation, GitOps sync
-│   ├── vulnerability/    OSV sync, CVE ingestion, scheduler
-│   ├── decision/         SecurityService orchestrator
-│   ├── audit/            Async audit logging
-│   ├── monitoring/       Health, inventory reporting
+│   ├── vulnerability/    CVE ingestion, OSV incremental sync, scheduler
+│   ├── decision/         SecurityService orchestrator, api_cache cleanup, external validation
+│   ├── audit/            Async audit log
+│   ├── monitoring/       Health checks, data inventory
 │   └── search/           Package search
 ├── dao/
-│   ├── policy/           SQL (company_policies, decision cache)
-│   ├── vulnerability/    SQL (public_vulnerabilities)
-│   ├── sync/             SQL (sync metadata, locks)
-│   ├── audit/            SQL (audit logs)
-│   └── client/           HTTP (OSV, deps.dev, registries, Git)
-├── config/               Spring configuration
+│   ├── policy/           SQL — company_policies, decision cache, metadata cache, external validation
+│   ├── vulnerability/    SQL — public_vulnerabilities
+│   ├── sync/             SQL — sync_status, sync_run_history, shedlock, health
+│   ├── audit/            SQL — proxy_audit_logs, api_call_log
+│   └── client/           HTTP — OSV, deps.dev, registry, Git, proxy stream, external validation
+├── config/               Spring configuration (async, HTTP client, SSRF, scheduler)
 ├── model/
 │   ├── dto/              Data transfer objects
 │   └── entity/           JPA entities
@@ -487,15 +506,9 @@ public Decision evaluate(String packageName, String version) {
 ### README and Configuration
 
 - **README.md** — overview and quickstart; user-facing, deployment, and API documentation lives in **docs/**
-- **HELP.md** — getting started guide (reference only)
-- **CLAUDE.md** — project-level development rules
 - **CONTRIBUTING.md** — this file
 
 If you add a new configuration property, update the [Configuration Reference](docs/configuration.md) table.
-
-### Changelog
-
-For releases, document significant changes (breaking changes, new features, bug fixes) in a `CHANGELOG.md` file at the project root.
 
 ---
 
@@ -507,13 +520,13 @@ For releases, document significant changes (breaking changes, new features, bug 
 2. Annotate with `@GetMapping`, `@PostMapping`, etc.
 3. Use constructor injection for dependencies.
 4. Add Javadoc and tests.
-5. Update `README.md#api-endpoints` if it's a public endpoint.
+5. Update [docs/api.md](docs/api.md) if it's a public endpoint.
 
 ### Adding a New Configuration Property
 
 1. Add the property to `SilicaProxyProperties` (typed configuration class).
 2. Add the environment variable mapping (Spring will do this automatically via `@ConfigurationProperties`).
-3. Update the configuration reference table in `README.md#configuration-reference`.
+3. Update the configuration reference table in [docs/configuration.md](docs/configuration.md).
 4. Add tests for the new property.
 
 ### Adding a Database Migration

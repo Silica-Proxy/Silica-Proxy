@@ -1,49 +1,39 @@
 # Deployment
 
-## Development
-
-**Prerequisites:** Java 25+, Docker
-
-```bash
-# Start PostgreSQL + a local Gitea instance (auto-provisioned with sample policies)
-docker compose up -d
-
-# Run the proxy (connects to localhost:5432 by default)
-./gradlew bootRun
-```
-
-The proxy listens on **port 8080**. Configure your artifact repository to route outbound traffic through `<host>:8080` (HTTP proxy type), then assign it to your npm, PyPI, and Maven remote repositories.
-
-> **HTTPS repositories:** SilicaProxy performs SSL MITM. It generates a CA at startup that must be imported into your artifact repository's trust store. Retrieve it with:
-> ```bash
-> curl http://localhost:8089/api/monitoring/ca-cert > silicaproxy-ca.crt
-> ```
+SilicaProxy ships as a Docker image ([Docker Hub](https://hub.docker.com/r/silicaproxy/silicaproxy)). The quickest way to run it is the Docker Compose stack, see the [Quickstart](../README.md#quickstart). To build and run it from source, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 
 ## Production — Docker
 
-Pre-built images are available on [Docker Hub](https://hub.docker.com/r/silicaproxy/silicaproxy).
-
-All configuration is passed as environment variables. Minimum required set:
+Without Docker Compose, run PostgreSQL and SilicaProxy on a shared Docker network. Every setting is an environment variable (see the [Configuration reference](configuration.md#full-variable-table)):
 
 ```bash
-docker run -d \
-  -p 8080:8080 \
-  -e SPRING_DATASOURCE_URL=jdbc:postgresql://your-db:5432/security_db \
-  -e SPRING_DATASOURCE_USERNAME=prod_user \
-  -e SPRING_DATASOURCE_PASSWORD=prod_password \
-  -e SILICAPROXY_GITOPS_REPOSITORY_URL=https://git.yourcompany.com/devops/policies.git \
-  -e SILICAPROXY_GITOPS_CLONE_TOKEN=yourtoken \
-  -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/data/silicaproxy-ca.p12 \
-  -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=changeme \
-  -v /data/silicaproxy:/data \
+docker network create silicaproxy
+
+docker run -d --name silicaproxy-db --network silicaproxy \
+  -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=security_db \
+  -v silicaproxy-db:/var/lib/postgresql \
+  postgres:18
+
+docker run -d --name silicaproxy --network silicaproxy -p 8080:8080 \
+  -e SPRING_DATASOURCE_URL=jdbc:postgresql://silicaproxy-db:5432/security_db \
+  -e SPRING_DATASOURCE_PASSWORD=change-me \
+  -e SILICAPROXY_GITOPS_ENABLED=false \
+  -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/app/certs/silicaproxy-ca.p12 \
+  -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=change-me \
+  -e SILICAPROXY_API_KEY_ACTION=change-me-action \
+  -v silicaproxy-certs:/app/certs \
   silicaproxy/silicaproxy
 ```
 
+- With an existing PostgreSQL, drop the first container and point `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` (default `postgres`) and `SPRING_DATASOURCE_PASSWORD` at it.
+- `SILICAPROXY_API_KEY_ACTION` is required to call the REST API (CA download, health, forced syncs): the API is protected by default.
+- To enable company policies, replace `SILICAPROXY_GITOPS_ENABLED=false` with `SILICAPROXY_GITOPS_ENABLED=true` and `SILICAPROXY_GITOPS_REPOSITORY_URL=<repository>` (plus `SILICAPROXY_GITOPS_CLONE_TOKEN` for a private repository).
+
 > **Memory:** allocate at least 2 GB to the container — see [Recommended JVM flags](operations.md#recommended-jvm-flags-production) to tune the JVM via `JDK_JAVA_OPTIONS`.
 
-> **CA keystore persistence:** without `-e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH`, a new CA is generated at every container restart — breaking your artifact repository's SSL trust until the certificate is re-imported. Mount a volume and set this variable in production.
+> **CA keystore persistence:** without `SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH` on a volume, a new CA is generated at every container restart — breaking your artifact repository's SSL trust until the certificate is re-imported. Mount a volume and set this variable in production.
 
 ---
 
@@ -53,16 +43,17 @@ docker run -d \
 
 ```bash
 cd docker
-cp .env.example .env   # set the passwords, API keys and GitOps repository URL
+cp .env.example .env   # set the passwords and the action API key
 docker compose up -d
 ```
 
 - Only port `8080` is published (`SILICAPROXY_PROXY_PORT` to change the host port): it serves both the proxy and the REST API / actuator.
 - Retrieve the CA certificate to import into your artifact repository with `curl -H "Authorization: Bearer $SILICAPROXY_API_KEY_ACTION" http://localhost:8080/api/monitoring/ca-cert > silicaproxy-ca.crt` (or with `SILICAPROXY_API_KEY_READ`, optional, if you set one).
-- [PackageNameGuardian](https://hub.docker.com/r/silicaproxy/packagenameguardian) (typosquatting detection, called as a sync [external validation service](data-sources.md#4-external-validation-services--on-demand-sync-or-async)) is optional: set `PACKAGENAMEGUARDIAN_ENABLED=true`, `PACKAGENAMEGUARDIAN_API_KEY` and `SILICAPROXY_SECURITY_SSRF_PROTECTION_ENABLED=false` in `.env` (the service is reached on the private Docker network, which the SSRF protection blocks), then run `docker compose --profile packagenameguardian up -d`.
-- The databases (`db_silica`, `db_packagenameguardian`) are created by [`docker/postgres/init-multiple-dbs.sh`](../docker/postgres/init-multiple-dbs.sh) on the first start only, when the `postgres-data` volume is empty.
+- External scanners (Package-Name-Guardian, Package-Behavior-Guardian) are added by their own Compose files next to `compose.yaml`: see [Advanced setup](advanced-setup.md).
+- One PostgreSQL server holds every database (`db_silica`, `db_packagenameguardian`, `db_packagebehaviorguardian`), created by [`docker/postgres/init-multiple-dbs.sh`](../docker/postgres/init-multiple-dbs.sh) on the first start only, when the `postgres-data` volume is empty.
+- Company policies are off until `SILICAPROXY_GITOPS_ENABLED=true` and `SILICAPROXY_GITOPS_REPOSITORY_URL` are set in `.env`; run `docker compose up -d` again to apply.
 
-The `compose.yaml` at the repository root is for [development](#development) only.
+The `compose.yaml` at the repository root is for development only (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 ---
 
@@ -74,19 +65,28 @@ All instances behind a load balancer **must use the same CA keystore file** — 
 
 **Without shared storage** (independent servers, no shared filesystem): the lock only protects instances that read and write the *same file* — with no shared file, it can't help, so generate the CA once and copy the same file everywhere.
 
-1. Generate it with a throwaway instance against any reachable Postgres:
+1. Generate it with a throwaway instance against any reachable PostgreSQL (here the `silicaproxy-db` container of the [Docker](#production--docker) example):
    ```bash
-   docker run --rm -d --name ca-seed \
-     -e SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/security_db \
-     -e SPRING_DATASOURCE_USERNAME=postgres -e SPRING_DATASOURCE_PASSWORD=postgres \
-     -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/data/silicaproxy-ca.p12 \
+   docker run -d --name ca-seed --network silicaproxy \
+     -e SPRING_DATASOURCE_URL=jdbc:postgresql://silicaproxy-db:5432/security_db \
+     -e SPRING_DATASOURCE_PASSWORD=change-me \
+     -e SILICAPROXY_GITOPS_ENABLED=false \
+     -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/app/certs/silicaproxy-ca.p12 \
      -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=<strong-password> \
-     -v "$(pwd)/ca-seed:/data" \
      silicaproxy/silicaproxy
-   docker rm -f ca-seed   # once it logged "CA certificate generated and saved"
+   # once `docker logs ca-seed` shows "CA certificate generated and saved":
+   docker cp ca-seed:/app/certs/silicaproxy-ca.p12 .
+   docker rm -f ca-seed
    ```
-2. Copy `ca-seed/silicaproxy-ca.p12` to the same path on every server (`scp`, config management, secrets manager), with the same `ca-keystore-password`. Never generate it again per-server.
-3. Start SilicaProxy on each server pointing at the copied file — since it already exists, every instance loads it instead of generating its own.
+   The keystore is written inside the container, then copied out: the image runs as a non-root user (`appuser`), which cannot write into a host directory that Docker creates as root for a bind mount.
+2. Copy `silicaproxy-ca.p12` to every server (`scp`, config management, secrets manager), with the same `ca-keystore-password`. Never generate it again per-server.
+3. Mount it on each server and point SilicaProxy at it. Since it already exists, every instance loads it instead of generating its own; read-only is enough:
+   ```bash
+   -v /etc/silicaproxy/silicaproxy-ca.p12:/app/certs/silicaproxy-ca.p12:ro \
+   -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PATH=/app/certs/silicaproxy-ca.p12 \
+   -e SILICAPROXY_SSL_MITM_CA_KEYSTORE_PASSWORD=<strong-password>
+   ```
+   The file must be readable by the container user (for example mode `644`).
 
 Either way, back up the keystore file: losing it means every server mints a new, different CA on its next restart, breaking SSL trust everywhere until it's re-imported.
 
@@ -94,13 +94,15 @@ Either way, back up the keystore file: losing it means every server mints a new,
 
 ## Production — JAR
 
+**Prerequisites:** Java 25 to run it; the repository to build it.
+
 ```bash
 # Build
 ./gradlew bootJar
-# Output: build/libs/silicaproxy.jar
+# Output: build/libs/silicaproxy-<version>.jar (e.g. silicaproxy-2.0.0.jar)
 ```
 
-Place an `application.yaml` next to the JAR (Spring Boot picks it up automatically), or point to it explicitly:
+Your settings go in an `application.yaml` that **adds to** the defaults shipped in the JAR. Spring Boot reads it automatically from the directory `java` is started from (or its `config/` subdirectory); to keep it elsewhere, pass it with `--spring.config.additional-location`:
 
 ```bash
 java \
@@ -109,26 +111,30 @@ java \
   -XX:+UseCompactObjectHeaders \
   -XX:+UseStringDeduplication \
   -Dsun.net.inetaddr.ttl=60 \
-  -jar silicaproxy.jar \
-  --spring.config.location=file:./application.yaml
+  -jar silicaproxy-<version>.jar \
+  --spring.config.additional-location=file:/etc/silicaproxy/application.yaml
 ```
 
-Minimal `application.yaml` for production:
+> Do not use `--spring.config.location`: it **replaces** the defaults of the JAR instead of adding to them, and SilicaProxy fails to start (`Failed to bind properties under 'silicaproxy'`).
+
+Minimal `application.yaml`:
 
 ```yaml
 spring:
   datasource:
     url: jdbc:postgresql://your-db:5432/security_db
-    username: prod_user
-    password: prod_password
+    username: postgres
+    password: change-me
 
 silicaproxy:
-  gitops:
-    repository-url: "https://git.yourcompany.com/devops/policies.git"
-    clone-token: "yourtoken"
+  security:
+    api-auth:
+      key-action: "change-me-action"     # required to call the REST API (CA download, health…)
   ssl-mitm:
-    ca-keystore-path: "/data/silicaproxy-ca.p12"
-    ca-keystore-password: "changeme"
+    ca-keystore-path: "/var/lib/silicaproxy/silicaproxy-ca.p12"   # must be writable by the user running java
+    ca-keystore-password: "change-me"
+  gitops:
+    enabled: false                       # true + repository-url (and clone-token) to enable company policies
 ```
 
-All other settings default to the values listed in the table below.
+All other settings default to the values listed in the [Configuration reference](configuration.md#full-variable-table).
