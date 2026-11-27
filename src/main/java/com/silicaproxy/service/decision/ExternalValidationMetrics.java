@@ -20,8 +20,11 @@ package com.silicaproxy.service.decision;
 import com.silicaproxy.config.Metrics;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.stereotype.Component;
+
+import java.time.Duration;
 
 /**
  * Metric recording for {@link ExternalValidationService}, extracted to its own collaborator so
@@ -61,6 +64,24 @@ public class ExternalValidationMetrics {
                 .tag(Metrics.TAG_REASON, reason)
                 .register(meterRegistry)
                 .increment();
+    }
+
+    // outcome : Metrics.OUTCOME_RESOLVED (verdict arrived during the wait) or OUTCOME_EXPIRED.
+    public void recordAwaitMetric(String serviceName, String outcome, Duration waited) {
+        Counter.builder(Metrics.AWAIT_METRIC)
+                .description("Total number of requests held waiting for an async verdict, by service and by "
+                        + "how the wait ended (RESOLVED : verdict in time ; EXPIRED : temporary 429 answered)")
+                .tag(Metrics.TAG_SERVICE, serviceName)
+                .tag(Metrics.TAG_OUTCOME, outcome)
+                .register(meterRegistry)
+                .increment();
+        Timer.builder(Metrics.AWAIT_DURATION_METRIC)
+                .description("Time a request was held waiting for an async verdict")
+                .tag(Metrics.TAG_SERVICE, serviceName)
+                .tag(Metrics.TAG_OUTCOME, outcome)
+                .publishPercentiles(0.5, 0.9, 0.95, 0.99)
+                .register(meterRegistry)
+                .record(waited);
     }
 
     public void recordCallbackMetric(String serviceName, String result) {

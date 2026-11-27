@@ -76,7 +76,46 @@ repository's negative cache, so the artifact would stay unavailable long after t
 Why not 503: a 5xx can make the repository manager take the **whole** remote repository offline.
 
 With an async service in fail-closed, the **first** download of a version the service has not
-scanned yet is therefore refused (Gradle or npm fail on it): retry once the scan has called back.
+scanned yet is therefore refused (Gradle or npm fail on it): retry once the scan has called back,
+or hold the request until the callback with `await-verdict-seconds` (below).
+
+**Behind Nexus, the client never sees the 429.** A Nexus 3 proxy repository answers its client
+**404** when the upstream answers 429. Gradle then takes the artifact as missing, and remembers it
+as missing in its own cache until `--refresh-dependencies`: the retry that would get the verdict
+never happens.
+
+## Holding the request for the verdict (`await-verdict-seconds`)
+
+With `services.<name>.await-verdict-seconds` above 0, a request that would be answered the
+`EXTERNAL_VALIDATION_PENDING` 429 is **held** instead, until the callback arrives or the delay runs
+out:
+
+| During the wait | Answer |
+|---|---|
+| `ALLOWED` callback | the request goes on through the decision chain, usually **200** |
+| `BLOCKED` callback | **403** (step `EXTERNAL_VALIDATION`) |
+| no callback in time | the **429** `EXTERNAL_VALIDATION_PENDING` it would have got at once; the scan goes on, and the client's retry gets its verdict |
+
+- It only applies to a `mode: async`, `blocking: true`, `fail-open: false` service: no other one
+  blocks a request on a missing verdict. Set elsewhere, it is ignored, with a warning at startup.
+- Nothing is held when there is no scan to wait for: a trigger the service did not acknowledge, or
+  an entry already resolved.
+- Each instance checks the held requests with **one query** every
+  `silicaproxy.external-validation.await-poll-interval-millis` (500 ms), whatever their number,
+  on the `external_validation_cache` table shared by all instances: a callback received by any
+  instance wakes the requests held on every one of them.
+- **Keep the delay well below the repository manager's read timeout** (Nexus *System > HTTP* or the
+  proxy repository's *HTTP request settings*; Artifactory socket timeout). A repository manager that
+  times out first fails the download anyway, and Nexus `autoBlock` may then block the **whole**
+  remote repository. With Nexus's default of 20 s, 15 s at most; raise the Nexus timeout (for
+  example 60 s) for a longer delay.
+- A scan can only call back in time if it starts in time: on a cold build that asks for many new
+  versions at once, the scanner's own queue (its concurrency) decides how many fit in the delay.
+
+Metrics: `silicaproxy.external.validation.await{service, outcome=RESOLVED|EXPIRED}`, its duration
+`silicaproxy.external.validation.await.duration`, and the requests held right now
+`silicaproxy.external.validation.await.in_progress`. A high `EXPIRED` share means the delay is too
+short for the scanner, or the scanner's queue too long.
 
 If `api-key` is configured for the service (see [Configuration Reference](configuration.md#full-variable-table)), the callback must present it back as `Authorization: Bearer {api-key}`, or the endpoint returns `401`. This is optional: a service with no `api-key` configured accepts callbacks with no `Authorization` header at all, exactly as before. The unguessable per-request UUID token is itself some protection, but it's not authentication — anyone who learns a pending token (logs, a leaked URL, a network observer) can otherwise forge a verdict for that request without it.
 

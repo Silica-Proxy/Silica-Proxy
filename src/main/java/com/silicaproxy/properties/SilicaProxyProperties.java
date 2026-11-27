@@ -278,10 +278,15 @@ public record SilicaProxyProperties(
         @Nullable Map<String, ExternalValidationServiceProperties> services,
         // Retry-After (seconds) of the 429 answered while a fail-closed service has no verdict yet
         // (EXTERNAL_VALIDATION_PENDING / EXTERNAL_VALIDATION_UNAVAILABLE).
-        @DefaultValue("30") @Positive int retryAfterSeconds
+        @DefaultValue("30") @Positive int retryAfterSeconds,
+        // How often the requests held by services.<name>.await-verdict-seconds are checked against
+        // the database : one query per instance per interval, whatever the number of held requests.
+        @DefaultValue("500") @Positive int awaitPollIntervalMillis
     ) {
-        // Mirrors the @DefaultValue of retryAfterSeconds, for the code paths built without binding.
+        // Mirror the @DefaultValue of retryAfterSeconds / awaitPollIntervalMillis, for the code paths
+        // built without binding.
         public static final int DEFAULT_RETRY_AFTER_SECONDS = 30;
+        public static final int DEFAULT_AWAIT_POLL_INTERVAL_MILLIS = 500;
 
         @ConstructorBinding
         public ExternalValidationProperties {
@@ -294,7 +299,8 @@ public record SilicaProxyProperties(
 
         public ExternalValidationProperties(@Nullable String callbackBaseUrl, boolean triggerAsyncOnSyncBlock,
                 @Nullable Map<String, ExternalValidationServiceProperties> services) {
-            this(callbackBaseUrl, triggerAsyncOnSyncBlock, services, DEFAULT_RETRY_AFTER_SECONDS);
+            this(callbackBaseUrl, triggerAsyncOnSyncBlock, services, DEFAULT_RETRY_AFTER_SECONDS,
+                    DEFAULT_AWAIT_POLL_INTERVAL_MILLIS);
         }
 
         // Explicit, never-null accessor: the compact constructor above always
@@ -321,7 +327,11 @@ public record SilicaProxyProperties(
         // the request (no call, no verdict). Outcome cached in upstream_head_cache.
         @DefaultValue("false") boolean headCheck,
         @DefaultValue("5") @Positive int headCheckTimeoutSeconds,
-        @DefaultValue("10") @Positive int headCheckCacheTtlMinutes
+        @DefaultValue("10") @Positive int headCheckCacheTtlMinutes,
+        // Async, blocking, fail-closed only : how long the client's request is held waiting for the
+        // callback before the temporary 429 is answered. 0 = no wait (429 at once). Must stay below
+        // the repository manager's read timeout (Nexus, Artifactory).
+        @DefaultValue("0") @PositiveOrZero int awaitVerdictSeconds
     ) {}
 
     // Bound case-insensitively ("sync" or "SYNC") ; any other value fails at startup.

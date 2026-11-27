@@ -331,8 +331,14 @@ silicaproxy:
     # (timeout, error, unexpected verdict, failed async trigger, no callback within pending-ttl). A 429 + no-store rather than a
     # 403, so an artifacts repository (Artifactory, Nexus) does not remember the artifact as forbidden.
     retry-after-seconds: 30
+    # How often the requests held by services.<name>.await-verdict-seconds are checked : one query
+    # per instance per interval, whatever the number of held requests.
+    await-poll-interval-millis: 500
     # services: not configured by default — feature is disabled until services are added
     #   Per-service keys (services.<name>.*):
+    #     await-verdict-seconds: 0           # async + blocking + fail-closed only : hold the request up to
+    #                                        # N s for the callback instead of the 429 at once. Keep it well
+    #                                        # below the repository manager's read timeout (Nexus : 20 s).
     #     head-check: false                  # true = HEAD on the requested URL before calling the service
     #     head-check-timeout-seconds: 5      # timeout of that HEAD
     #     head-check-cache-ttl-minutes: 10   # how long the HEAD outcome (found / not found) is cached

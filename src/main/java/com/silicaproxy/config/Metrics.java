@@ -80,6 +80,14 @@ public final class Metrics {
     public static final String REASON_UNAVAILABLE = "UNAVAILABLE";
     public static final String CALLBACK_METRIC = "silicaproxy.external.validation.callback";
     public static final String SERVICE_UNKNOWN = "unknown";
+    // Requests held by services.<name>.await-verdict-seconds : how each wait ended, how long it
+    // lasted, and how many are held right now.
+    public static final String AWAIT_METRIC = "silicaproxy.external.validation.await";
+    public static final String AWAIT_DURATION_METRIC = "silicaproxy.external.validation.await.duration";
+    public static final String AWAIT_IN_PROGRESS_METRIC = "silicaproxy.external.validation.await.in_progress";
+    // The verdict arrived during the wait / the wait ran out (the client gets its 429).
+    public static final String OUTCOME_RESOLVED = "RESOLVED";
+    public static final String OUTCOME_EXPIRED = "EXPIRED";
 
     // ---- OsvIncrementalSyncService ----
     public static final String OSV_SYNC_ADVISORIES_METRIC = "silicaproxy.vulnerability.sync.advisories";

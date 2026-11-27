@@ -22,7 +22,6 @@ import com.silicaproxy.dao.client.ExternalValidationClient;
 import com.silicaproxy.dao.client.UpstreamExistenceChecker;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
-import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.properties.SilicaProxyProperties;
 import org.junit.jupiter.api.Test;
 
@@ -65,7 +64,7 @@ class ExternalValidationServiceStartupTest {
             new SilicaProxyProperties.HealthProperties(48),
             new SilicaProxyProperties.ExternalValidationProperties(callbackBaseUrl, false, Map.of(
                 "test-service", new SilicaProxyProperties.ExternalValidationServiceProperties(
-                    true, "http://example.com/validate", null, serviceMode, 1, true, true, 60, 30, false, 5, 10)))
+                    true, "http://example.com/validate", null, serviceMode, 1, true, true, 60, 30, false, 5, 10, 0)))
         );
     }
 
@@ -77,8 +76,8 @@ class ExternalValidationServiceStartupTest {
                 mock(ExternalValidationClient.class),
                 mock(Executor.class),
                 mock(ExternalValidationMetrics.class),
-                mock(MetadataCacheDao.class),
-                mock(UpstreamExistenceChecker.class));
+                mock(UpstreamExistenceChecker.class),
+                mock(AsyncVerdictWaiter.class));
     }
 
     @Test
