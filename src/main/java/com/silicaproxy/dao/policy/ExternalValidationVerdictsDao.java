@@ -80,6 +80,24 @@ public class ExternalValidationVerdictsDao {
                 .list();
     }
 
+    // Manual eviction (operator API) : drops the permanent BLOCKED verdicts of every service for
+    // the version, so that the next request calls the external services again.
+    @Timed(value = "silicaproxy.dao.extvalidation.verdicts.deleteByPackage",
+            description = "Duration of external validation verdicts delete by package version",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public int deleteByPackage(String packageName, String ecosystem, String packageVersion) {
+        return jdbcClient.sql("""
+                DELETE FROM external_validation_verdicts
+                WHERE package_name    = :packageName
+                  AND ecosystem       = :ecosystem
+                  AND package_version = :packageVersion
+                """)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("packageVersion", packageVersion)
+                .update();
+    }
+
     @Timed(value = "silicaproxy.dao.extvalidation.verdicts.save",
             description = "Duration of external validation verdict save",
             percentiles = {0.5, 0.9, 0.95, 0.99})

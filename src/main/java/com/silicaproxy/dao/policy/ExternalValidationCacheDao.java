@@ -224,6 +224,25 @@ public class ExternalValidationCacheDao {
         return deleted > 0;
     }
 
+    // Manual eviction (operator API) : every entry of the version, all services, SYNC and ASYNC, whatever
+    // its status. A held request awaiting a deleted PENDING token is woken by AsyncVerdictWaiter (the
+    // token is no longer pending) and re-reads the state ; a late callback for it is answered 404.
+    @Timed(value = "silicaproxy.dao.extvalidation.cache.delete.package",
+            description = "Duration of external validation cache delete by package version",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public int deleteByPackage(String packageName, String ecosystem, String packageVersion) {
+        return jdbcClient.sql("""
+                DELETE FROM external_validation_cache
+                WHERE package_name    = :packageName
+                  AND ecosystem       = :ecosystem
+                  AND package_version = :packageVersion
+                """)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("packageVersion", packageVersion)
+                .update();
+    }
+
     // BLOCKED callback : removes the PENDING entry of the token, records the permanent verdict and
     // drops the cached chain ALLOW of the version, in one transaction. A concurrent reader never sees
     // the entry gone without its verdict (it would read "no entry" as a scan still to come), nor the
