@@ -22,7 +22,6 @@ import com.silicaproxy.dao.client.ExternalValidationClient;
 import com.silicaproxy.dao.client.UpstreamExistenceChecker;
 import com.silicaproxy.dao.policy.ExternalValidationCacheDao;
 import com.silicaproxy.dao.policy.ExternalValidationVerdictsDao;
-import com.silicaproxy.dao.policy.MetadataCacheDao;
 import com.silicaproxy.model.dto.DecisionResult;
 import com.silicaproxy.model.dto.DecisionSource;
 import com.silicaproxy.model.dto.ExternalValidationOutcome;
@@ -68,8 +67,8 @@ public class ExternalValidationService {
     private final ExternalValidationClient client;
     private final Executor asyncExecutor;
     private final ExternalValidationMetrics metrics;
-    private final MetadataCacheDao metadataCacheDao;
     private final UpstreamExistenceChecker headChecker;
+    private final AsyncVerdictWaiter verdictWaiter;
 
     public ExternalValidationService(
             SilicaProxyProperties properties,
@@ -78,15 +77,15 @@ public class ExternalValidationService {
             ExternalValidationClient client,
             @Qualifier("externalValidationExecutor") Executor asyncExecutor,
             ExternalValidationMetrics metrics,
-            MetadataCacheDao metadataCacheDao,
-            UpstreamExistenceChecker headChecker) {
+            UpstreamExistenceChecker headChecker,
+            AsyncVerdictWaiter verdictWaiter) {
         this.properties = properties;
+        this.verdictWaiter = verdictWaiter;
         this.cacheDao = cacheDao;
         this.verdictsDao = verdictsDao;
         this.client = client;
         this.asyncExecutor = asyncExecutor;
         this.metrics = metrics;
-        this.metadataCacheDao = metadataCacheDao;
         this.headChecker = headChecker;
     }
 
@@ -112,11 +111,22 @@ public class ExternalValidationService {
                     + "sent to the external service would be relative and unreachable.");
         }
 
-        services.forEach((name, props) -> LOG.info(
-                "External validation service '{}' loaded: enabled={}, mode={}, url={}, blocking={}, "
-                        + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}, headCheck={}",
-                name, props.enabled(), props.mode(), props.url(), props.blocking(),
-                props.failOpen(), props.timeoutSeconds(), props.cacheTtlMinutes(), props.headCheck()));
+        services.forEach((name, props) -> {
+            LOG.info("External validation service '{}' loaded: enabled={}, mode={}, url={}, blocking={}, "
+                            + "failOpen={}, timeoutSeconds={}, cacheTtlMinutes={}, headCheck={}, "
+                            + "awaitVerdictSeconds={}",
+                    name, props.enabled(), props.mode(), props.url(), props.blocking(),
+                    props.failOpen(), props.timeoutSeconds(), props.cacheTtlMinutes(), props.headCheck(),
+                    props.awaitVerdictSeconds());
+            // Only a request that would be blocked temporarily is ever held : say so rather than let
+            // the setting silently do nothing.
+            boolean awaitApplies = props.mode() == ExternalValidationMode.ASYNC && props.blocking() && !props.failOpen();
+            if (props.awaitVerdictSeconds() > 0 && !awaitApplies) {
+                LOG.warn("External validation service '{}': await-verdict-seconds={} is ignored, it only applies "
+                                + "to a mode=async, blocking=true, fail-open=false service",
+                        name, props.awaitVerdictSeconds());
+            }
+        });
     }
 
     @Timed(value = "silicaproxy.service.extvalidation.check",
@@ -199,6 +209,8 @@ public class ExternalValidationService {
             // The triggers are awaited (each bounded by the acknowledgment read timeout) : a service
             // that already knows the package answers its verdict in the acknowledgment, which then
             // replaces the cache state read above for this very request.
+            // A fail-closed service still without a verdict would then block this request temporarily
+            // (429) : with await-verdict-seconds, the request is held for the callback instead.
             asyncOutcomes = triggerAsyncServicesAndWait(
                     asyncServices, asyncOutcomes, packageName, version, ecosystem, fullUrl);
         } else if (triggerAsync) {
@@ -320,15 +332,12 @@ public class ExternalValidationService {
             @Nullable ExternalValidationServiceProperties props,
             String packageName, String ecosystem, String version, String verdict, @Nullable String reason) {
         if (Metrics.BLOCKED.equalsIgnoreCase(verdict)) {
-            // Permanent verdict — remove from cache, then write to verdicts table.
-            if (!cacheDao.deleteByToken(token)) {
+            // Permanent verdict — remove from cache, write to verdicts table and drop the cached chain
+            // ALLOW, atomically : a request held by await-verdict-seconds wakes up as soon as the
+            // PENDING row is gone and must find the verdict then.
+            if (!cacheDao.resolvePendingAsBlocked(token, serviceName, packageName, ecosystem, version, reason)) {
                 return false;
             }
-            verdictsDao.save(serviceName, packageName, ecosystem, version, reason);
-            // A cached ALLOW (EXTERNAL_VALIDATION_CHAIN) is read by the local evaluation before
-            // the external services are consulted : drop it, otherwise this BLOCK would only be
-            // enforced once that entry expires.
-            metadataCacheDao.deleteApiCacheAllow(packageName, ecosystem, version);
             metrics.recordExternalValidationCallMetric(serviceName, Metrics.TYPE_ASYNC, Metrics.BLOCKED);
             return true;
         }
@@ -470,6 +479,11 @@ public class ExternalValidationService {
 
     // Triggers every async service in parallel and waits for the acknowledgments. Each service keeps
     // its pre-trigger cache state, unless its acknowledgment carried an immediate verdict.
+    //
+    // Then a service still PENDING (blocking, fail-closed, no verdict yet) with await-verdict-seconds
+    // holds the request until its callback resolves the PENDING entry, and its verdict is read again.
+    // Every deadline counts from the same start, so waiting for several services lasts the longest
+    // of their delays, not their sum.
     private List<ServiceResult> triggerAsyncServicesAndWait(
             List<Map.Entry<String, ExternalValidationServiceProperties>> services,
             List<ServiceResult> cacheStates,
@@ -482,6 +496,17 @@ public class ExternalValidationService {
         List<ServiceResult> outcomes = new ArrayList<>(cacheStates.size());
         for (int i = 0; i < futures.size(); i++) {
             outcomes.add(futures.get(i).join().orElse(cacheStates.get(i)));
+        }
+
+        Instant start = Instant.now();
+        for (int i = 0; i < services.size(); i++) {
+            String serviceName = services.get(i).getKey();
+            ExternalValidationServiceProperties props = services.get(i).getValue();
+            if (outcomes.get(i).outcome() == ServiceOutcome.PENDING && props.awaitVerdictSeconds() > 0
+                    && verdictWaiter.awaitVerdict(serviceName, packageName, ecosystem, version,
+                            start.plusSeconds(props.awaitVerdictSeconds()))) {
+                outcomes.set(i, checkAsyncCacheState(serviceName, props, packageName, version, ecosystem));
+            }
         }
         return outcomes;
     }

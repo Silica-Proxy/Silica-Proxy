@@ -23,11 +23,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,11 +39,14 @@ class ExternalValidationCacheDaoTest extends BaseIntegrationTest {
 
     private final ExternalValidationCacheDao dao;
     private final JdbcClient jdbcClient;
+    private final TransactionTemplate transactionTemplate;
 
     @Autowired
-    ExternalValidationCacheDaoTest(ExternalValidationCacheDao dao, JdbcClient jdbcClient) {
+    ExternalValidationCacheDaoTest(ExternalValidationCacheDao dao, JdbcClient jdbcClient,
+            TransactionTemplate transactionTemplate) {
         this.dao = dao;
         this.jdbcClient = jdbcClient;
+        this.transactionTemplate = transactionTemplate;
     }
 
     @BeforeEach
@@ -382,5 +388,116 @@ class ExternalValidationCacheDaoTest extends BaseIntegrationTest {
         assertThat(result.get().status()).isEqualTo("ALLOWED");
         assertThat(result.get().reason()).isEqualTo("No threats");
         assertThat(result.get().expiresAt()).isAfter(Instant.now());
+    }
+
+    // resolvePendingAsBlocked — BLOCKED callback : entry removed and verdict written together
+    @Test
+    void resolvePendingAsBlocked_pendingEntry_deletesEntryAndWritesVerdict() {
+        jdbcClient.sql("TRUNCATE external_validation_verdicts RESTART IDENTITY CASCADE").update();
+        UUID token = UUID.randomUUID();
+        dao.upsertPendingAsync(token, "svc", "lodash", "npm", "4.17.21",
+                Instant.now().plus(30, ChronoUnit.MINUTES));
+
+        boolean resolved = dao.resolvePendingAsBlocked(token, "svc", "lodash", "npm", "4.17.21", "Malware");
+
+        assertThat(resolved).isTrue();
+        assertThat(dao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isEmpty();
+        assertThat(verdictReason("svc", "lodash", "npm", "4.17.21")).contains("Malware");
+    }
+
+    // The cached chain ALLOW would let the package through until it expires : dropped with the verdict.
+    @Test
+    void resolvePendingAsBlocked_dropsCachedChainAllow() {
+        jdbcClient.sql("TRUNCATE external_validation_verdicts RESTART IDENTITY CASCADE").update();
+        jdbcClient.sql("TRUNCATE api_cache RESTART IDENTITY CASCADE").update();
+        jdbcClient.sql("""
+                INSERT INTO api_cache (package_name, ecosystem, package_version, is_secure, api_source, expires_at)
+                VALUES ('lodash', 'npm', '4.17.21', true, 'EXTERNAL_VALIDATION_CHAIN', ?)
+                """).param(Timestamp.from(Instant.now().plus(60, ChronoUnit.MINUTES))).update();
+        UUID token = UUID.randomUUID();
+        dao.upsertPendingAsync(token, "svc", "lodash", "npm", "4.17.21",
+                Instant.now().plus(30, ChronoUnit.MINUTES));
+
+        dao.resolvePendingAsBlocked(token, "svc", "lodash", "npm", "4.17.21", "Malware");
+
+        assertThat(jdbcClient.sql("SELECT count(*) FROM api_cache WHERE package_name = 'lodash'")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void resolvePendingAsBlocked_entryNotPending_returnsFalseAndWritesNothing() {
+        jdbcClient.sql("TRUNCATE external_validation_verdicts RESTART IDENTITY CASCADE").update();
+        UUID token = UUID.randomUUID();
+        dao.upsertPendingAsync(token, "svc", "lodash", "npm", "4.17.21",
+                Instant.now().plus(30, ChronoUnit.MINUTES));
+        dao.updateToAllowedByToken(token, "Already resolved", Instant.now().plus(60, ChronoUnit.MINUTES));
+
+        boolean resolved = dao.resolvePendingAsBlocked(token, "svc", "lodash", "npm", "4.17.21", "Malware");
+
+        assertThat(resolved).isFalse();
+        assertThat(dao.findByServiceAndPackage("svc", "lodash", "npm", "4.17.21")).isPresent();
+        assertThat(verdictReason("svc", "lodash", "npm", "4.17.21")).isEmpty();
+    }
+
+    // findStillPendingTokens — polled by AsyncVerdictWaiter for the requests held on a verdict
+    @Test
+    void findStillPendingTokens_returnsOnlyValidPendingTokens() {
+        UUID pending = UUID.randomUUID();
+        UUID allowed = UUID.randomUUID();
+        UUID timedOut = UUID.randomUUID();
+        UUID expiredPending = UUID.randomUUID();
+        UUID blockedThenDeleted = UUID.randomUUID();
+        Instant future = Instant.now().plus(30, ChronoUnit.MINUTES);
+        dao.upsertPendingAsync(pending, "svc", "a", "npm", "1.0.0", future);
+        dao.upsertPendingAsync(allowed, "svc", "b", "npm", "1.0.0", future);
+        dao.updateToAllowedByToken(allowed, null, future);
+        dao.upsertPendingAsync(timedOut, "svc", "c", "npm", "1.0.0", future);
+        dao.updateToTimeout("svc", "c", "npm", "1.0.0");
+        dao.upsertPendingAsync(expiredPending, "svc", "d", "npm", "1.0.0", Instant.now().minus(1, ChronoUnit.MINUTES));
+        dao.upsertPendingAsync(blockedThenDeleted, "svc", "e", "npm", "1.0.0", future);
+        dao.deleteByToken(blockedThenDeleted);
+
+        Set<UUID> stillPending = dao.findStillPendingTokens(
+                List.of(pending, allowed, timedOut, expiredPending, blockedThenDeleted, UUID.randomUUID()));
+
+        assertThat(stillPending).containsExactly(pending);
+    }
+
+    @Test
+    void findStillPendingTokens_emptyInput_returnsEmpty() {
+        assertThat(dao.findStillPendingTokens(List.of())).isEmpty();
+    }
+
+    // The poll runs every few hundred milliseconds while requests are held : it must go through the
+    // partial index on callback_token, never scan the table (which also holds the ALLOWED entries of
+    // cache-ttl-minutes). Sequential scans are disabled so the plan does not depend on the table size.
+    @Test
+    void findStillPendingTokens_queryUsesCallbackTokenIndex() {
+        String plan = transactionTemplate.execute(status -> {
+            jdbcClient.sql("SET LOCAL enable_seqscan = off").update();
+            return String.join("\n", jdbcClient.sql("""
+                    EXPLAIN SELECT callback_token
+                    FROM external_validation_cache
+                    WHERE callback_token IN (:a, :b)
+                      AND status     = 'PENDING'
+                      AND expires_at > CURRENT_TIMESTAMP
+                    """)
+                    .param("a", UUID.randomUUID())
+                    .param("b", UUID.randomUUID())
+                    .query(String.class)
+                    .list());
+        });
+
+        assertThat(plan).contains("idx_ext_cache_token");
+    }
+
+    private Optional<String> verdictReason(String service, String pkg, String eco, String version) {
+        return jdbcClient.sql("""
+                SELECT reason FROM external_validation_verdicts
+                WHERE service_name = ? AND package_name = ? AND ecosystem = ? AND package_version = ?
+                """)
+                .params(service, pkg, eco, version)
+                .query(String.class)
+                .optional();
     }
 }

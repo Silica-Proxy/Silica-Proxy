@@ -23,10 +23,14 @@ import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
@@ -34,9 +38,11 @@ import java.util.UUID;
 public class ExternalValidationCacheDao {
 
     private final JdbcClient jdbcClient;
+    private final MetadataCacheDao metadataCacheDao;
 
-    public ExternalValidationCacheDao(JdbcClient jdbcClient) {
+    public ExternalValidationCacheDao(JdbcClient jdbcClient, MetadataCacheDao metadataCacheDao) {
         this.jdbcClient = jdbcClient;
+        this.metadataCacheDao = metadataCacheDao;
     }
 
     @Timed(value = "silicaproxy.dao.extvalidation.cache.find",
@@ -216,6 +222,61 @@ public class ExternalValidationCacheDao {
                 .param("token", callbackToken)
                 .update();
         return deleted > 0;
+    }
+
+    // BLOCKED callback : removes the PENDING entry of the token, records the permanent verdict and
+    // drops the cached chain ALLOW of the version, in one transaction. A concurrent reader never sees
+    // the entry gone without its verdict (it would read "no entry" as a scan still to come), nor the
+    // verdict with the ALLOW still cached (read by the local evaluation before the external services,
+    // it would let the package through until it expires). False, and nothing written, when the token
+    // is not PENDING any more (already resolved, duplicate or racing delivery).
+    @Transactional
+    @Timed(value = "silicaproxy.dao.extvalidation.cache.resolve.blocked",
+            description = "Duration of the atomic PENDING-to-BLOCKED resolution of an async entry",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public boolean resolvePendingAsBlocked(
+            UUID callbackToken, String serviceName, String packageName, String ecosystem,
+            String packageVersion, @Nullable String reason) {
+        if (!deleteByToken(callbackToken)) {
+            return false;
+        }
+        jdbcClient.sql("""
+                INSERT INTO external_validation_verdicts
+                    (service_name, package_name, ecosystem, package_version, reason)
+                VALUES (:serviceName, :packageName, :ecosystem, :packageVersion, :reason)
+                ON CONFLICT (service_name, package_name, ecosystem, package_version)
+                DO NOTHING
+                """)
+                .param("serviceName", serviceName)
+                .param("packageName", packageName)
+                .param("ecosystem", ecosystem)
+                .param("packageVersion", packageVersion)
+                .param("reason", reason)
+                .update();
+        metadataCacheDao.deleteApiCacheAllow(packageName, ecosystem, packageVersion);
+        return true;
+    }
+
+    // Among tokens, those whose entry is still a valid PENDING : every other token was resolved
+    // (ALLOWED, TIMEOUT, row deleted by a BLOCKED callback, or PENDING expired). Uses the partial
+    // index idx_ext_cache_token ; one row at most per token.
+    @Timed(value = "silicaproxy.dao.extvalidation.cache.find.pending.tokens",
+            description = "Duration of the lookup of the still-pending callback tokens awaited by held requests",
+            percentiles = {0.5, 0.9, 0.95, 0.99})
+    public Set<UUID> findStillPendingTokens(Collection<UUID> callbackTokens) {
+        if (callbackTokens.isEmpty()) {
+            return Set.of();
+        }
+        return new HashSet<>(jdbcClient.sql("""
+                SELECT callback_token
+                FROM external_validation_cache
+                WHERE callback_token IN (:tokens)
+                  AND status     = 'PENDING'
+                  AND expires_at > CURRENT_TIMESTAMP
+                """)
+                .param("tokens", callbackTokens)
+                .query(UUID.class)
+                .list());
     }
 
     @Timed(value = "silicaproxy.dao.extvalidation.cache.expire.pending",
