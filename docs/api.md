@@ -20,6 +20,7 @@ intentionally out of scope.
 | `GET /api/packages/search?packageName=&ecosystem=&version=` | READ | Diagnostic: look up a package in all local sources |
 | `GET /api/policies/evaluate?ecosystem=&packageName=&version=` | READ | Evaluate which company policy rule applies to a given package |
 | `POST /api/policies/simulate` | READ | Simulate a policy set against a package without persisting rules |
+| `DELETE /api/external-validation/cache?ecosystem=&packageName=&version=` | ACTION | Evict every external validation result of a package version (sync/async state, permanent BLOCKED verdicts, cached ALLOW) to force a re-validation — see [External validation](external-validation.md#manual-eviction) |
 | `POST /external-validation/callback/{token}` | — | Async validation callback — called by external services to deliver a verdict |
 | `GET /actuator/prometheus` | — | Prometheus metrics |
 | `GET /actuator/health/liveness` | — | Liveness probe (JVM only) — see [Health probes](operations.md#health-probes) |

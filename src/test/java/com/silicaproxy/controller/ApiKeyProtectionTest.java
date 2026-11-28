@@ -163,6 +163,26 @@ class ApiKeyProtectionTest extends BaseIntegrationTest {
                 .isEqualTo(HttpStatus.ACCEPTED);
     }
 
+    @Test
+    void externalValidationCacheEvictionShouldRejectWithoutKeyAndAllowWithActionKey() {
+        String path = "/api/external-validation/cache?ecosystem=npm&packageName=lodash&version=4.17.21";
+        assertThat(delete(path, null).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(delete(path, READ_KEY).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(delete(path, ACTION_KEY).getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    private ResponseEntity<String> delete(String path, String bearerKey) {
+        try {
+            return restClient.delete()
+                    .uri("http://localhost:" + port + path)
+                    .headers(headers -> addBearerToken(headers, bearerKey))
+                    .retrieve()
+                    .toEntity(String.class);
+        } catch (HttpClientErrorException e) {
+            return ResponseEntity.status(e.getStatusCode()).body(e.getResponseBodyAsString());
+        }
+    }
+
     private ResponseEntity<String> get(String path, String bearerKey) {
         try {
             return restClient.get()

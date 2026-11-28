@@ -123,7 +123,7 @@ If `api-key` is configured for the service (see [Configuration Reference](config
 
 | Verdict | Destination | Expiry |
 |---|---|---|
-| BLOCKED (blocking=true) | `external_validation_verdicts` | **Permanent** — no TTL, manual removal only |
+| BLOCKED (blocking=true) | `external_validation_verdicts` | **Permanent** — no TTL, manual removal only ([manual eviction](#manual-eviction)) |
 | ALLOWED | `external_validation_cache` | Configurable TTL (`cache-ttl-minutes`) |
 | PENDING (async, waiting) | `external_validation_cache` | Configurable TTL (`pending-ttl-minutes`), then → TIMEOUT |
 | BLOCKED (blocking=false) | `external_validation_verdicts` | **Permanent** — stored for observability, but never enforced as long as `blocking=false` |
@@ -131,6 +131,18 @@ If `api-key` is configured for the service (see [Configuration Reference](config
 A BLOCKED verdict written to `external_validation_verdicts` is **permanent**: it is never cleaned up automatically and is applied on every subsequent request for that package. Only a company policy can override it, since company policies are evaluated before the external validation services.
 
 When every enabled service definitively ALLOWED the package and the [fallback chain](how-it-works.md#5-live-security-api-fallback--on-demand-configurable-cache-priority-3) then allows it too, that final ALLOW is cached in `api_cache` (source `EXTERNAL_VALIDATION_CHAIN`), so the next downloads skip the registry, external and OSV calls. Its TTL is the smallest of `api-cache.allow-verdict-ttl-minutes` and the remaining validity of each service's ALLOW (at most its `cache-ttl-minutes`). Nothing is cached while a scan is pending or after a fail-open error/timeout, and an async BLOCKED callback deletes the cached ALLOW so the very next request is blocked.
+
+### Manual eviction
+
+To force a package version to be validated again (a service gave a wrong verdict, was reconfigured, or a BLOCKED verdict must be lifted), call the `ACTION` endpoint:
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $ACTION_KEY" \
+  "https://silicaproxy/api/external-validation/cache?ecosystem=npm&packageName=lodash&version=4.17.21"
+# {"externalValidationCache":2,"externalValidationVerdicts":1,"apiCache":1}
+```
+
+For that version (all services, sync and async) it deletes the `external_validation_cache` entries (PENDING / ALLOWED / TIMEOUT), the permanent `external_validation_verdicts`, and the cached ALLOW in `api_cache` (a cached BLOCK from OSV, deprecation… is kept). PyPI names are normalized (PEP 503) like the proxy does. The call is idempotent (`200` with zeros when nothing was cached); an unsupported ecosystem or a blank parameter returns `400`. A callback arriving later for a deleted PENDING token is answered `404`, and a request held on it re-reads the state and triggers a new scan.
 
 ## Multi-service execution order
 
